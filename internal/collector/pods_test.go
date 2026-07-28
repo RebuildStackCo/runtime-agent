@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,14 +31,25 @@ func pod(name string, owner *metav1.OwnerReference) *corev1.Pod {
 		Spec: corev1.PodSpec{
 			NodeName: "node-1",
 			InitContainers: []corev1.Container{
-				{Name: "init-db", Image: "example.com/migrate:v3"},
+				{Name: "init-db", Image: "example.com/migrate:v3", Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				}},
 			},
 			Containers: []corev1.Container{
-				{Name: "app", Image: "example.com/app:1.2.3"},
+				{Name: "app", Image: "example.com/app:1.2.3", Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("500m"),
+						corev1.ResourceMemory: resource.MustParse("256Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("2"),
+						corev1.ResourceMemory: resource.MustParse("1Gi"),
+					},
+				}},
 				{Name: "sidecar", Image: "example.com/proxy:latest"},
 			},
 		},
-		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, QOSClass: corev1.PodQOSBurstable},
 	}
 	if owner != nil {
 		p.OwnerReferences = []metav1.OwnerReference{*owner}
@@ -137,21 +150,58 @@ func TestCollectsContainersAndImages(t *testing.T) {
 
 	info := seen["shop/checkout-1"]
 	want := []Container{
-		{Name: "init-db", Image: "example.com/migrate:v3", Init: true},
-		{Name: "app", Image: "example.com/app:1.2.3"},
+		{Name: "init-db", Image: "example.com/migrate:v3", Init: true,
+			Resources: Resources{CPURequestMilli: ptr.To(int64(100))}},
+		{Name: "app", Image: "example.com/app:1.2.3",
+			Resources: Resources{
+				CPURequestMilli:    ptr.To(int64(500)),
+				CPULimitMilli:      ptr.To(int64(2000)),
+				MemoryRequestBytes: ptr.To(int64(256 << 20)),
+				MemoryLimitBytes:   ptr.To(int64(1 << 30)),
+			}},
 		{Name: "sidecar", Image: "example.com/proxy:latest"},
 	}
 	if len(info.Containers) != len(want) {
 		t.Fatalf("containers = %+v, want %+v", info.Containers, want)
 	}
 	for i := range want {
-		if info.Containers[i] != want[i] {
-			t.Errorf("container %d = %+v, want %+v", i, info.Containers[i], want[i])
+		got := info.Containers[i]
+		if got.Name != want[i].Name || got.Image != want[i].Image || got.Init != want[i].Init {
+			t.Errorf("container %d = %+v, want %+v", i, got, want[i])
 		}
+		assertResources(t, got.Name, got.Resources, want[i].Resources)
 	}
 	if info.Node != "node-1" || info.Phase != string(corev1.PodRunning) {
 		t.Errorf("node/phase = %q/%q, want node-1/Running", info.Node, info.Phase)
 	}
+	if info.QOSClass != string(corev1.PodQOSBurstable) {
+		t.Errorf("qos = %q, want Burstable", info.QOSClass)
+	}
+}
+
+// assertResources compares two Resources field by field; a nil on either
+// side must be nil on the other (absent means "not set", not zero).
+func assertResources(t *testing.T, container string, got, want Resources) {
+	t.Helper()
+	check := func(field string, g, w *int64) {
+		switch {
+		case (g == nil) != (w == nil):
+			t.Errorf("%s: %s = %v, want %v", container, field, format(g), format(w))
+		case g != nil && *g != *w:
+			t.Errorf("%s: %s = %d, want %d", container, field, *g, *w)
+		}
+	}
+	check("cpu_request_milli", got.CPURequestMilli, want.CPURequestMilli)
+	check("cpu_limit_milli", got.CPULimitMilli, want.CPULimitMilli)
+	check("memory_request_bytes", got.MemoryRequestBytes, want.MemoryRequestBytes)
+	check("memory_limit_bytes", got.MemoryLimitBytes, want.MemoryLimitBytes)
+}
+
+func format(v *int64) string {
+	if v == nil {
+		return "unset"
+	}
+	return fmt.Sprintf("%d", *v)
 }
 
 func TestReportsPodsCreatedAfterStart(t *testing.T) {

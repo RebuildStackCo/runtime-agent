@@ -71,6 +71,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"pod", p.Name,
 			"node", p.Node,
 			"phase", p.Phase,
+			"qos", p.QOSClass,
 			"workload_kind", p.Workload.Kind,
 			"workload_name", p.Workload.Name,
 			"containers", p.Containers,

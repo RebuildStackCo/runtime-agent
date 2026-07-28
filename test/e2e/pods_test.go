@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -77,7 +78,19 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{Name: "app", Image: pauseImage}},
+					Containers: []corev1.Container{{
+						Name: "app", Image: pauseImage,
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("50m"),
+								corev1.ResourceMemory: resource.MustParse("32Mi"),
+							},
+							Limits: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("100m"),
+								corev1.ResourceMemory: resource.MustParse("64Mi"),
+							},
+						},
+					}},
 				},
 			},
 		},
@@ -153,6 +166,24 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 	webPod := waitForWorkload("Deployment/web")
 	if len(webPod.Containers) != 1 || webPod.Containers[0].Image != pauseImage {
 		t.Errorf("deployment pod containers = %+v, want one %s", webPod.Containers, pauseImage)
+	}
+	res := webPod.Containers[0].Resources
+	wantRes := map[string]struct {
+		got  *int64
+		want int64
+	}{
+		"cpu_request_milli":    {res.CPURequestMilli, 50},
+		"cpu_limit_milli":      {res.CPULimitMilli, 100},
+		"memory_request_bytes": {res.MemoryRequestBytes, 32 << 20},
+		"memory_limit_bytes":   {res.MemoryLimitBytes, 64 << 20},
+	}
+	for field, v := range wantRes {
+		if v.got == nil || *v.got != v.want {
+			t.Errorf("deployment pod %s = %v, want %d", field, v.got, v.want)
+		}
+	}
+	if webPod.QOSClass != string(corev1.PodQOSBurstable) {
+		t.Errorf("deployment pod qos = %q, want Burstable", webPod.QOSClass)
 	}
 
 	waitForWorkload("CronJob/tick")
