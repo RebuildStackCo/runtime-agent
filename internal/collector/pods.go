@@ -13,6 +13,7 @@ import (
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	batchlisters "k8s.io/client-go/listers/batch/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/utils/ptr"
 )
 
 // WorkloadRef identifies the controller that ultimately manages a pod:
@@ -24,12 +25,25 @@ type WorkloadRef struct {
 	Name string `json:"name"`
 }
 
-// Container is the collected view of a container: name and image only.
-// Env, args, and command are deliberately never read (filter early).
+// Resources is the declared resource envelope of one container, normalized
+// to resource units: CPU in millicores, memory in bytes. A nil field means
+// the corresponding request or limit is not set — a meaningful fact in
+// itself, distinct from zero.
+type Resources struct {
+	CPURequestMilli    *int64 `json:"cpu_request_milli,omitempty"`
+	CPULimitMilli      *int64 `json:"cpu_limit_milli,omitempty"`
+	MemoryRequestBytes *int64 `json:"memory_request_bytes,omitempty"`
+	MemoryLimitBytes   *int64 `json:"memory_limit_bytes,omitempty"`
+}
+
+// Container is the collected view of a container: name, image, and declared
+// resources only. Env, args, and command are deliberately never read
+// (filter early).
 type Container struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
-	Init  bool   `json:"init,omitempty"`
+	Name      string    `json:"name"`
+	Image     string    `json:"image"`
+	Init      bool      `json:"init,omitempty"`
+	Resources Resources `json:"resources"`
 }
 
 // PodInfo is the collected view of one pod.
@@ -38,6 +52,7 @@ type PodInfo struct {
 	Name       string
 	Node       string
 	Phase      string
+	QOSClass   string
 	Workload   WorkloadRef
 	Containers []Container
 }
@@ -111,15 +126,37 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 		Name:      pod.Name,
 		Node:      pod.Spec.NodeName,
 		Phase:     string(pod.Status.Phase),
+		QOSClass:  string(pod.Status.QOSClass),
 		Workload:  w.resolveWorkload(pod),
 	}
 	for _, c := range pod.Spec.InitContainers {
-		info.Containers = append(info.Containers, Container{Name: c.Name, Image: c.Image, Init: true})
+		info.Containers = append(info.Containers,
+			Container{Name: c.Name, Image: c.Image, Init: true, Resources: resourcesOf(&c)})
 	}
 	for _, c := range pod.Spec.Containers {
-		info.Containers = append(info.Containers, Container{Name: c.Name, Image: c.Image})
+		info.Containers = append(info.Containers,
+			Container{Name: c.Name, Image: c.Image, Resources: resourcesOf(&c)})
 	}
 	return info
+}
+
+// resourcesOf normalizes a container's declared requests and limits:
+// CPU quantities to millicores, memory to bytes. Absent entries stay nil.
+func resourcesOf(c *corev1.Container) Resources {
+	var r Resources
+	if q, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+		r.CPURequestMilli = ptr.To(q.MilliValue())
+	}
+	if q, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+		r.CPULimitMilli = ptr.To(q.MilliValue())
+	}
+	if q, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+		r.MemoryRequestBytes = ptr.To(q.Value())
+	}
+	if q, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+		r.MemoryLimitBytes = ptr.To(q.Value())
+	}
+	return r
 }
 
 // resolveWorkload walks the owner chain one controller hop at a time:
