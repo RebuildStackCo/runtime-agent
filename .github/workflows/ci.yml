@@ -23,8 +23,28 @@ jobs:
             -c 'git config --global --add safe.directory /repo &&
                 gitleaks detect --source /repo --no-banner --redact'
 
-  # Added together with the Go scaffolding:
-  #   build-test:    go build ./... && go test ./...
-  #   lint:          golangci-lint
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go test -race ./...
+
+  lint:
+    name: Lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.4
+
   # Added together with the protobuf schema:
   #   proto:         buf lint && buf breaking --against main
