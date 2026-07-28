@@ -8,6 +8,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -135,6 +136,8 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 	var mu sync.Mutex
 	seen := make(map[string]collector.PodInfo)
 	watcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
+		observed, _ := json.Marshal(p)
+		t.Logf("pod observed: %s", observed)
 		if p.Namespace != ns {
 			return
 		}
