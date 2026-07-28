@@ -14,6 +14,9 @@
 # Build output
 bin/
 
+# Local run logs from e2e / manual agent runs
+test/e2e/logs/
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*

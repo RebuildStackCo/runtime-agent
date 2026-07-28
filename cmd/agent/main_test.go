@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestRunStopsOnContextCancel(t *testing.T) {
@@ -13,7 +15,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, logger) }()
+	go func() { done <- run(ctx, logger, fake.NewClientset()) }()
 
 	cancel()
 	select {
