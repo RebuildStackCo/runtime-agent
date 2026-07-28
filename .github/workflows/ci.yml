@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks over full history
+        run: |
+          docker run --rm -v "$PWD:/repo" --entrypoint sh \
+            ghcr.io/gitleaks/gitleaks:latest \
+            -c 'git config --global --add safe.directory /repo &&
+                gitleaks detect --source /repo --no-banner --redact'
+
+  # Added together with the Go scaffolding:
+  #   build-test:    go build ./... && go test ./...
+  #   lint:          golangci-lint
+  # Added together with the protobuf schema:
+  #   proto:         buf lint && buf breaking --against main
