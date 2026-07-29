@@ -5,10 +5,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"k8s.io/client-go/kubernetes"
@@ -65,7 +67,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	logger.Info("agent starting", "version", version)
 	defer logger.Info("agent stopping")
 
-	watcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
+	podWatcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
 		logger.Info("pod observed",
 			"namespace", p.Namespace,
 			"pod", p.Name,
@@ -77,5 +79,40 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"containers", p.Containers,
 		)
 	})
-	return watcher.Run(ctx)
+	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
+		logger.Info("node observed",
+			"node", n.Name,
+			"instance_type", n.InstanceType,
+			"capacity_type", n.CapacityType,
+			"allocatable_cpu_milli", n.AllocatableCPUMilli,
+			"allocatable_memory_bytes", n.AllocatableMemoryBytes,
+			"capacity_cpu_milli", n.CapacityCPUMilli,
+			"capacity_memory_bytes", n.CapacityMemoryBytes,
+		)
+	})
+
+	// Watchers run until ctx is canceled; a failing watcher must bring the
+	// agent down rather than leave it half-blind.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	for name, run := range map[string]func(context.Context) error{
+		"pods":  podWatcher.Run,
+		"nodes": nodeWatcher.Run,
+	} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := run(ctx); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("%s watcher: %w", name, err))
+				mu.Unlock()
+			}
+			cancel()
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
