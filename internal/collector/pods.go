@@ -5,6 +5,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,16 +64,24 @@ type PodInfo struct {
 type PodWatcher struct {
 	clientset kubernetes.Interface
 	onPod     func(PodInfo)
+	onOOM     func(OOMKill)
 
 	rsLister  appslisters.ReplicaSetLister
 	jobLister batchlisters.JobLister
+
+	mu           sync.Mutex
+	reportedOOMs map[string]struct{}
 }
 
 // NewPodWatcher returns a watcher that calls onPod for every pod present at
 // start and for every pod created afterwards. onPod is called from the
 // informer goroutine and must not block.
 func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatcher {
-	return &PodWatcher{clientset: clientset, onPod: onPod}
+	return &PodWatcher{
+		clientset:    clientset,
+		onPod:        onPod,
+		reportedOOMs: make(map[string]struct{}),
+	}
 }
 
 // Run blocks until ctx is canceled. ReplicaSet and Job caches are synced
@@ -107,6 +116,22 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		AddFunc: func(obj any) {
 			if pod, ok := obj.(*corev1.Pod); ok {
 				w.onPod(w.describe(pod))
+				w.reportOOMKills(pod)
+			}
+		},
+		// OOM kills happen after a pod appears and arrive as status
+		// updates; the pod itself is not re-reported.
+		UpdateFunc: func(_, obj any) {
+			if pod, ok := obj.(*corev1.Pod); ok {
+				w.reportOOMKills(pod)
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if unknown, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = unknown.Obj
+			}
+			if pod, ok := obj.(*corev1.Pod); ok {
+				w.forgetOOMKills(pod)
 			}
 		},
 	})
