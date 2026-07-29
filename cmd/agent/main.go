@@ -79,6 +79,19 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"containers", p.Containers,
 		)
 	})
+	podWatcher.OnOOMKill(func(o collector.OOMKill) {
+		logger.Warn("oom kill observed",
+			"namespace", o.Namespace,
+			"pod", o.Pod,
+			"container", o.Container,
+			"workload_kind", o.Workload.Kind,
+			"workload_name", o.Workload.Name,
+			"finished_at", o.FinishedAt,
+			"exit_code", o.ExitCode,
+			"restart_count", o.RestartCount,
+			"memory_limit_bytes", o.MemoryLimitBytes,
+		)
+	})
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
 		logger.Info("node observed",
 			"node", n.Name,
