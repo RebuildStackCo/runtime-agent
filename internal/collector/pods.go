@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	batchlisters "k8s.io/client-go/listers/batch/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
 )
@@ -65,9 +66,11 @@ type PodWatcher struct {
 	clientset kubernetes.Interface
 	onPod     func(PodInfo)
 	onOOM     func(OOMKill)
+	filter    *PodFilter
 
 	rsLister  appslisters.ReplicaSetLister
 	jobLister batchlisters.JobLister
+	nsLister  corelisters.NamespaceLister
 
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
@@ -80,8 +83,16 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	return &PodWatcher{
 		clientset:    clientset,
 		onPod:        onPod,
+		filter:       NewPodFilter(nil, nil),
 		reportedOOMs: make(map[string]struct{}),
 	}
+}
+
+// SetFilter replaces the default collect-everything filter. Must be called
+// before Run. The filter gates every pod-derived signal: an excluded pod is
+// neither reported nor scanned for OOM kills.
+func (w *PodWatcher) SetFilter(filter *PodFilter) {
+	w.filter = filter
 }
 
 // Run blocks until ctx is canceled. ReplicaSet and Job caches are synced
@@ -91,19 +102,22 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	factory := informers.NewSharedInformerFactory(w.clientset, 0)
 	rs := factory.Apps().V1().ReplicaSets()
 	jobs := factory.Batch().V1().Jobs()
+	namespaces := factory.Core().V1().Namespaces()
 	pods := factory.Core().V1().Pods()
 	w.rsLister = rs.Lister()
 	w.jobLister = jobs.Lister()
+	w.nsLister = namespaces.Lister()
 
 	// Informers must be instantiated before Start, or the factory won't
 	// run them.
 	podsInformer := pods.Informer()
 	rsSynced, jobsSynced := rs.Informer().HasSynced, jobs.Informer().HasSynced
+	nsSynced := namespaces.Informer().HasSynced
 
 	factory.Start(ctx.Done())
 	defer factory.Shutdown()
 
-	if !cache.WaitForCacheSync(ctx.Done(), rsSynced, jobsSynced, podsInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), rsSynced, jobsSynced, nsSynced, podsInformer.HasSynced) {
 		if ctx.Err() != nil {
 			return nil // canceled during sync — a normal shutdown, not a failure
 		}
@@ -114,7 +128,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	// cache as an Add, then receives genuinely new pods as they appear.
 	reg, err := podsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
-			if pod, ok := obj.(*corev1.Pod); ok {
+			if pod, ok := obj.(*corev1.Pod); ok && w.admit(pod, true) {
 				w.onPod(w.describe(pod))
 				w.reportOOMKills(pod)
 			}
@@ -122,7 +136,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		// OOM kills happen after a pod appears and arrive as status
 		// updates; the pod itself is not re-reported.
 		UpdateFunc: func(_, obj any) {
-			if pod, ok := obj.(*corev1.Pod); ok {
+			if pod, ok := obj.(*corev1.Pod); ok && w.admit(pod, false) {
 				w.reportOOMKills(pod)
 			}
 		},
@@ -142,6 +156,26 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+// admit runs the pod through the filter, consulting the namespace's
+// annotations from the cache (a cache miss reads as no annotations).
+// Exclusions are counted only when count is set — once per pod appearance
+// on Add, never again on the many status updates that follow.
+func (w *PodWatcher) admit(pod *corev1.Pod, count bool) bool {
+	var nsAnnotations map[string]string
+	if ns, err := w.nsLister.Get(pod.Namespace); err == nil {
+		nsAnnotations = ns.Annotations
+	}
+	allowed, reason := w.filter.Admit(pod, nsAnnotations)
+	if count {
+		if allowed {
+			w.filter.countObserved()
+		} else {
+			w.filter.countExcluded(reason)
+		}
+	}
+	return allowed
 }
 
 // describe reduces a pod to the collected view.
