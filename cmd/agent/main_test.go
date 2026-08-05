@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/RebuildStackCo/runtime-agent/internal/config"
 )
 
 func TestRunStopsOnContextCancel(t *testing.T) {
@@ -15,7 +17,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, logger, fake.NewClientset()) }()
+	go func() { done <- run(ctx, logger, fake.NewClientset(), config.Config{}) }()
 
 	cancel()
 	select {

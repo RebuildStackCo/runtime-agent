@@ -6,26 +6,39 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/config"
 )
 
 // version is set at build time via -ldflags.
 var version = "dev"
 
 func main() {
+	configPath := flag.String("config", "", "path to the agent configuration file (YAML)")
+	flag.Parse()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		stop()
+		logger.Error("loading configuration", "error", err)
+		os.Exit(1)
+	}
 
 	clientset, host, err := connect()
 	if err != nil {
@@ -35,7 +48,7 @@ func main() {
 	}
 	logger.Info("connected to cluster", "host", host)
 
-	err = run(ctx, logger, clientset)
+	err = run(ctx, logger, clientset, cfg)
 	stop()
 	if err != nil {
 		logger.Error("agent exited with error", "error", err)
@@ -61,11 +74,16 @@ func connect() (kubernetes.Interface, string, error) {
 	return clientset, config.Host, nil
 }
 
+// coverageInterval is how often the aggregate coverage counters are logged.
+const coverageInterval = time.Minute
+
 // run is the agent's lifecycle: it starts, works until ctx is canceled, and
 // returns.
-func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface) error {
+func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface, cfg config.Config) error {
 	logger.Info("agent starting", "version", version)
 	defer logger.Info("agent stopping")
+
+	filter := collector.NewPodFilter(cfg.Filters.Namespaces.Allow, cfg.Filters.Namespaces.Deny)
 
 	podWatcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
 		logger.Info("pod observed",
@@ -92,6 +110,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"memory_limit_bytes", o.MemoryLimitBytes,
 		)
 	})
+	podWatcher.SetFilter(filter)
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
 		logger.Info("node observed",
 			"node", n.Name,
@@ -104,10 +123,35 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		)
 	})
 
+	// Excluded pods are reported as aggregate counts only, never by name
+	// (docs/security.md §8).
+	logCoverage := func() {
+		c := filter.Snapshot()
+		logger.Info("coverage",
+			"pods_observed", c.PodsObserved,
+			"excluded_namespace_filter", c.ExcludedNamespaceFilter,
+			"excluded_namespace_annotation", c.ExcludedNamespaceAnnotation,
+			"excluded_pod_annotation", c.ExcludedPodAnnotation,
+		)
+	}
+
 	// Watchers run until ctx is canceled; a failing watcher must bring the
 	// agent down rather than leave it half-blind.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	go func() {
+		ticker := time.NewTicker(coverageInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logCoverage()
+			}
+		}
+	}()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []error
@@ -127,5 +171,6 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}()
 	}
 	wg.Wait()
+	logCoverage()
 	return errors.Join(errs...)
 }
