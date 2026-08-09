@@ -10,6 +10,12 @@ linters:
     - revive
     - unconvert
     - unparam
+  exclusions:
+    rules:
+      # Property tests need deterministic, seedable randomness; crypto/rand
+      # has no place in them.
+      - path: _test\.go
+        text: "G404:"
 
 formatters:
   enable:
