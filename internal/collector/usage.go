@@ -31,10 +31,13 @@ const (
 	staleTrackerAfter = 5 * time.Minute
 )
 
-// PodResolver attributes a pod UID to its namespace and workload, reporting
-// false for pods that are unknown or excluded — exactly PodWatcher.LookupPod.
+// PodResolver attributes pods to their namespace and workload, reporting
+// false for pods that are unknown or excluded — exactly PodWatcher's lookup
+// methods. Name-based lookup exists for the cAdvisor exposition, which
+// labels containers by pod name, not UID.
 type PodResolver interface {
 	LookupPod(uid types.UID) (namespace string, workload WorkloadRef, ok bool)
+	LookupPodByName(namespace, name string) (workload WorkloadRef, ok bool)
 }
 
 // UsagePoller polls every node's kubelet through the API server proxy
@@ -51,9 +54,10 @@ type UsagePoller struct {
 	onClosed   func(records []*rollup.Record)
 	onError    func(node string, err error)
 
-	// The accumulator and tracker are owned by the Run goroutine.
+	// The accumulator and trackers are owned by the Run goroutine.
 	acc      *rollup.Accumulator
 	tracker  map[trackerKey]*counterState
+	throttle map[cadvisorKey]*throttleState
 	sequence int64
 
 	// signals records which kubelet signals this cluster actually exposes,
@@ -70,11 +74,14 @@ type trackerKey struct {
 // counterState is the per-container baseline for cumulative counters. It
 // lives only in memory: after an agent restart the first observation
 // rebaselines from the container's start, so no persistent state is needed
-// (loss-harmless by construction).
+// (loss-harmless by construction). The PSI stall counters share their
+// parent stats' timestamps.
 type counterState struct {
 	cpuTime    time.Time
 	cpuCounter uint64
+	cpuPSI     uint64
 	memTime    time.Time
+	memPSI     uint64
 	lastSeen   time.Time
 }
 
@@ -101,6 +108,7 @@ func NewUsagePoller(
 		onError:    onError,
 		acc:        rollup.NewAccumulator(usageWindowLength),
 		tracker:    make(map[trackerKey]*counterState),
+		throttle:   make(map[cadvisorKey]*throttleState),
 		signals:    make(map[string]bool),
 	}
 }
@@ -156,14 +164,16 @@ func (p *UsagePoller) pollOnce(ctx context.Context, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		summary, err := p.fetchSummary(ctx, node)
-		if err != nil {
-			if p.onError != nil {
-				p.onError(node, err)
-			}
-			continue
+		if summary, err := p.fetchSummary(ctx, node); err != nil {
+			p.reportError(node, err)
+		} else {
+			p.ingest(summary, now)
 		}
-		p.ingest(summary, now)
+		if samples, err := p.fetchCadvisor(ctx, node); err != nil {
+			p.reportError(node, err)
+		} else {
+			p.ingestCadvisor(samples, now)
+		}
 	}
 	p.sweep(now)
 }
@@ -228,28 +238,54 @@ func (p *UsagePoller) ingestContainer(tk trackerKey, key rollup.Key, c *statsapi
 	if c.CPU != nil && c.CPU.UsageCoreNanoSeconds != nil {
 		p.markSignal("cpu")
 		counter, at := *c.CPU.UsageCoreNanoSeconds, c.CPU.Time.Time
+		var psi uint64
+		if c.CPU.PSI != nil {
+			p.markSignal("psi")
+			psi = c.CPU.PSI.Some.Total
+		}
+		advance := true
 		switch {
 		case st.cpuTime.IsZero():
-			// First observation: the counter itself is the delta since
-			// container start.
+			// First observation: the counters themselves are the deltas
+			// since container start.
 			p.observeCPU(key, c.StartTime.Time, at, counter)
-			st.cpuTime, st.cpuCounter = at, counter
+			p.observeCPUPSI(c.CPU.PSI, key, c.StartTime.Time, at, psi)
 		case !at.After(st.cpuTime):
-			// Re-served or stale snapshot — discard.
-		case counter < st.cpuCounter:
+			advance = false // re-served or stale snapshot — discard, keep baselines
+		case counter < st.cpuCounter || psi < st.cpuPSI:
 			// Container restarted: rebaseline, emit nothing.
-			st.cpuTime, st.cpuCounter = at, counter
 		default:
 			p.observeCPU(key, st.cpuTime, at, counter-st.cpuCounter)
-			st.cpuTime, st.cpuCounter = at, counter
+			p.observeCPUPSI(c.CPU.PSI, key, st.cpuTime, at, psi-st.cpuPSI)
+		}
+		if advance {
+			st.cpuTime, st.cpuCounter, st.cpuPSI = at, counter, psi
 		}
 	}
 
 	if c.Memory != nil && c.Memory.WorkingSetBytes != nil {
 		p.markSignal("memory")
+		var psi uint64
+		if c.Memory.PSI != nil {
+			p.markSignal("psi")
+			psi = c.Memory.PSI.Some.Total
+		}
 		if at := c.Memory.Time.Time; at.After(st.memTime) {
 			p.acc.ObserveMemory(key, at, clampToInt64(*c.Memory.WorkingSetBytes))
-			st.memTime = at
+			if c.Memory.PSI != nil && psi >= st.memPSI {
+				from := st.memTime
+				if from.IsZero() {
+					from = c.StartTime.Time
+				}
+				delta := psi
+				if !st.memTime.IsZero() {
+					delta = psi - st.memPSI
+				}
+				if to := at; to.After(from) {
+					p.acc.ObserveMemoryPSI(key, from, to, clampToInt64(delta))
+				}
+			}
+			st.memTime, st.memPSI = at, psi
 		}
 	}
 }
@@ -261,6 +297,19 @@ func (p *UsagePoller) observeCPU(key rollup.Key, from, to time.Time, coreNanos u
 	p.acc.ObserveCPUDelta(key, from, to, clampToInt64(coreNanos))
 }
 
+func (p *UsagePoller) observeCPUPSI(psi *statsapi.PSIStats, key rollup.Key, from, to time.Time, stallNanos uint64) {
+	if psi == nil || !to.After(from) {
+		return
+	}
+	p.acc.ObserveCPUPSI(key, from, to, clampToInt64(stallNanos))
+}
+
+func (p *UsagePoller) reportError(node string, err error) {
+	if p.onError != nil {
+		p.onError(node, err)
+	}
+}
+
 // sweep drops counter state for containers no kubelet has reported for a
 // while, so churned pods do not accumulate tracker entries forever.
 func (p *UsagePoller) sweep(now time.Time) {
@@ -268,6 +317,11 @@ func (p *UsagePoller) sweep(now time.Time) {
 	for tk, st := range p.tracker {
 		if st.lastSeen.Before(cutoff) {
 			delete(p.tracker, tk)
+		}
+	}
+	for ck, st := range p.throttle {
+		if st.lastSeen.Before(cutoff) {
+			delete(p.throttle, ck)
 		}
 	}
 }

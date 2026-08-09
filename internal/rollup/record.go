@@ -28,8 +28,8 @@ type CPUUsage struct {
 	// the agent's self-info says which reading applies.
 	ThrottledPeriods int64 `json:"throttled_periods"`
 	TotalPeriods     int64 `json:"total_periods"`
-	// PSIStallMicroseconds is PSI some-CPU stall time, where exposed.
-	PSIStallMicroseconds int64 `json:"psi_stall_microseconds"`
+	// PSIStallNanoseconds is PSI some-CPU stall time, where exposed.
+	PSIStallNanoseconds int64 `json:"psi_stall_nanoseconds"`
 
 	Samples  int64      `json:"samples"`
 	MinMilli int64      `json:"min_milli"`
@@ -58,8 +58,8 @@ type MemoryUsage struct {
 	MaxBytes int64 `json:"max_bytes"`
 	// SumBytes exists so the backend can derive the exact window average.
 	SumBytes int64 `json:"sum_bytes"`
-	// PSIStallMicroseconds is PSI some-memory stall time, where exposed.
-	PSIStallMicroseconds int64 `json:"psi_stall_microseconds"`
+	// PSIStallNanoseconds is PSI some-memory stall time, where exposed.
+	PSIStallNanoseconds int64 `json:"psi_stall_nanoseconds"`
 
 	Hist *Histogram `json:"hist_bytes"`
 }
@@ -111,7 +111,7 @@ func (r *Record) Merge(o *Record) error {
 	r.CPU.CoreNanoseconds += o.CPU.CoreNanoseconds
 	r.CPU.ThrottledPeriods += o.CPU.ThrottledPeriods
 	r.CPU.TotalPeriods += o.CPU.TotalPeriods
-	r.CPU.PSIStallMicroseconds += o.CPU.PSIStallMicroseconds
+	r.CPU.PSIStallNanoseconds += o.CPU.PSIStallNanoseconds
 	if o.CPU.Samples > 0 {
 		if r.CPU.Samples == 0 || o.CPU.MinMilli < r.CPU.MinMilli {
 			r.CPU.MinMilli = o.CPU.MinMilli
@@ -125,7 +125,7 @@ func (r *Record) Merge(o *Record) error {
 		return err
 	}
 
-	r.Memory.PSIStallMicroseconds += o.Memory.PSIStallMicroseconds
+	r.Memory.PSIStallNanoseconds += o.Memory.PSIStallNanoseconds
 	if o.Memory.Samples > 0 {
 		if r.Memory.Samples == 0 || o.Memory.MinBytes < r.Memory.MinBytes {
 			r.Memory.MinBytes = o.Memory.MinBytes

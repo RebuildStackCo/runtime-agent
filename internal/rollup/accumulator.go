@@ -42,35 +42,63 @@ func (a *Accumulator) record(k Key, at time.Time) *Record {
 	return r
 }
 
-// ObserveCPUDelta records one CPU counter delta: coreNanos of CPU time
-// consumed over [from, to). The total is split pro rata across the windows
-// the interval overlaps, so window totals stay exact regardless of poll
-// alignment; the rate sample for the distribution is attributed to the
-// window holding the interval's last instant. Non-positive intervals and
-// negative deltas are ignored — the delta tracker upstream handles counter
-// resets by rebaselining, never by emitting them here.
-func (a *Accumulator) ObserveCPUDelta(k Key, from, to time.Time, coreNanos int64) {
+// addProRata splits a counter delta accrued over [from, to) across the
+// windows the interval overlaps, pro rata by overlap, and adds each part to
+// the window's record via add. Parts sum exactly to amount — the last
+// segment absorbs rounding — so window totals stay exact regardless of poll
+// alignment. Non-positive intervals and negative deltas are ignored: the
+// delta tracker upstream handles counter resets by rebaselining, never by
+// emitting them here.
+func (a *Accumulator) addProRata(k Key, from, to time.Time, amount int64, add func(*Record, int64)) {
 	total := to.Sub(from).Nanoseconds()
-	if total <= 0 || coreNanos < 0 {
+	if total <= 0 || amount < 0 {
 		return
 	}
-
-	remaining := coreNanos
+	remaining := amount
 	segFrom := from
 	for segFrom.Before(to) {
 		segTo := segFrom.UTC().Truncate(a.windowLength).Add(a.windowLength)
 		part := remaining
 		if segTo.Before(to) {
-			part = mulDiv(coreNanos, segTo.Sub(segFrom).Nanoseconds(), total)
+			part = mulDiv(amount, segTo.Sub(segFrom).Nanoseconds(), total)
 			remaining -= part
 		} else {
-			segTo = to // the last segment absorbs rounding, so parts sum exactly
+			segTo = to
 		}
-		a.record(k, segFrom).CPU.CoreNanoseconds += part
+		add(a.record(k, segFrom), part)
 		segFrom = segTo
 	}
+}
 
-	a.record(k, to.Add(-time.Nanosecond)).CPU.observeRate(mulDiv(coreNanos, 1000, total))
+// ObserveCPUDelta records one CPU counter delta: coreNanos of CPU time
+// consumed over [from, to). The total is split pro rata across windows; the
+// rate sample for the distribution is attributed to the window holding the
+// interval's last instant.
+func (a *Accumulator) ObserveCPUDelta(k Key, from, to time.Time, coreNanos int64) {
+	if to.Sub(from) <= 0 || coreNanos < 0 {
+		return
+	}
+	a.addProRata(k, from, to, coreNanos, func(r *Record, v int64) { r.CPU.CoreNanoseconds += v })
+	a.record(k, to.Add(-time.Nanosecond)).CPU.observeRate(mulDiv(coreNanos, 1000, to.Sub(from).Nanoseconds()))
+}
+
+// ObserveThrottling records CFS throttling counter deltas over [from, to),
+// split pro rata across windows like every counter total.
+func (a *Accumulator) ObserveThrottling(k Key, from, to time.Time, throttledPeriods, totalPeriods int64) {
+	a.addProRata(k, from, to, throttledPeriods, func(r *Record, v int64) { r.CPU.ThrottledPeriods += v })
+	a.addProRata(k, from, to, totalPeriods, func(r *Record, v int64) { r.CPU.TotalPeriods += v })
+}
+
+// ObserveCPUPSI records a PSI some-CPU stall counter delta in nanoseconds
+// over [from, to).
+func (a *Accumulator) ObserveCPUPSI(k Key, from, to time.Time, stallNanos int64) {
+	a.addProRata(k, from, to, stallNanos, func(r *Record, v int64) { r.CPU.PSIStallNanoseconds += v })
+}
+
+// ObserveMemoryPSI records a PSI some-memory stall counter delta in
+// nanoseconds over [from, to).
+func (a *Accumulator) ObserveMemoryPSI(k Key, from, to time.Time, stallNanos int64) {
+	a.addProRata(k, from, to, stallNanos, func(r *Record, v int64) { r.Memory.PSIStallNanoseconds += v })
 }
 
 // ObserveMemory records one working-set sample in bytes, taken at the given

@@ -30,18 +30,37 @@ func genObservations(rng *rand.Rand, n int) []observation {
 	for range n {
 		k := keys[rng.Intn(len(keys))]
 		at := base.Add(time.Duration(rng.Int63n(int64(4 * time.Hour))))
-		if rng.Intn(2) == 0 {
-			// A poll-interval CPU delta, sometimes spanning a window edge.
-			dur := time.Duration(15+rng.Intn(90)) * time.Second
+		// Counter deltas cover a poll interval, sometimes spanning a
+		// window edge.
+		dur := time.Duration(15+rng.Intn(90)) * time.Second
+		switch rng.Intn(4) {
+		case 0:
 			coreNanos := rng.Int63n(int64(dur) * 8) // up to 8 cores
 			out = append(out, func(a *Accumulator) {
 				a.ObserveCPUDelta(k, at, at.Add(dur), coreNanos)
 			})
-		} else {
+		case 1:
 			bytes := rng.Int63n(8 << 30)
 			out = append(out, func(a *Accumulator) {
 				a.ObserveMemory(k, at, bytes)
 			})
+		case 2:
+			total := rng.Int63n(1000)
+			throttled := rng.Int63n(total + 1)
+			out = append(out, func(a *Accumulator) {
+				a.ObserveThrottling(k, at, at.Add(dur), throttled, total)
+			})
+		default:
+			stall := rng.Int63n(int64(dur))
+			if rng.Intn(2) == 0 {
+				out = append(out, func(a *Accumulator) {
+					a.ObserveCPUPSI(k, at, at.Add(dur), stall)
+				})
+			} else {
+				out = append(out, func(a *Accumulator) {
+					a.ObserveMemoryPSI(k, at, at.Add(dur), stall)
+				})
+			}
 		}
 	}
 	return out
