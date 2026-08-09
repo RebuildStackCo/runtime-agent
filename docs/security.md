@@ -65,8 +65,12 @@ your goals; profiles can be upgraded later.
 
 ## 4. Kubernetes API access (RBAC)
 
-All rules are `get`, `list`, `watch` only. There are no `create`, `update`,
-`patch`, `delete`, or `deletecollection` verbs anywhere in the chart.
+All rules are `get`, `list`, `watch` — with **one write exception,
+disclosed in the table below**: `get`/`update` on the agent's own
+pre-created identity Secret, scoped by `resourceNames` in a namespaced Role
+(ADR 0008). With `persistence.enabled: true` that grant is not emitted at
+all, and the chart is entirely write-free. Nothing else anywhere carries
+`create`, `update`, `patch`, `delete`, or `deletecollection`.
 
 | Resource | Verbs | Why |
 |---|---|---|
@@ -75,6 +79,7 @@ All rules are `get`, `list`, `watch` only. There are no `create`, `update`,
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
+| its own identity Secret | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret. Not emitted when `persistence.enabled: true` |
 
 ### Cluster-wide vs. namespace-scoped installation
 
@@ -150,24 +155,29 @@ a control channel (principle 2 in [§1](#1-design-principles)).
 The controller runs as a single-replica StatefulSet with a small local
 volume — an `emptyDir` by default; `persistence.enabled: true` swaps in a
 PersistentVolume (`volumeClaimTemplates`, ~2Gi) for installations that want
-unacknowledged data to survive pod rescheduling (ADR 0007). Either way the
-volume holds exactly three things:
+unacknowledged data to survive pod rescheduling (ADR 0007). The volume
+holds exactly two things:
 
-1. **Credentials** — the client key (mode 0600, dedicated `fsGroup`) and
-   certificate.
-2. **Collector bookkeeping** — watermarks of closed/acknowledged hours,
+1. **Collector bookkeeping** — watermarks of closed/acknowledged hours,
    the workload registry with metadata content hashes, profiling rotation
    state. No collected data, only accounting.
-3. **The spool of unshipped payload batches** — rollups, metadata,
+2. **The spool of unshipped payload batches** — rollups, metadata,
    coverage reports, and allow-listed profiles, held until delivery is
    acknowledged and deleted immediately after (with a maximum-age cap, so
    an extended outage cannot fill the volume). Only data that has already
    passed the filters — i.e. data approved to leave the cluster — is ever
    written to the volume.
 
-The key and certificate are deliberately **not** written to a Kubernetes
-Secret: the agent holds no write access to Secrets, and that does not change
-for its own credentials.
+**Credentials** — the in-cluster-generated private key and client
+certificate — live in the agent's pre-created identity Secret (ADR 0008),
+so identity survives rescheduling and node loss without any volume. This
+is the one write grant in the product (see the RBAC table above). Honest
+consequences: the key exists in etcd and in any backup that includes
+Secrets; whoever reads it can impersonate this cluster's telemetry stream —
+data poisoning of this one cluster, nothing more (the protocol is one-way
+and carries no read or control capability), recovered by revoke +
+re-enroll. With `persistence.enabled: true` credentials move to the PVC
+instead and the Secret grant disappears.
 
 - The volume exists for continuity, not as a source of truth. Everything on
   it is reconstructible (history lives in the backend, enrollment can be
@@ -178,12 +188,13 @@ for its own credentials.
   from disk by construction.
 - Encryption at rest is delegated to your storage layer: point
   `controller.persistence.storageClass` at an encrypted StorageClass.
-- With the default `emptyDir`, a pod rescheduled to another node loses its
-  credentials and any unacknowledged spool. The agent re-enrolls
-  automatically as long as the enrollment token in the referenced Secret is
-  still within its TTL; data loss is bounded by the minute snapshot cadence
-  in normal operation, and by the outage span if the backend was
-  unreachable (ADR 0007) — coverage reporting makes the gap visible.
+- With the default `emptyDir`, a pod rescheduled to another node keeps its
+  identity (it lives in the Secret, ADR 0008) and loses only the
+  unacknowledged spool: bounded by the minute snapshot cadence in normal
+  operation, and by the outage span if the backend was unreachable
+  (ADR 0007) — coverage reporting makes the gap visible. Re-enrollment is
+  needed only if the identity Secret itself is deleted or the certificate
+  is revoked.
 
 ### Rotation, revocation, recovery
 
@@ -191,7 +202,8 @@ for its own credentials.
   existing mTLS channel before expiry. No external trigger is involved.
 - The backend can revoke any cluster's certificate at any time. Org API keys
   are revocable independently of running agents.
-- If key material is lost (e.g. the PersistentVolume is deleted), a new
+- If key material is lost (the identity Secret — or, in persistence mode,
+  the PersistentVolume — is deleted), a new
   enrollment token is issued for the **same** cluster record ("re-enroll");
   the previous certificate is revoked and the cluster's data history stays
   continuous.
