@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
+	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
 // version is set at build time via -ldflags.
@@ -123,6 +125,35 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		)
 	})
 
+	// logRecords writes rollup records one line each; the JSON body is the
+	// exact record shape (kind marks snapshots vs. final closed windows).
+	logRecords := func(kind string, sequence int64, records []*rollup.Record) {
+		for _, r := range records {
+			encoded, err := json.Marshal(r)
+			if err != nil {
+				logger.Error("encoding usage record", "error", err)
+				continue
+			}
+			logger.Info(kind,
+				"sequence", sequence,
+				"record", json.RawMessage(encoded),
+			)
+		}
+	}
+	usagePoller := collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
+		func(sequence int64, records []*rollup.Record) {
+			logRecords("usage rollup snapshot", sequence, records)
+		},
+		func(records []*rollup.Record) {
+			logRecords("usage rollup closed", 0, records)
+		},
+		func(node string, err error) {
+			// Routine during node lifecycle events; counters recover the
+			// full interval on the next successful poll.
+			logger.Warn("kubelet poll failed", "node", node, "error", err)
+		},
+	)
+
 	// Excluded pods are reported as aggregate counts only, never by name
 	// (docs/security.md §8).
 	logCoverage := func() {
@@ -132,6 +163,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"excluded_namespace_filter", c.ExcludedNamespaceFilter,
 			"excluded_namespace_annotation", c.ExcludedNamespaceAnnotation,
 			"excluded_pod_annotation", c.ExcludedPodAnnotation,
+			"usage_signals", usagePoller.Signals(),
 		)
 	}
 
@@ -158,6 +190,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	for name, run := range map[string]func(context.Context) error{
 		"pods":  podWatcher.Run,
 		"nodes": nodeWatcher.Run,
+		"usage": usagePoller.Run,
 	} {
 		wg.Add(1)
 		go func() {
