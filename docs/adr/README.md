@@ -42,3 +42,4 @@ stays in place.
 - [0003. Local storage: spool files and a checkpoint, no embedded database](0003-spool-and-checkpoint-no-database.md)
 - [0004. Resource units are the truth; dollars are rendering](0004-resource-units-not-dollars.md)
 - [0005. Two-tier credentials with in-cluster key generation](0005-two-tier-identity.md)
+- [0006. Usage collection: kubelet counters, mergeable windows, snapshot delivery](0006-usage-collection-kubelet-rollups.md)

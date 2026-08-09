@@ -79,8 +79,11 @@ The full lifecycle is described in `security.md` §6; the backend obligations:
 
 The agent ships, per cluster:
 
-- hourly mergeable rollups (CPU / memory histograms) per workload and
-  container
+- mergeable usage rollups per workload and container over wall-clock-aligned
+  windows (initially hourly; the window length is part of the record key):
+  fixed-boundary histograms for CPU and memory working set, plus exact
+  window totals — CPU core-seconds, CFS throttling periods, and PSI stall
+  time where the cluster exposes it (ADR 0006)
 - workload and node metadata: names, namespaces, owner chains, image
   digests, Go version, module path, instance types, allocatable
 - OOM and restart events
@@ -93,7 +96,10 @@ The agent ships, per cluster:
   configuration, carrying no configuration content. Every upload is
   attributable to the configuration that produced it, so stability checks
   can distinguish "the data changed" from "the filters changed"
-- agent self-info: version, install profile, effective RBAC summary
+- agent self-info: version, install profile, effective RBAC summary, and
+  the active usage signal set (which kubelet signals — e.g. PSI — this
+  cluster exposes and the agent collects), so every report can state what
+  its findings do and do not rest on
 
 All payloads are denominated in **resource units** (core-hours, GiB-hours,
 counts, ratios). The protocol has no monetary fields: the agent knows nothing
@@ -103,8 +109,18 @@ from a versioned pricing snapshot.
 ### Delivery semantics
 
 - **At-least-once.** The agent retransmits anything not acknowledged. The
-  backend MUST deduplicate by natural keys (cluster, workload, hour; profile
-  identity) so that resends are harmless. Ingest MUST be idempotent.
+  backend MUST deduplicate by natural keys (cluster, workload, container,
+  window start, window length; profile identity) so that resends are
+  harmless. Ingest MUST be idempotent.
+- **Open-window snapshots supersede.** While a rollup window is open, the
+  agent periodically ships a snapshot of its accumulating record so the
+  data is fresh during the window, not an hour later. The backend MUST
+  upsert snapshots by the natural key above: a newer snapshot of a window
+  replaces an older one, and the final closed-window record replaces every
+  snapshot. Ordering MUST follow the agent-side snapshot sequence — never
+  arrival order, which retransmission after an outage can invert. Snapshots
+  have the same aggregate shape as any rollup; they do not relax §9 (no raw
+  time series).
 - **Acknowledgment is a durability promise.** The backend MUST NOT
   acknowledge data it can still lose. The agent trims its local buffers only
   after acknowledgment.
