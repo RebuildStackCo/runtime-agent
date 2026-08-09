@@ -13,6 +13,20 @@ import (
 // Config is the root of the agent configuration file.
 type Config struct {
 	Filters Filters `json:"filters"`
+	Spool   Spool   `json:"spool"`
+}
+
+// Spool configures the local payload sink (ADR 0003, ADR 0007). The
+// directory's durability is the installation's choice: emptyDir by default,
+// a PersistentVolume for those who want unacknowledged data to survive
+// rescheduling.
+type Spool struct {
+	// Dir is where payload batches are written. Empty disables the local
+	// sink — a log-only development mode.
+	Dir string `json:"dir"`
+	// MaxAgeHours caps how long unacknowledged payloads are kept; 0 means
+	// the built-in default (24h).
+	MaxAgeHours int `json:"maxAgeHours"`
 }
 
 // Filters controls what the agent collects. Everything not excluded here can

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
+	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
 
 const busyboxImage = "docker.io/library/busybox:1.36"
@@ -75,7 +77,8 @@ func TestUsagePollerAgainstRealCluster(t *testing.T) {
 		t.Fatalf("creating burner deployment: %v", err)
 	}
 
-	records := startUsagePipeline(ctx, t, clientset)
+	spoolDir := t.TempDir()
+	records := startUsagePipeline(ctx, t, clientset, spoolDir)
 
 	// A snapshot record for the burner must accumulate at least 3 CPU
 	// core-seconds (300m for ~10 s of attributed runtime), real memory
@@ -91,6 +94,7 @@ func TestUsagePollerAgainstRealCluster(t *testing.T) {
 			if r.CPU.CoreNanoseconds > 3e9 && r.CPU.Samples > 0 && r.Memory.Samples > 0 &&
 				r.CPU.ThrottledPeriods > 0 {
 				assertBurnerRecord(t, r)
+				assertSpoolHoldsBurner(t, spoolDir, ns)
 				return
 			}
 		}
@@ -154,20 +158,67 @@ func (s *recordSink) get(namespace, workload string) *rollup.Record {
 	return s.latest[namespace+"/"+workload]
 }
 
-// startUsagePipeline wires pod watcher, node watcher, and usage poller the
-// same way the agent's main does, and returns the sink receiving snapshots.
-func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.Interface) *recordSink {
+// assertSpoolHoldsBurner asserts the on-disk contract: some spool snapshot
+// payload contains the burner's record (docs/development.md — e2e asserts
+// on spool contents, not logs).
+func assertSpoolHoldsBurner(t *testing.T, spoolDir, ns string) {
 	t.Helper()
-	sink := &recordSink{latest: make(map[string]*rollup.Record)}
+	matches, err := filepath.Glob(filepath.Join(spoolDir, "usage-*.snapshot.json"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no snapshot payloads in spool (%v): %v", matches, err)
+	}
+	for _, path := range matches {
+		raw, err := os.ReadFile(path) // #nosec G304 -- test-controlled dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Kind     string           `json:"kind"`
+			Sequence int64            `json:"sequence"`
+			Records  []*rollup.Record `json:"records"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("spool payload %s is not valid JSON: %v", path, err)
+		}
+		if payload.Kind != "usage_snapshot" || payload.Sequence < 1 {
+			t.Fatalf("payload %s has kind %q sequence %d", path, payload.Kind, payload.Sequence)
+		}
+		for _, r := range payload.Records {
+			if r.Namespace == ns && r.WorkloadName == "burner" && r.CPU.CoreNanoseconds > 0 {
+				return
+			}
+		}
+	}
+	t.Fatalf("burner record not found in any spool snapshot: %v", matches)
+}
+
+// startUsagePipeline wires pod watcher, node watcher, usage poller, and the
+// local spool the same way the agent's main does, and returns the sink
+// receiving snapshots.
+func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.Interface, spoolDir string) *recordSink {
+	t.Helper()
+	results := &recordSink{latest: make(map[string]*rollup.Record)}
+	spool, err := sink.NewSpool(spoolDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	podWatcher := collector.NewPodWatcher(clientset, func(collector.PodInfo) {})
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(collector.NodeInfo) {})
 	poller := collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
 		func(sequence int64, records []*rollup.Record) {
 			t.Logf("usage snapshot %d: %d records", sequence, len(records))
-			sink.put(records)
+			results.put(records)
+			if err := spool.WriteUsageSnapshot(sequence, records); err != nil {
+				t.Errorf("spooling snapshot: %v", err)
+			}
 		},
-		func(records []*rollup.Record) { sink.put(records) },
+		func(records []*rollup.Record) {
+			results.put(records)
+			if err := spool.WriteClosedWindows(records); err != nil {
+				t.Errorf("spooling closed windows: %v", err)
+			}
+		},
 		func(node string, err error) { t.Logf("kubelet poll failed on %s: %v", node, err) },
 	)
 
@@ -180,5 +231,5 @@ func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.
 			}
 		}()
 	}
-	return sink
+	return results
 }

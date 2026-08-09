@@ -125,10 +125,15 @@ from a versioned pricing snapshot.
   acknowledge data it can still lose. The agent trims its local buffers only
   after acknowledgment.
 - **Late and out-of-order data is normal.** The agent buffers through
-  outages (its PVC holds days of rollups) and uploads backlog on
-  reconnection. The backend MUST accept historical timestamps and batch
-  catch-up uploads, and SHOULD tolerate moderate agent clock skew — data is
-  keyed by agent-side timestamps.
+  outages — in memory and, where the customer enabled disk persistence, in
+  its spool — and uploads backlog on reconnection. The backend MUST accept
+  historical timestamps and batch catch-up uploads, and SHOULD tolerate
+  moderate agent clock skew — data is keyed by agent-side timestamps.
+- **Gaps are normal too.** Durability is an installation choice, not a
+  contract guarantee (ADR 0007): an agent restarted during an outage may
+  reconnect with nothing older than its fresh data. Routine loss is bounded
+  by the snapshot cadence. The backend MUST NOT treat a gap as an error and
+  MUST NOT expect agents to re-supply history they no longer hold.
 - **Declared limits.** Payload size and rate limits MUST be explicit in the
   protocol so the agent can chunk deterministically, not discover limits by
   failing.

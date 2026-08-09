@@ -23,6 +23,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
+	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
 
 // version is set at build time via -ldflags.
@@ -85,6 +86,19 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	logger.Info("agent starting", "version", version)
 	defer logger.Info("agent stopping")
 
+	// The local sink is optional: without a spool directory the agent runs
+	// log-only (development mode). Durability of the directory is the
+	// installation's choice (ADR 0007).
+	var spool *sink.Spool
+	if cfg.Spool.Dir != "" {
+		var err error
+		spool, err = sink.NewSpool(cfg.Spool.Dir, time.Duration(cfg.Spool.MaxAgeHours)*time.Hour)
+		if err != nil {
+			return fmt.Errorf("opening spool: %w", err)
+		}
+		logger.Info("spool open", "dir", cfg.Spool.Dir)
+	}
+
 	filter := collector.NewPodFilter(cfg.Filters.Namespaces.Allow, cfg.Filters.Namespaces.Deny)
 
 	podWatcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
@@ -111,6 +125,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"restart_count", o.RestartCount,
 			"memory_limit_bytes", o.MemoryLimitBytes,
 		)
+		if spool != nil {
+			if err := spool.WriteOOMKill(o); err != nil {
+				logger.Error("spooling oom event", "error", err)
+			}
+		}
 	})
 	podWatcher.SetFilter(filter)
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
@@ -143,9 +162,19 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	usagePoller := collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
 		func(sequence int64, records []*rollup.Record) {
 			logRecords("usage rollup snapshot", sequence, records)
+			if spool != nil {
+				if err := spool.WriteUsageSnapshot(sequence, records); err != nil {
+					logger.Error("spooling usage snapshot", "error", err)
+				}
+			}
 		},
 		func(records []*rollup.Record) {
 			logRecords("usage rollup closed", 0, records)
+			if spool != nil {
+				if err := spool.WriteClosedWindows(records); err != nil {
+					logger.Error("spooling closed windows", "error", err)
+				}
+			}
 		},
 		func(node string, err error) {
 			// Routine during node lifecycle events; counters recover the

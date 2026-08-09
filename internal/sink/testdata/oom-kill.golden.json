@@ -1,0 +1,16 @@
+{
+  "kind": "oom_kill",
+  "event": {
+    "namespace": "shop",
+    "pod": "web-7f8d9-abcde",
+    "container": "app",
+    "workload": {
+      "kind": "Deployment",
+      "name": "web"
+    },
+    "finished_at": "2026-08-06T10:17:00Z",
+    "exit_code": 137,
+    "restart_count": 3,
+    "memory_limit_bytes": 134217728
+  }
+}
