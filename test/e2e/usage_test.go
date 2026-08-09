@@ -78,15 +78,18 @@ func TestUsagePollerAgainstRealCluster(t *testing.T) {
 	records := startUsagePipeline(ctx, t, clientset)
 
 	// A snapshot record for the burner must accumulate at least 3 CPU
-	// core-seconds (300m for ~10 s of attributed runtime) and real memory
-	// samples. Snapshots arrive once a minute; give the image pull, the
-	// poll cadence, and two snapshot ticks room.
+	// core-seconds (300m for ~10 s of attributed runtime), real memory
+	// samples, and CFS throttling — a tight loop under a 300m limit is
+	// throttled in nearly every enforcement period. Snapshots arrive once a
+	// minute; give the image pull, the poll cadence, and two snapshot ticks
+	// room.
 	deadline := time.Now().Add(5 * time.Minute)
 	var last *rollup.Record
 	for time.Now().Before(deadline) {
 		if r := records.get(ns, "burner"); r != nil {
 			last = r
-			if r.CPU.CoreNanoseconds > 3e9 && r.CPU.Samples > 0 && r.Memory.Samples > 0 {
+			if r.CPU.CoreNanoseconds > 3e9 && r.CPU.Samples > 0 && r.Memory.Samples > 0 &&
+				r.CPU.ThrottledPeriods > 0 {
 				assertBurnerRecord(t, r)
 				return
 			}
@@ -122,6 +125,13 @@ func assertBurnerRecord(t *testing.T, r *rollup.Record) {
 	if got, want := int64(r.CPU.Hist.Count()), r.CPU.Samples; got != want { // #nosec G115 -- sample counts are tiny
 		t.Errorf("cpu histogram count = %d, want %d (one per sample)", got, want)
 	}
+	if r.CPU.ThrottledPeriods > r.CPU.TotalPeriods {
+		t.Errorf("throttled periods %d exceed total periods %d", r.CPU.ThrottledPeriods, r.CPU.TotalPeriods)
+	}
+	// PSI depends on the node's kubelet (1.34+, cgroup v2, KubeletPSI); the
+	// record must carry it only where the cluster exposes it. Log, don't
+	// require.
+	t.Logf("psi stall: cpu=%dns memory=%dns", r.CPU.PSIStallNanoseconds, r.Memory.PSIStallNanoseconds)
 }
 
 // recordSink collects the latest snapshot record per workload.

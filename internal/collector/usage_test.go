@@ -21,6 +21,15 @@ func (r stubResolver) LookupPod(uid types.UID) (string, WorkloadRef, bool) {
 	return entry.namespace, entry.workload, ok
 }
 
+func (r stubResolver) LookupPodByName(namespace, name string) (WorkloadRef, bool) {
+	for _, entry := range r {
+		if entry.namespace == namespace && entry.name == name {
+			return entry.workload, true
+		}
+	}
+	return WorkloadRef{}, false
+}
+
 var usageTestStart = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 
 func testPoller(resolver PodResolver) *UsagePoller {
@@ -64,7 +73,7 @@ func onlyRecord(t *testing.T, p *UsagePoller) *rollup.Record {
 
 func webResolver() stubResolver {
 	return stubResolver{
-		"uid-1": {namespace: "shop", workload: WorkloadRef{Kind: "Deployment", Name: "web"}},
+		"uid-1": {namespace: "shop", name: "web-abc", workload: WorkloadRef{Kind: "Deployment", Name: "web"}},
 	}
 }
 
@@ -234,6 +243,54 @@ func TestUsageFlushEmitsClosedThenSnapshots(t *testing.T) {
 	}
 	if len(snapshots) != 2 {
 		t.Fatalf("empty open set still produced a snapshot: %v", snapshots)
+	}
+}
+
+// withPSI adds PSI stall counters to both resource stats, as a kubelet with
+// the KubeletPSI gate on cgroup v2 exposes them.
+func withPSI(stats statsapi.ContainerStats, cpuStallNanos, memStallNanos uint64) statsapi.ContainerStats {
+	stats.CPU.PSI = &statsapi.PSIStats{Some: statsapi.PSIData{Total: cpuStallNanos}}
+	stats.Memory.PSI = &statsapi.PSIStats{Some: statsapi.PSIData{Total: memStallNanos}}
+	return stats
+}
+
+func TestUsagePSICollectedWhereExposed(t *testing.T) {
+	p := testPoller(webResolver())
+
+	first := usageTestStart.Add(30 * time.Second)
+	second := first.Add(30 * time.Second)
+	// First observation: stall counters count from container start.
+	p.ingest(summaryWith(withPSI(cpuMemStats(usageTestStart, first, 15e9, 64<<20), 4e6, 1e6)), first)
+	// Next poll: only the deltas accrue.
+	p.ingest(summaryWith(withPSI(cpuMemStats(usageTestStart, second, 21e9, 64<<20), 9e6, 3e6)), second)
+
+	r := onlyRecord(t, p)
+	if r.CPU.PSIStallNanoseconds != 9e6 {
+		t.Errorf("cpu psi stall = %d, want 9e6 (4e6 from start + 5e6 delta)", r.CPU.PSIStallNanoseconds)
+	}
+	if r.Memory.PSIStallNanoseconds != 3e6 {
+		t.Errorf("memory psi stall = %d, want 3e6 (1e6 from start + 2e6 delta)", r.Memory.PSIStallNanoseconds)
+	}
+	got := p.Signals()
+	if len(got) != 3 || got[0] != "cpu" || got[1] != "memory" || got[2] != "psi" {
+		t.Errorf("signals = %v, want [cpu memory psi]", got)
+	}
+}
+
+func TestUsagePSIAbsentMeansNoSignalAndNoStall(t *testing.T) {
+	p := testPoller(webResolver())
+	first := usageTestStart.Add(30 * time.Second)
+	p.ingest(summaryWith(cpuMemStats(usageTestStart, first, 15e9, 64<<20)), first)
+
+	r := onlyRecord(t, p)
+	if r.CPU.PSIStallNanoseconds != 0 || r.Memory.PSIStallNanoseconds != 0 {
+		t.Errorf("psi stall = %d/%d without PSI stats, want 0/0",
+			r.CPU.PSIStallNanoseconds, r.Memory.PSIStallNanoseconds)
+	}
+	for _, s := range p.Signals() {
+		if s == "psi" {
+			t.Error("psi signal reported by a cluster that does not expose it")
+		}
 	}
 }
 

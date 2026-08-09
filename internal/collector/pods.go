@@ -78,13 +78,17 @@ type PodWatcher struct {
 
 	// index maps admitted pods to what the usage poller needs to attribute
 	// kubelet samples. Excluded pods are never in it — absence means "drop
-	// the sample at the source" (filter early).
-	indexMu sync.RWMutex
-	index   map[types.UID]podIndexEntry
+	// the sample at the source" (filter early). nameIndex carries the same
+	// pods keyed by namespace/name, for sources that label by name only
+	// (the cAdvisor exposition).
+	indexMu   sync.RWMutex
+	index     map[types.UID]podIndexEntry
+	nameIndex map[string]types.UID
 }
 
 type podIndexEntry struct {
 	namespace string
+	name      string
 	workload  WorkloadRef
 }
 
@@ -98,6 +102,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		filter:       NewPodFilter(nil, nil),
 		reportedOOMs: make(map[string]struct{}),
 		index:        make(map[types.UID]podIndexEntry),
+		nameIndex:    make(map[string]types.UID),
 	}
 }
 
@@ -184,15 +189,24 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 
 // indexPod records an admitted pod for sample attribution.
 func (w *PodWatcher) indexPod(pod *corev1.Pod) {
-	entry := podIndexEntry{namespace: pod.Namespace, workload: w.resolveWorkload(pod)}
+	entry := podIndexEntry{namespace: pod.Namespace, name: pod.Name, workload: w.resolveWorkload(pod)}
 	w.indexMu.Lock()
 	w.index[pod.UID] = entry
+	w.nameIndex[pod.Namespace+"/"+pod.Name] = pod.UID
 	w.indexMu.Unlock()
 }
 
 func (w *PodWatcher) dropPod(uid types.UID) {
 	w.indexMu.Lock()
-	delete(w.index, uid)
+	if entry, ok := w.index[uid]; ok {
+		nameKey := entry.namespace + "/" + entry.name
+		// A recreated pod reuses the name with a new UID; a late delete of
+		// the old UID must not evict the new pod's name entry.
+		if w.nameIndex[nameKey] == uid {
+			delete(w.nameIndex, nameKey)
+		}
+		delete(w.index, uid)
+	}
 	w.indexMu.Unlock()
 }
 
@@ -206,6 +220,19 @@ func (w *PodWatcher) LookupPod(uid types.UID) (namespace string, workload Worklo
 	entry, ok := w.index[uid]
 	w.indexMu.RUnlock()
 	return entry.namespace, entry.workload, ok
+}
+
+// LookupPodByName is LookupPod for sources that identify pods by
+// namespace and name instead of UID.
+func (w *PodWatcher) LookupPodByName(namespace, name string) (workload WorkloadRef, ok bool) {
+	w.indexMu.RLock()
+	defer w.indexMu.RUnlock()
+	uid, ok := w.nameIndex[namespace+"/"+name]
+	if !ok {
+		return WorkloadRef{}, false
+	}
+	entry, ok := w.index[uid]
+	return entry.workload, ok
 }
 
 // admit runs the pod through the filter, consulting the namespace's
