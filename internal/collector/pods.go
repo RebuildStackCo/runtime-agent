@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
@@ -74,6 +75,17 @@ type PodWatcher struct {
 
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
+
+	// index maps admitted pods to what the usage poller needs to attribute
+	// kubelet samples. Excluded pods are never in it — absence means "drop
+	// the sample at the source" (filter early).
+	indexMu sync.RWMutex
+	index   map[types.UID]podIndexEntry
+}
+
+type podIndexEntry struct {
+	namespace string
+	workload  WorkloadRef
 }
 
 // NewPodWatcher returns a watcher that calls onPod for every pod present at
@@ -85,6 +97,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		onPod:        onPod,
 		filter:       NewPodFilter(nil, nil),
 		reportedOOMs: make(map[string]struct{}),
+		index:        make(map[types.UID]podIndexEntry),
 	}
 }
 
@@ -129,15 +142,25 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	reg, err := podsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			if pod, ok := obj.(*corev1.Pod); ok && w.admit(pod, true) {
+				w.indexPod(pod)
 				w.onPod(w.describe(pod))
 				w.reportOOMKills(pod)
 			}
 		},
 		// OOM kills happen after a pod appears and arrive as status
-		// updates; the pod itself is not re-reported.
+		// updates; the pod itself is not re-reported. Admission is
+		// re-evaluated so an opt-out annotation added mid-flight takes
+		// effect immediately.
 		UpdateFunc: func(_, obj any) {
-			if pod, ok := obj.(*corev1.Pod); ok && w.admit(pod, false) {
+			pod, ok := obj.(*corev1.Pod)
+			if !ok {
+				return
+			}
+			if w.admit(pod, false) {
+				w.indexPod(pod)
 				w.reportOOMKills(pod)
+			} else {
+				w.dropPod(pod.UID)
 			}
 		},
 		DeleteFunc: func(obj any) {
@@ -145,6 +168,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 				obj = unknown.Obj
 			}
 			if pod, ok := obj.(*corev1.Pod); ok {
+				w.dropPod(pod.UID)
 				w.forgetOOMKills(pod)
 			}
 		},
@@ -156,6 +180,32 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+// indexPod records an admitted pod for sample attribution.
+func (w *PodWatcher) indexPod(pod *corev1.Pod) {
+	entry := podIndexEntry{namespace: pod.Namespace, workload: w.resolveWorkload(pod)}
+	w.indexMu.Lock()
+	w.index[pod.UID] = entry
+	w.indexMu.Unlock()
+}
+
+func (w *PodWatcher) dropPod(uid types.UID) {
+	w.indexMu.Lock()
+	delete(w.index, uid)
+	w.indexMu.Unlock()
+}
+
+// LookupPod resolves a pod UID to its namespace and workload. It reports
+// false for pods that are unknown or excluded by the filter: the usage
+// poller consults it before accumulating any kubelet sample, so an excluded
+// pod's usage is dropped at the source, and an unknown pod's sample is
+// deferred — cumulative counters make the retry lossless.
+func (w *PodWatcher) LookupPod(uid types.UID) (namespace string, workload WorkloadRef, ok bool) {
+	w.indexMu.RLock()
+	entry, ok := w.index[uid]
+	w.indexMu.RUnlock()
+	return entry.namespace, entry.workload, ok
 }
 
 // admit runs the pod through the filter, consulting the namespace's

@@ -57,7 +57,7 @@ your goals; profiles can be upgraded later.
 
 | Profile | Components | Node privileges | What you get |
 |---|---|---|---|
-| `metrics-only` | controller | none | Cost and efficiency findings from metrics (Prometheus or kubelet fallback) |
+| `metrics-only` | controller | none | Cost and efficiency findings from usage metrics (kubelet counters via the API server, ADR 0006; Prometheus as a side-channel for history) |
 | `pprof` | controller | none | Above + CPU/heap profiles pulled from services that already expose `/debug/pprof` |
 | `ebpf` | controller + node DaemonSet | see [§7](#7-node-privileges-ebpf-profile-only) | Above + CPU profiles for services without pprof endpoints |
 
@@ -97,7 +97,7 @@ All rules are `get`, `list`, `watch` only. There are no `create`, `update`,
 |---|---|---|---|
 | Prometheus HTTP API (`query`, `query_range`) | controller → your Prometheus | Historical metrics over the retention window; enables a report on installation day | Read-only query API. Endpoint set in Helm values. See [§10.1](#101-prometheus-is-a-side-channel) |
 | Pod pprof endpoints | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only |
-| kubelet `:10250` (HTTPS) | controller → kubelets | cAdvisor metrics fallback when no Prometheus exists | Kubelet serving certificates are typically self-signed; the agent authenticates with its ServiceAccount token |
+| kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets is shipped with the chart |
 | Node role | node → controller only | Deliver profiles and binary metadata for aggregation | The DaemonSet has **no** external egress |
 

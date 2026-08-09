@@ -3,6 +3,8 @@ package collector
 import (
 	"context"
 	"fmt"
+	"sort"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -29,13 +31,30 @@ type NodeInfo struct {
 type NodeWatcher struct {
 	clientset kubernetes.Interface
 	onNode    func(NodeInfo)
+
+	mu    sync.RWMutex
+	names map[string]struct{}
 }
 
 // NewNodeWatcher returns a watcher that calls onNode for every node present
 // at start and for every node added afterwards. onNode is called from the
 // informer goroutine and must not block.
 func NewNodeWatcher(clientset kubernetes.Interface, onNode func(NodeInfo)) *NodeWatcher {
-	return &NodeWatcher{clientset: clientset, onNode: onNode}
+	return &NodeWatcher{clientset: clientset, onNode: onNode, names: make(map[string]struct{})}
+}
+
+// Names returns the currently known node names, sorted. The usage poller
+// uses it as its polling target list; before the informer syncs it is empty,
+// which simply defers the first poll — cumulative counters lose nothing.
+func (w *NodeWatcher) Names() []string {
+	w.mu.RLock()
+	out := make([]string, 0, len(w.names))
+	for name := range w.names {
+		out = append(out, name)
+	}
+	w.mu.RUnlock()
+	sort.Strings(out)
+	return out
 }
 
 // Run blocks until ctx is canceled.
@@ -59,7 +78,20 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 	reg, err := nodesInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			if node, ok := obj.(*corev1.Node); ok {
+				w.mu.Lock()
+				w.names[node.Name] = struct{}{}
+				w.mu.Unlock()
 				w.onNode(describeNode(node))
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if unknown, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = unknown.Obj
+			}
+			if node, ok := obj.(*corev1.Node); ok {
+				w.mu.Lock()
+				delete(w.names, node.Name)
+				w.mu.Unlock()
 			}
 		},
 	})
