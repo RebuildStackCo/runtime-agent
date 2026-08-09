@@ -147,20 +147,23 @@ a control channel (principle 2 in [§1](#1-design-principles)).
 
 ### Storage
 
-The controller runs as a single-replica StatefulSet with a small
-PersistentVolume (`volumeClaimTemplates`, ~2Gi). The volume holds exactly
-three things:
+The controller runs as a single-replica StatefulSet with a small local
+volume — an `emptyDir` by default; `persistence.enabled: true` swaps in a
+PersistentVolume (`volumeClaimTemplates`, ~2Gi) for installations that want
+unacknowledged data to survive pod rescheduling (ADR 0007). Either way the
+volume holds exactly three things:
 
 1. **Credentials** — the client key (mode 0600, dedicated `fsGroup`) and
    certificate.
 2. **Collector bookkeeping** — watermarks of closed/acknowledged hours,
    the workload registry with metadata content hashes, profiling rotation
    state. No collected data, only accounting.
-3. **The spool of unshipped payload batches** — hourly rollups, metadata,
+3. **The spool of unshipped payload batches** — rollups, metadata,
    coverage reports, and allow-listed profiles, held until delivery is
-   acknowledged and deleted immediately after. Only data that has already
+   acknowledged and deleted immediately after (with a maximum-age cap, so
+   an extended outage cannot fill the volume). Only data that has already
    passed the filters — i.e. data approved to leave the cluster — is ever
-   written to the persistent volume.
+   written to the volume.
 
 The key and certificate are deliberately **not** written to a Kubernetes
 Secret: the agent holds no write access to Secrets, and that does not change
@@ -175,11 +178,12 @@ for its own credentials.
   from disk by construction.
 - Encryption at rest is delegated to your storage layer: point
   `controller.persistence.storageClass` at an encrypted StorageClass.
-- `persistence.enabled: false` falls back to an `emptyDir` volume for
-  clusters without dynamic provisioning. Degradation: a pod rescheduled to
-  another node loses its credentials and local rollups; the agent re-enrolls
+- With the default `emptyDir`, a pod rescheduled to another node loses its
+  credentials and any unacknowledged spool. The agent re-enrolls
   automatically as long as the enrollment token in the referenced Secret is
-  still within its TTL, and rollups are re-pulled from Prometheus.
+  still within its TTL; data loss is bounded by the minute snapshot cadence
+  in normal operation, and by the outage span if the backend was
+  unreachable (ADR 0007) — coverage reporting makes the gap visible.
 
 ### Rotation, revocation, recovery
 

@@ -43,3 +43,4 @@ stays in place.
 - [0004. Resource units are the truth; dollars are rendering](0004-resource-units-not-dollars.md)
 - [0005. Two-tier credentials with in-cluster key generation](0005-two-tier-identity.md)
 - [0006. Usage collection: kubelet counters, mergeable windows, snapshot delivery](0006-usage-collection-kubelet-rollups.md)
+- [0007. Durability is optional: snapshot delivery bounds loss, disk is a knob](0007-optional-durability.md)

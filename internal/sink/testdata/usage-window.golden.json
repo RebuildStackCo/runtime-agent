@@ -1,0 +1,69 @@
+{
+  "kind": "usage_window",
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "records": [
+    {
+      "namespace": "search",
+      "workload_kind": "StatefulSet",
+      "workload_name": "index",
+      "container": "app",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "cpu": {
+        "core_nanoseconds": 90000000000,
+        "throttled_periods": 0,
+        "total_periods": 0,
+        "psi_stall_nanoseconds": 0,
+        "samples": 1,
+        "min_milli": 1500,
+        "max_milli": 1500,
+        "hist_milli": {
+          "1448": 1
+        }
+      },
+      "memory": {
+        "samples": 1,
+        "min_bytes": 2147483648,
+        "max_bytes": 2147483648,
+        "sum_bytes": 2147483648,
+        "psi_stall_nanoseconds": 0,
+        "hist_bytes": {
+          "2147483648": 1
+        }
+      }
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "app",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "cpu": {
+        "core_nanoseconds": 21000000000,
+        "throttled_periods": 40,
+        "total_periods": 100,
+        "psi_stall_nanoseconds": 4000000,
+        "samples": 2,
+        "min_milli": 200,
+        "max_milli": 500,
+        "hist_milli": {
+          "197": 1,
+          "469": 1
+        }
+      },
+      "memory": {
+        "samples": 2,
+        "min_bytes": 67108864,
+        "max_bytes": 100663296,
+        "sum_bytes": 167772160,
+        "psi_stall_nanoseconds": 1000000,
+        "hist_bytes": {
+          "67108864": 1,
+          "94906265": 1
+        }
+      }
+    }
+  ]
+}
