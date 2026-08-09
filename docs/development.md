@@ -49,7 +49,9 @@ A PR is mergeable when:
   hand-picked examples — mergeability is what the whole data model rests on.
 - **End-to-end on kind.** The agent runs against a local kind cluster with
   synthetic workloads; assertions are made on the spool contents, not on
-  logs. A long-lived dogfood cluster complements this later.
+  logs. The kind node-image matrix pins the oldest supported Kubernetes
+  minor (see the README support policy) and a current release. A long-lived
+  dogfood cluster complements this later.
 - Unit tests live next to the code (`*_test.go`); e2e lives under `test/`.
 
 ## CI gates

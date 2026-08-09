@@ -74,7 +74,7 @@ All rules are `get`, `list`, `watch` only. There are no `create`, `update`,
 | `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod |
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
-| `nodes/metrics` (or `nodes/proxy`) | get | **Fallback only**: scrape cAdvisor metrics directly from the kubelet when no Prometheus is available. Not requested when Prometheus is configured |
+| `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
 
 ### Cluster-wide vs. namespace-scoped installation
 
