@@ -32,6 +32,9 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
@@ -94,31 +97,33 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 		return fmt.Errorf("loading configuration: %w", err)
 	}
 
-	clientset, host, err := connect()
+	clientset, restConfig, err := connect()
 	if err != nil {
 		return fmt.Errorf("connecting to cluster: %w", err)
 	}
-	logger.Info("connected to cluster", "host", host)
+	logger.Info("connected to cluster", "host", restConfig.Host)
 
-	return run(ctx, logger, clientset, cfg)
+	return run(ctx, logger, clientset, restConfig, cfg)
 }
 
 // connect builds a clientset from the in-cluster service account when
-// running as a pod, falling back to the local kubeconfig otherwise.
-func connect() (kubernetes.Interface, string, error) {
+// running as a pod, falling back to the local kubeconfig otherwise. It returns
+// the REST config too: the node-intake receiver builds its JWKS HTTP client
+// from it, reusing the in-cluster CA and bearer credential (ADR 0010).
+func connect() (kubernetes.Interface, *rest.Config, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		rules := clientcmd.NewDefaultClientConfigLoadingRules()
 		config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
 		if err != nil {
-			return nil, "", fmt.Errorf("no in-cluster config and no kubeconfig: %w", err)
+			return nil, nil, fmt.Errorf("no in-cluster config and no kubeconfig: %w", err)
 		}
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return clientset, config.Host, nil
+	return clientset, config, nil
 }
 
 // coverageInterval is how often the aggregate coverage counters are logged.
@@ -126,7 +131,7 @@ const coverageInterval = time.Minute
 
 // run is the agent's lifecycle: it starts, works until ctx is canceled, and
 // returns.
-func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface, cfg config.Config) error {
+func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface, restConfig *rest.Config, cfg config.Config) error {
 	logger.Info("agent starting", "version", version)
 	defer logger.Info("agent stopping")
 
@@ -258,14 +263,28 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			}
 		}
 	}()
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var errs []error
-	for name, run := range map[string]func(context.Context) error{
+
+	tasks := map[string]func(context.Context) error{
 		"pods":  podWatcher.Run,
 		"nodes": nodeWatcher.Run,
 		"usage": usagePoller.Run,
-	} {
+	}
+
+	// The node-intake receiver is optional (only the ebpf/node profile ships a
+	// DaemonSet). When enabled it becomes one more lifecycle task, validating
+	// node tokens locally against the cluster JWKS (ADR 0010).
+	if cfg.NodeIntake.Enabled {
+		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake)
+		if err != nil {
+			return fmt.Errorf("configuring node intake: %w", err)
+		}
+		tasks["node-intake"] = intake.Run
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	for name, run := range tasks {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -280,4 +299,48 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	wg.Wait()
 	logCoverage()
 	return errors.Join(errs...)
+}
+
+// buildNodeIntake constructs the node-intake receiver: a token verifier backed
+// by the cluster JWKS (fetched over the API server's in-cluster transport, no
+// TokenReview) and an HTTP server that decodes node reports. For this slice the
+// report is authenticated, decoded, and logged in aggregate; the join into a
+// payload lands in the next slice.
+func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake) (*nodeintake.Server, error) {
+	addr := cfg.ListenAddress
+	if addr == "" {
+		addr = config.DefaultNodeIntakeListenAddress
+	}
+	audience := cfg.Audience
+	if audience == "" {
+		audience = config.DefaultNodeIntakeAudience
+	}
+
+	httpClient, err := rest.HTTPClientFor(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("building JWKS http client: %w", err)
+	}
+	keys := &nodeauth.CachingKeySource{
+		Source: &nodeauth.HTTPKeySource{IssuerBaseURL: restConfig.Host, Client: httpClient},
+	}
+	verifier := nodeauth.NewVerifier(keys, audience, nodeauth.WithExpectedSubject(cfg.ExpectedSubject))
+
+	onReport := func(id nodeauth.Identity, report nodescan.Report) {
+		// Aggregate-only: identities of filtered-out binaries are already gone
+		// (the node filtered them, ADR 0009); here we log what arrived and from
+		// whom. The per-workload join and payload come in the next slice.
+		logger.Info("node report received",
+			"from_subject", id.Subject,
+			"node", report.Node,
+			"binaries", len(report.Binaries),
+			"processes_scanned", report.Counters.ProcessesScanned,
+			"go_found", report.Counters.GoFound,
+			"filtered_infra", report.Counters.FilteredInfra,
+			"unreadable", report.Counters.Unreadable,
+		)
+	}
+
+	handler := nodeintake.NewHandler(verifier, logger, onReport)
+	logger.Info("node intake enabled", "addr", addr, "audience", audience, "expected_subject", cfg.ExpectedSubject)
+	return nodeintake.NewServer(addr, handler, logger), nil
 }

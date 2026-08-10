@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 )
@@ -17,7 +18,9 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, logger, fake.NewClientset(), config.Config{}) }()
+	// A minimal REST config; node intake is disabled in this config, so it is
+	// never used to build a JWKS client.
+	go func() { done <- run(ctx, logger, fake.NewClientset(), &rest.Config{}, config.Config{}) }()
 
 	cancel()
 	select {

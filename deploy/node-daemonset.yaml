@@ -40,7 +40,11 @@ spec:
         app.kubernetes.io/component: node
     spec:
       serviceAccountName: runtime-agent-node
-      # No API credential in the container: the node role holds no client.
+      # No *API* credential in the container: the default ServiceAccount token
+      # (audience = the API server) is never mounted, so the node role cannot
+      # call the API server. The projected token below is a *different* token,
+      # audience-bound to the controller (ADR 0010): it authenticates only to
+      # the controller and is rejected by the API server. Zero RBAC still holds.
       automountServiceAccountToken: false
       # Share the host PID namespace so the scanner sees every process on the
       # node and can open its /proc/<pid>/exe (ADR 0009). This is the only
@@ -66,6 +70,18 @@ spec:
             - /host/proc
             - -interval
             - 60s
+            # Deliver findings to the controller over the cluster network only
+            # (ADR 0010). The node always initiates; the controller Service is
+            # the single in-cluster target. Remove this arg to run log-only.
+            - -controller-endpoint
+            - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-inventory
+          env:
+            # The node name for the report; the controller keys facts by pod UID
+            # and container ID, so this is for observability, not attribution.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           securityContext:
             privileged: false
             allowPrivilegeEscalation: false
@@ -94,8 +110,25 @@ spec:
               readOnly: true
               # Pick up mounts that appear on the host after the pod starts.
               mountPropagation: HostToContainer
+            - name: controller-token
+              mountPath: /var/run/secrets/rebuildstack.co/controller-token
+              readOnly: true
       volumes:
         - name: host-proc
           hostPath:
             path: /proc
             type: Directory
+        # The one credential the node holds (ADR 0010): a projected
+        # ServiceAccount token, audience-bound to the controller, kubelet-issued
+        # and rotated on this tmpfs path. It is NOT the API-server token — the
+        # API server rejects this audience — so the node still cannot reach the
+        # API. Nothing is persisted: the token lives only here, for this pod's
+        # lifetime. The audience must match the controller's configured value
+        # (config.nodeIntake.audience; default "rebuildstack-controller").
+        - name: controller-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: rebuildstack-controller
+                  expirationSeconds: 3600
+                  path: token

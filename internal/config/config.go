@@ -12,9 +12,38 @@ import (
 
 // Config is the root of the agent configuration file.
 type Config struct {
-	Filters Filters `json:"filters"`
-	Spool   Spool   `json:"spool"`
+	Filters    Filters    `json:"filters"`
+	Spool      Spool      `json:"spool"`
+	NodeIntake NodeIntake `json:"nodeIntake"`
 }
+
+// NodeIntake configures the controller's receiver for node-role reports
+// (ADR 0010). It is off unless enabled, so a controller-only install (no node
+// DaemonSet) opens no port. When enabled, the controller validates each node
+// token locally against the cluster JWKS — no TokenReview, no new RBAC verb.
+type NodeIntake struct {
+	// Enabled turns the receiver on. Off by default.
+	Enabled bool `json:"enabled"`
+	// ListenAddress is where the receiver listens (net/http form, e.g.
+	// ":8080"). Empty selects the built-in default when enabled.
+	ListenAddress string `json:"listenAddress"`
+	// Audience is the projected-token audience the receiver requires; it must
+	// match the audience the node DaemonSet's serviceAccountToken projection
+	// requests. Empty selects the built-in default.
+	Audience string `json:"audience"`
+	// ExpectedSubject pins the accepted token subject to the node role's
+	// ServiceAccount, e.g.
+	// "system:serviceaccount:runtime-agent:runtime-agent-node". Empty accepts
+	// any subject that satisfies the audience — set it in production.
+	ExpectedSubject string `json:"expectedSubject"`
+}
+
+// Defaults for the node-intake receiver, applied when enabled and the
+// corresponding field is empty.
+const (
+	DefaultNodeIntakeListenAddress = ":8080"
+	DefaultNodeIntakeAudience      = "rebuildstack-controller"
+)
 
 // Spool configures the local payload sink (ADR 0003, ADR 0007). The
 // directory's durability is the installation's choice: emptyDir by default,
