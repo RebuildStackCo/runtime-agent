@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
 
@@ -31,7 +32,10 @@ import (
 
 const pauseImage = "registry.k8s.io/pause:3.10"
 
-func clusterClient(t *testing.T) kubernetes.Interface {
+// clusterConfig builds the REST config for the kind context named in
+// E2E_KUBE_CONTEXT, refusing any non-kind context. It is the single place the
+// e2e resolves a cluster to talk to.
+func clusterConfig(t *testing.T) *rest.Config {
 	t.Helper()
 	contextName := os.Getenv("E2E_KUBE_CONTEXT")
 	if contextName == "" {
@@ -46,7 +50,12 @@ func clusterClient(t *testing.T) kubernetes.Interface {
 	if err != nil {
 		t.Fatalf("loading kubeconfig context %q: %v", contextName, err)
 	}
-	clientset, err := kubernetes.NewForConfig(config)
+	return config
+}
+
+func clusterClient(t *testing.T) kubernetes.Interface {
+	t.Helper()
+	clientset, err := kubernetes.NewForConfig(clusterConfig(t))
 	if err != nil {
 		t.Fatalf("building clientset: %v", err)
 	}
