@@ -380,6 +380,17 @@ applies the filter-early rule on the node, before any record is formed:
   a filtered or unreadable process leaves as anything but a number
   (invariant 6).
 
+The controller joins the kept facts against its workload inventory (ADR 0010) —
+pod UID → workload, container ID → container name and the image digest it
+already collects — into a **Go-inventory payload**: one record per
+(namespace, workload, container) carrying the Go version, main module path,
+image digest, and PGO flag. Replicas and nodes running the same build collapse
+to one record. A fact whose pod or container the controller cannot resolve
+(informer lag, or a filtered pod) is counted as *unjoined* and dropped — its
+pod UID, container ID, and module path never appear, only the count. This is
+the same "medium sensitivity" workload-metadata class as the rest of §8: module
+and version strings, never source, environment, or arguments.
+
 ### What the agent reports about your filters
 
 The rule: full information about what is collected, only aggregate
@@ -404,8 +415,8 @@ information about what is not.
 ### Transport
 
 - Controller → backend over mTLS to a single fixed domain.
-- Payload: hourly rollup histograms, workload metadata as described above,
-  and allow-listed symbolized profiles. Nothing else.
+- Payload: hourly rollup histograms, workload metadata as described above, the
+  Go inventory (above), and allow-listed symbolized profiles. Nothing else.
 
 ---
 

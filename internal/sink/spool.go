@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -62,6 +63,17 @@ type usagePayload struct {
 type oomPayload struct {
 	Kind  string            `json:"kind"`
 	Event collector.OOMKill `json:"event"`
+}
+
+// goInventoryPayload is the current Go inventory of the cluster — one record
+// per (namespace, workload, container), joined from node facts (ADR 0010). It
+// is a single superseding batch: each write replaces the previous one under its
+// fixed natural key (the payload kind), the on-disk mirror of the backend's
+// upsert-by-key ingest. The sequence orders supersedes, never arrival time.
+type goInventoryPayload struct {
+	Kind     string               `json:"kind"`
+	Sequence int64                `json:"sequence,omitempty"`
+	Records  []inventory.GoRecord `json:"records"`
 }
 
 type windowKey struct {
@@ -130,6 +142,20 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 	name := fmt.Sprintf("oom-%d-%s-%s-%s-%d.json",
 		e.FinishedAt.Unix(), e.Namespace, e.Pod, e.Container, e.RestartCount)
 	return s.write(name, oomPayload{Kind: "oom_kill", Event: e})
+}
+
+// WriteGoInventory writes the current Go inventory as one superseding batch
+// (ADR 0010). One file per cluster, atomically replaced each flush: the newest
+// inventory supersedes its predecessor, exactly as an open-window usage
+// snapshot does. records must already be in a deterministic order (the store
+// sorts them) so the payload bytes are stable — the golden contract.
+func (s *Spool) WriteGoInventory(sequence int64, records []inventory.GoRecord) error {
+	payload := goInventoryPayload{
+		Kind:     "go_inventory",
+		Sequence: sequence,
+		Records:  records,
+	}
+	return s.write("go-inventory.json", payload)
 }
 
 // write marshals the payload and lands it atomically: temp file in the same

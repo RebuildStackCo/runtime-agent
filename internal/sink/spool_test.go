@@ -13,6 +13,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -127,6 +128,65 @@ func TestGoldenOOMPayload(t *testing.T) {
 	}
 	name := fmt.Sprintf("oom-%d-shop-web-7f8d9-abcde-app-3.json", event.FinishedAt.Unix())
 	checkGolden(t, filepath.Join(dir, name), "oom-kill.golden.json")
+}
+
+// fixedInventory is a deterministic two-workload Go inventory, already sorted by
+// key as the store would return it.
+func fixedInventory() []inventory.GoRecord {
+	return []inventory.GoRecord{
+		{
+			Key:         inventory.Key{Namespace: "search", WorkloadKind: "StatefulSet", WorkloadName: "index", Container: "app"},
+			GoVersion:   "go1.25.0",
+			ModulePath:  "github.com/acme/index",
+			ImageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			PGO:         false,
+		},
+		{
+			Key:         inventory.Key{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app"},
+			GoVersion:   "go1.26.1",
+			ModulePath:  "github.com/acme/web",
+			ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			PGO:         true,
+		},
+	}
+}
+
+func TestGoldenGoInventoryPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteGoInventory(4, fixedInventory()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "go-inventory.json"), "go-inventory.golden.json")
+}
+
+func TestGoInventorySupersedesOnDisk(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteGoInventory(1, fixedInventory()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteGoInventory(2, fixedInventory()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool holds %d files after two inventory writes, want 1 (supersede by key)", len(entries))
+	}
+	var payload struct {
+		Sequence int64 `json:"sequence"`
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "go-inventory.json")) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Sequence != 2 {
+		t.Fatalf("surviving inventory has sequence %d, want 2 (newest supersedes)", payload.Sequence)
+	}
 }
 
 func TestSnapshotSupersedesOnDisk(t *testing.T) {

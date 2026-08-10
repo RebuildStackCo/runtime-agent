@@ -112,6 +112,18 @@ type podIndexEntry struct {
 	namespace string
 	name      string
 	workload  WorkloadRef
+	// containers maps each started container's runtime ID (normalized: no
+	// runtime prefix, lowercase) to its name and image digest. It is what the
+	// node role's build-info facts join against — the node reports a pod UID
+	// and container ID, the controller resolves them to a workload and the
+	// image digest it already collects (ADR 0010).
+	containers map[string]containerIdentity
+}
+
+// containerIdentity is what a container ID resolves to within its pod.
+type containerIdentity struct {
+	name        string
+	imageDigest string
 }
 
 // NewPodWatcher returns a watcher that calls onPod for every pod present at
@@ -215,11 +227,47 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 
 // indexPod records an admitted pod for sample attribution.
 func (w *PodWatcher) indexPod(pod *corev1.Pod) {
-	entry := podIndexEntry{namespace: pod.Namespace, name: pod.Name, workload: w.resolveWorkload(pod)}
+	entry := podIndexEntry{
+		namespace:  pod.Namespace,
+		name:       pod.Name,
+		workload:   w.resolveWorkload(pod),
+		containers: containerIndex(pod),
+	}
 	w.indexMu.Lock()
 	w.index[pod.UID] = entry
 	w.nameIndex[pod.Namespace+"/"+pod.Name] = pod.UID
 	w.indexMu.Unlock()
+}
+
+// containerIndex maps each started container's normalized runtime ID to its
+// name and image digest, from the pod's status. Containers that have not yet
+// started (no runtime ID) are absent — they are unattributable until the
+// runtime assigns an ID, and the node scanner cannot see them running either.
+func containerIndex(pod *corev1.Pod) map[string]containerIdentity {
+	idx := make(map[string]containerIdentity)
+	add := func(statuses []corev1.ContainerStatus) {
+		for _, s := range statuses {
+			cid := normalizeContainerID(s.ContainerID)
+			if cid == "" {
+				continue
+			}
+			idx[cid] = containerIdentity{name: s.Name, imageDigest: parseImageDigest(s.ImageID)}
+		}
+	}
+	add(pod.Status.InitContainerStatuses)
+	add(pod.Status.ContainerStatuses)
+	return idx
+}
+
+// normalizeContainerID strips the runtime scheme prefix a container status
+// carries ("containerd://", "cri-o://", "docker://") and lowercases the digest,
+// yielding the bare 64-hex form the node role parses from the process cgroup
+// (ADR 0009). An empty or unset ID normalizes to "".
+func normalizeContainerID(raw string) string {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		raw = raw[i+len("://"):]
+	}
+	return strings.ToLower(strings.TrimSpace(raw))
 }
 
 func (w *PodWatcher) dropPod(uid types.UID) {
@@ -263,6 +311,27 @@ func (w *PodWatcher) LookupPodByName(namespace, name string) (workload WorkloadR
 	}
 	entry, ok := w.index[uid]
 	return entry.workload, ok
+}
+
+// LookupContainer resolves a node-role build-info fact — a pod UID and a
+// container ID — to the workload, container name, and image digest the
+// controller has for it (ADR 0010). It reports false when the pod is unknown or
+// excluded (informer lag or a filtered pod), or when the container ID is not
+// among the pod's started containers; the caller counts those as unjoined and
+// drops them, never guessing. The container ID is matched in the node's bare,
+// lowercased form.
+func (w *PodWatcher) LookupContainer(podUID types.UID, containerID string) (namespace string, workload WorkloadRef, container, imageDigest string, ok bool) {
+	w.indexMu.RLock()
+	defer w.indexMu.RUnlock()
+	entry, ok := w.index[podUID]
+	if !ok {
+		return "", WorkloadRef{}, "", "", false
+	}
+	ci, ok := entry.containers[normalizeContainerID(containerID)]
+	if !ok {
+		return "", WorkloadRef{}, "", "", false
+	}
+	return entry.namespace, entry.workload, ci.name, ci.imageDigest, true
 }
 
 // admit runs the pod through the filter, consulting the namespace's

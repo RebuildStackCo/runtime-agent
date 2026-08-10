@@ -283,6 +283,95 @@ func TestParseImageDigest(t *testing.T) {
 	}
 }
 
+func TestNormalizeContainerID(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"containerd://ABCDEF0123", "abcdef0123"},
+		{"cri-o://abcDEF", "abcdef"},
+		{"docker://DeadBeef", "deadbeef"},
+		{"deadbeef", "deadbeef"}, // already bare (as the node cgroup yields)
+		{"", ""},
+		{"  containerd://Ff  ", "ff"},
+	}
+	for _, c := range cases {
+		if got := normalizeContainerID(c.in); got != c.want {
+			t.Errorf("normalizeContainerID(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestLookupContainerJoinsNodeFact verifies the join the node→controller channel
+// depends on (ADR 0010): a pod UID + container ID resolve to the workload,
+// container name, and image digest the controller collected. It also checks the
+// negative paths — unknown pod, unknown container — that the join counts as
+// unjoined rather than guessing.
+func TestLookupContainerJoinsNodeFact(t *testing.T) {
+	owner := controllerRef("ReplicaSet", "web-7d9f")
+	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "shop", Name: "web-7d9f", UID: "uid-web-7d9f",
+		OwnerReferences: []metav1.OwnerReference{controllerRef("Deployment", "web")},
+	}}
+	p := pod("web-7d9f-abcde", &owner)
+	// The runtime assigns container IDs and the kubelet reports digests once the
+	// containers start — the shape the node scanner then observes on the node.
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{
+		{Name: "app", ContainerID: "containerd://AAA111", ImageID: "example.com/app@sha256:appdigest"},
+		{Name: "sidecar", ContainerID: "containerd://bbb222", ImageID: "example.com/proxy@sha256:proxydigest"},
+	}
+
+	clientset := fake.NewClientset(rs, p)
+	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	// Wait until the container index has the started container (populated on the
+	// status update path).
+	var ns string
+	var workload WorkloadRef
+	var container, digest string
+	deadline := time.After(5 * time.Second)
+	for {
+		var ok bool
+		ns, workload, container, digest, ok = watcher.LookupContainer("uid-web-7d9f-abcde", "aaa111")
+		if ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("container never became resolvable")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	if ns != "shop" || workload.Kind != "Deployment" || workload.Name != "web" {
+		t.Errorf("resolved workload = %s/%s/%s, want shop/Deployment/web", ns, workload.Kind, workload.Name)
+	}
+	if container != "app" {
+		t.Errorf("container = %q, want app", container)
+	}
+	if digest != "sha256:appdigest" {
+		t.Errorf("image digest = %q, want sha256:appdigest", digest)
+	}
+
+	// Unknown container ID within a known pod: not joinable.
+	if _, _, _, _, ok := watcher.LookupContainer("uid-web-7d9f-abcde", "ffffff"); ok {
+		t.Error("unknown container ID resolved; want not-ok")
+	}
+	// Unknown pod: not joinable.
+	if _, _, _, _, ok := watcher.LookupContainer("uid-nope", "aaa111"); ok {
+		t.Error("unknown pod UID resolved; want not-ok")
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher returned error: %v", err)
+	}
+}
+
 // TestReportsImageDigestOnUpdate covers the load-bearing timing fact: imageID
 // is empty on the initial add and appears only on the status update that
 // follows container start, so the pod must be re-reported for the digest to
