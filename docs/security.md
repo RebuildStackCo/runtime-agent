@@ -42,6 +42,11 @@ runtime-agent node         # DaemonSet (optional)   — eBPF profiling and Go bi
 ```
 
 - The node role sends data to the controller over the cluster network only.
+- The controller exposes an in-cluster-only HTTP receiver for those node
+  reports (ADR 0010): it accepts data pushes from the node DaemonSet and
+  answers ack/error only. It is not reachable from outside the cluster and
+  returns nothing the node acts on — the one-way rule ([§1](#1-design-principles),
+  principle 2) applied one level down.
 - The controller aggregates, filters, and ships data to
   `<backend endpoint, fixed domain>` over mTLS.
 - Configuration is read exclusively from the Helm-rendered ConfigMap. The
@@ -91,6 +96,16 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
 | its own identity Secret | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret. Not emitted when `persistence.enabled: true` |
 
+**Authenticating node reports adds no RBAC.** When the node DaemonSet is
+installed (ADR 0010), the controller authenticates each node's projected
+ServiceAccount token by verifying its signature against the cluster's published
+JWKS **locally**. It does **not** call `TokenReview`, so no `create` on
+`authentication.k8s.io/tokenreviews` — or any other verb — is added for this.
+Resolving the cluster's OIDC discovery and JWKS endpoints is a read-only
+non-resource URL `GET`, granted cluster-wide to ServiceAccounts by the built-in
+`system:service-account-issuer-discovery` role on typical clusters; it is a
+read, never a write.
+
 ### Cluster-wide vs. namespace-scoped installation
 
 - **Cluster-wide (default):** a single ClusterRole with the rules above.
@@ -114,7 +129,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | Pod pprof endpoints | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets is shipped with the chart |
-| Node role | node → controller only | Deliver profiles and binary metadata for aggregation | The DaemonSet has **no** external egress |
+| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings (and, later, profiles) for aggregation (ADR 0010) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The controller's receiver answers ack/error only, is not reachable from outside the cluster, and a shipped NetworkPolicy restricts it to the DaemonSet. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster; a party that can already sniff pod traffic could replay the short-lived token to post fabricated inventory facts for this one cluster — bounded, one-way, no monetary or read capability (ADR 0010) |
 
 ---
 
@@ -238,17 +253,25 @@ It has two functions with different privilege needs, documented separately
 below (ADR 0009). Whichever runs, one property holds for both: **the node role
 has no Kubernetes API access whatsoever.** Its ServiceAccount is bound to no
 Role, RoleBinding, ClusterRole, or ClusterRoleBinding — not one RBAC rule
-exists for it — and `automountServiceAccountToken: false` keeps its token out
-of the container. It appears in none of the RBAC tables in [§4](#4-kubernetes-api-access-rbac)
-because it holds nothing. This is enforced by the API server (an unbound
-identity cannot authorize anything), not by agent configuration.
+exists for it — and `automountServiceAccountToken: false` keeps the **default
+API token** out of the container. When the node delivers findings to the
+controller (ADR 0010) it mounts exactly one credential: a projected token
+**audience-bound to the controller**, which the API server rejects (wrong
+audience) and which grants nothing anyway (the ServiceAccount holds zero RBAC).
+So the node still cannot reach the API — now by two independent barriers, wrong
+audience *and* no grant — and it appears in none of the RBAC tables in
+[§4](#4-kubernetes-api-access-rbac) because it holds nothing there. This is
+enforced by the API server (an unbound identity cannot authorize anything), not
+by agent configuration.
 
 ### 7.1 The Go-binary scanner (the current node role)
 
 This is what the node DaemonSet runs today. It enumerates processes under
 `/proc`, reads the Go build information embedded in each executable, ties it to
 a pod and container through the process cgroup, filters infrastructure on the
-node, and reports the result. It loads no eBPF and opens no socket.
+node, and reports the result. It loads no eBPF; the only socket it opens is the
+outbound connection to the controller to deliver its findings (ADR 0010) — never
+to the internet, never to the API server.
 
 | Privilege | Why |
 |---|---|
@@ -397,9 +420,10 @@ Stated explicitly so it does not have to be asked:
 - No cloud provider credentials, IAM roles, or billing API access. Node
   pricing uses a static price table plus your stated discount.
 - No external egress from nodes — only the controller crosses the boundary.
-- No API access from the node role at all — its ServiceAccount holds zero RBAC
-  and its token is not mounted ([§7](#7-node-privileges), ADR 0009). The node
-  role never calls the Kubernetes API.
+- No API access from the node role at all — its ServiceAccount holds zero RBAC,
+  and the only token it mounts is audience-bound to the controller, which the
+  API server rejects ([§7](#7-node-privileges), ADR 0009/0010). The default API
+  token is never mounted, and the node role never calls the Kubernetes API.
 - No dynamic configuration from the backend — the agent cannot be
   reconfigured remotely.
 
