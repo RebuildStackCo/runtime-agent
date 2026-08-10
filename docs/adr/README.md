@@ -46,3 +46,4 @@ stays in place.
 - [0007. Durability is optional: snapshot delivery bounds loss, disk is a knob](0007-optional-durability.md)
 - [0008. Agent identity lives in a namespaced Secret — the product's one write grant](0008-identity-in-secret.md)
 - [0009. The node role: an on-node Go-binary scanner with zero API access](0009-node-role-binary-scanner.md)
+- [0010. Node → controller inventory channel: node-initiated HTTP, projected-token auth, local JWKS validation](0010-node-to-controller-inventory-channel.md)
