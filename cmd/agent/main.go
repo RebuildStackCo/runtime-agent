@@ -1,6 +1,15 @@
-// Command agent is the RebuildStack runtime agent. It collects resource-usage
-// rollups and workload metadata inside a Kubernetes cluster and ships them
-// one-way to a backend. See docs/ for the architecture.
+// Command agent is the RebuildStack runtime agent. One binary, two roles
+// (ADR 0009):
+//
+//	agent [controller]   the default role — a cluster-wide collector that talks
+//	                     to the Kubernetes API, aggregates usage rollups and
+//	                     workload metadata, and ships them one-way to a backend.
+//	agent node           a per-node DaemonSet role that scans on-node processes
+//	                     for Go build information. It holds NO Kubernetes client
+//	                     and opens no external connection.
+//
+// The role is selected by the first argument; absent one, the controller runs.
+// See docs/ for the architecture.
 package main
 
 import (
@@ -12,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,34 +39,68 @@ import (
 // version is set at build time via -ldflags.
 var version = "dev"
 
+// Roles the binary can run as. The controller is the default so that existing
+// invocations (`agent -config …`) keep working unchanged.
+const (
+	roleController = "controller"
+	roleNode       = "node"
+)
+
 func main() {
-	configPath := flag.String("config", "", "path to the agent configuration file (YAML)")
-	flag.Parse()
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	role, rest := parseRole(os.Args[1:])
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	var err error
+	switch role {
+	case roleController:
+		err = runController(ctx, logger, rest)
+	case roleNode:
+		err = runNode(ctx, logger, rest)
+	default:
+		stop()
+		logger.Error("unknown role; expected 'controller' or 'node'", "role", role)
+		os.Exit(2)
+	}
+	stop()
+	if err != nil {
+		logger.Error("agent exited with error", "role", role, "error", err)
+		os.Exit(1)
+	}
+}
+
+// parseRole splits an optional leading role subcommand off the argument list.
+// A first argument that does not look like a flag is the role; otherwise the
+// controller role is assumed and all arguments are flags.
+func parseRole(args []string) (role string, rest []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return roleController, args
+}
+
+// runController parses the controller flags, loads configuration, connects to
+// the cluster, and runs the collection lifecycle.
+func runController(ctx context.Context, logger *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet(roleController, flag.ExitOnError)
+	configPath := fs.String("config", "", "path to the agent configuration file (YAML)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		stop()
-		logger.Error("loading configuration", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("loading configuration: %w", err)
 	}
 
 	clientset, host, err := connect()
 	if err != nil {
-		stop()
-		logger.Error("connecting to cluster", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("connecting to cluster: %w", err)
 	}
 	logger.Info("connected to cluster", "host", host)
 
-	err = run(ctx, logger, clientset, cfg)
-	stop()
-	if err != nil {
-		logger.Error("agent exited with error", "error", err)
-		os.Exit(1)
-	}
+	return run(ctx, logger, clientset, cfg)
 }
 
 // connect builds a clientset from the in-cluster service account when

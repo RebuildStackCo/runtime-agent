@@ -59,7 +59,13 @@ your goals; profiles can be upgraded later.
 |---|---|---|---|
 | `metrics-only` | controller | none | Cost and efficiency findings from usage metrics (kubelet counters via the API server, ADR 0006; Prometheus as a side-channel for history) |
 | `pprof` | controller | none | Above + CPU/heap profiles pulled from services that already expose `/debug/pprof` |
-| `ebpf` | controller + node DaemonSet | see [§7](#7-node-privileges-ebpf-profile-only) | Above + CPU profiles for services without pprof endpoints |
+| `ebpf` | controller + node DaemonSet | see [§7](#7-node-privileges) | Above + CPU profiles for services without pprof endpoints |
+
+The node DaemonSet has two functions with very different privilege needs, kept
+deliberately separate (ADR 0009): a **Go-binary scanner** (reads build info
+from on-node executables — no eBPF, no Kubernetes API access) and the **eBPF
+CPU profiler**. [§7](#7-node-privileges) documents each. The scanner is the
+lower-privilege of the two and is what the current node role runs.
 
 ---
 
@@ -72,11 +78,15 @@ pre-created identity Secret, scoped by `resourceNames` in a namespaced Role
 all, and the chart is entirely write-free. Nothing else anywhere carries
 `create`, `update`, `patch`, `delete`, or `deletecollection`.
 
+The table below is the **controller's** access. The node role (the DaemonSet,
+[§7](#7-node-privileges)) holds **no** RBAC at all — its ServiceAccount is
+bound to nothing and its token is not mounted — so it appears in no row here.
+
 | Resource | Verbs | Why |
 |---|---|---|
 | `pods` | get/list/watch | Map containers to workloads; read `requests`/`limits` from spec; detect OOM kills via `status.containerStatuses[].lastState.terminated.reason == "OOMKilled"`; read `containerPorts` to locate pprof endpoints |
 | `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod |
-| `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges-ebpf-profile-only)) |
+| `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
 | its own identity Secret | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret. Not emitted when `persistence.enabled: true` |
@@ -221,26 +231,58 @@ with egress interception, the backend domain needs a bypass rule.
 
 ---
 
-## 7. Node privileges (`ebpf` profile only)
+## 7. Node privileges
 
-The DaemonSet is not installed at all in `metrics-only` and `pprof` profiles,
-and this entire section does not apply.
+The DaemonSet is not installed at all in `metrics-only` and `pprof` profiles.
+It has two functions with different privilege needs, documented separately
+below (ADR 0009). Whichever runs, one property holds for both: **the node role
+has no Kubernetes API access whatsoever.** Its ServiceAccount is bound to no
+Role, RoleBinding, ClusterRole, or ClusterRoleBinding — not one RBAC rule
+exists for it — and `automountServiceAccountToken: false` keeps its token out
+of the container. It appears in none of the RBAC tables in [§4](#4-kubernetes-api-access-rbac)
+because it holds nothing. This is enforced by the API server (an unbound
+identity cannot authorize anything), not by agent configuration.
+
+### 7.1 The Go-binary scanner (the current node role)
+
+This is what the node DaemonSet runs today. It enumerates processes under
+`/proc`, reads the Go build information embedded in each executable, ties it to
+a pod and container through the process cgroup, filters infrastructure on the
+node, and reports the result. It loads no eBPF and opens no socket.
 
 | Privilege | Why |
 |---|---|
-| `hostPID: true` | Read `/proc/<pid>/exe` of host processes to extract Go `buildinfo` (Go version, module path, whether `-pgo` was applied) without entering containers |
-| `CAP_BPF` + `CAP_PERFMON` | Load eBPF programs and perform perf sampling for CPU profiles (kernel 5.8+) |
-| `CAP_SYS_PTRACE` — **TBD** | Reading another process's `/proc/<pid>/exe` is subject to the kernel's ptrace access check; we are verifying whether this capability is required. This document will state the final, minimal set |
-| hostPath mounts — **TBD (exact list)** | Required by the embedded OpenTelemetry eBPF profiler for stack unwinding and on-node symbolization (expected: `/proc`, kernel BTF; final list will be pinned here) |
+| `hostPID: true` | See node processes and open their `/proc/<pid>/exe` to read Go `buildinfo` (Go version, module path, dependencies, whether `-pgo` was applied) without entering containers |
+| `CAP_SYS_PTRACE` | The **only** added capability. Container processes are non-dumpable, so the kernel's ptrace access check blocks reading another container's `/proc/<pid>/exe` even for a same-UID root reader — verified empirically. This resolves the "TBD" this document previously carried here: the capability is required, and it is **not** an eBPF capability |
+| host `/proc`, read-only | Mounted at `/host/proc` so the scanner reads the node's process table. No other host path is mounted |
 
-Compensating controls, all set in the shipped chart:
+What it reads, and only that: `/proc/<pid>/exe` (build info) and
+`/proc/<pid>/cgroup` (the pod UID and container ID the kubelet encodes into the
+cgroup path). See [§8](#8-data-collected-and-data-leaving-the-cluster) for the
+data and the on-node filter.
 
-- `privileged: false` — the pod never requests full privileges. On kernels
-  older than 5.8, where `CAP_BPF`/`CAP_PERFMON` do not exist, the `ebpf`
-  profile is unsupported rather than silently escalated.
+Compensating controls, all set in the shipped manifest
+(`deploy/node-daemonset.yaml`):
+
+- `privileged: false`, `allowPrivilegeEscalation: false`.
 - Read-only root filesystem.
-- Seccomp profile applied.
-- Capabilities dropped to the minimal set listed above; nothing else is added.
+- `seccompProfile: RuntimeDefault`.
+- **All capabilities dropped except `SYS_PTRACE`.** No `CAP_BPF`, no
+  `CAP_PERFMON`.
+- Runs as UID 0 (needed to match the credentials of the root processes it
+  reads); bounded by all of the above and by the absence of API access.
+
+### 7.2 The eBPF CPU profiler (future, `ebpf` profile)
+
+Not yet shipped. When enabled it adds, on top of the scanner's privileges:
+
+| Privilege | Why |
+|---|---|
+| `CAP_BPF` + `CAP_PERFMON` | Load eBPF programs and perform perf sampling for CPU profiles (kernel 5.8+) |
+| hostPath mounts — **TBD (exact list)** | Required by the embedded eBPF profiler for stack unwinding and on-node symbolization (expected: kernel BTF; final list will be pinned here) |
+
+On kernels older than 5.8, where `CAP_BPF`/`CAP_PERFMON` do not exist, the
+`ebpf` profile is unsupported rather than silently escalated.
 
 **Symbolization happens on the node.** Your binaries are never uploaded
 anywhere. Stack addresses are resolved to function names locally, and only
@@ -290,6 +332,31 @@ classes with different sensitivity and different default policies:
   persistent volume until their delivery is acknowledged, and are deleted
   right after.
 
+### On-node binary scanning (node role, ADR 0009)
+
+The node role reads Go build information from executables on the node and
+applies the filter-early rule on the node, before any record is formed:
+
+- **Kept — customer workload binaries.** For a Go process whose main module is
+  *not* infrastructure, the scanner keeps the Go version, the main module path,
+  the dependency module paths, the build settings that matter (notably whether
+  `-pgo` was applied), and the pod UID and container ID parsed from the process
+  cgroup. This is the same "medium sensitivity" metadata class as the rest of
+  the workload metadata above — module and version strings, never source, never
+  environment, never arguments.
+- **Dropped — infrastructure.** A main module on the built-in deny-list
+  (`k8s.io/`, `sigs.k8s.io/`, the container runtime, the CNI, `go.etcd.io/`,
+  `github.com/coredns/`, `github.com/prometheus/`, `github.com/grafana/`, … and
+  this agent's own `github.com/RebuildStackCo/`) is dropped on the node. Its
+  identity — module path, pod UID, container ID — is never recorded, only
+  counted.
+- **Counted, never identified.** Four aggregate counters describe everything
+  not kept: processes scanned, Go binaries found, filtered as infrastructure,
+  and unreadable (a real executable with no recoverable Go build info — a
+  non-Go program, or a Go binary whose build info was removed). No identity of
+  a filtered or unreadable process leaves as anything but a number
+  (invariant 6).
+
 ### What the agent reports about your filters
 
 The rule: full information about what is collected, only aggregate
@@ -330,6 +397,9 @@ Stated explicitly so it does not have to be asked:
 - No cloud provider credentials, IAM roles, or billing API access. Node
   pricing uses a static price table plus your stated discount.
 - No external egress from nodes — only the controller crosses the boundary.
+- No API access from the node role at all — its ServiceAccount holds zero RBAC
+  and its token is not mounted ([§7](#7-node-privileges), ADR 0009). The node
+  role never calls the Kubernetes API.
 - No dynamic configuration from the backend — the agent cannot be
   reconfigured remotely.
 
