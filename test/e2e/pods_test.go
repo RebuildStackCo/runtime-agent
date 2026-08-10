@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -81,6 +82,9 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Name: "app", Image: pauseImage,
+						Ports: []corev1.ContainerPort{
+							{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+						},
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse("50m"),
@@ -166,10 +170,47 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 		return collector.PodInfo{}
 	}
 
+	// waitForCondition polls the reported view of a workload until pred holds,
+	// so assertions can wait for facts that appear on a later status update
+	// (the image digest) rather than on the first report.
+	waitForCondition := func(key string, pred func(collector.PodInfo) bool) collector.PodInfo {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Minute)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			info, ok := seen[key]
+			mu.Unlock()
+			if ok && pred(info) {
+				return info
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("condition never held for workload %s; last saw: %v", key, seen[key])
+		return collector.PodInfo{}
+	}
+
 	webPod := waitForWorkload("Deployment/web")
 	if len(webPod.Containers) != 1 || webPod.Containers[0].Image != pauseImage {
 		t.Errorf("deployment pod containers = %+v, want one %s", webPod.Containers, pauseImage)
 	}
+
+	// Declared ports are collected verbatim from the spec.
+	wantPorts := []collector.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}}
+	if got := webPod.Containers[0].Ports; !reflect.DeepEqual(got, wantPorts) {
+		t.Errorf("deployment pod ports = %+v, want %+v", got, wantPorts)
+	}
+
+	// The image digest is only known once the container has started, so it
+	// arrives on a later status update — wait for it, then check its shape.
+	started := waitForCondition("Deployment/web", func(p collector.PodInfo) bool {
+		return len(p.Containers) == 1 && p.Containers[0].ImageDigest != ""
+	})
+	if d := started.Containers[0].ImageDigest; !strings.HasPrefix(d, "sha256:") {
+		t.Errorf("deployment pod image digest = %q, want a sha256: digest", d)
+	}
+
 	res := webPod.Containers[0].Resources
 	wantRes := map[string]struct {
 		got  *int64

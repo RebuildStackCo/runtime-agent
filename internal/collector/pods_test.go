@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +46,9 @@ func pod(name string, owner *metav1.OwnerReference) *corev1.Pod {
 						corev1.ResourceCPU:    resource.MustParse("2"),
 						corev1.ResourceMemory: resource.MustParse("1Gi"),
 					},
+				}, Ports: []corev1.ContainerPort{
+					{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+					{ContainerPort: 9090, Protocol: corev1.ProtocolTCP}, // metrics, unnamed
 				}},
 				{Name: "sidecar", Image: "example.com/proxy:latest"},
 			},
@@ -158,6 +162,10 @@ func TestCollectsContainersAndImages(t *testing.T) {
 				CPULimitMilli:      ptr.To(int64(2000)),
 				MemoryRequestBytes: ptr.To(int64(256 << 20)),
 				MemoryLimitBytes:   ptr.To(int64(1 << 30)),
+			},
+			Ports: []ContainerPort{
+				{Name: "http", Port: 8080, Protocol: "TCP"},
+				{Port: 9090, Protocol: "TCP"},
 			}},
 		{Name: "sidecar", Image: "example.com/proxy:latest"},
 	}
@@ -168,6 +176,14 @@ func TestCollectsContainersAndImages(t *testing.T) {
 		got := info.Containers[i]
 		if got.Name != want[i].Name || got.Image != want[i].Image || got.Init != want[i].Init {
 			t.Errorf("container %d = %+v, want %+v", i, got, want[i])
+		}
+		// No container statuses in the fixture: digests appear only once a
+		// container starts (see TestReportsImageDigestOnUpdate).
+		if got.ImageDigest != "" {
+			t.Errorf("container %s: image digest = %q, want empty before start", got.Name, got.ImageDigest)
+		}
+		if !reflect.DeepEqual(got.Ports, want[i].Ports) {
+			t.Errorf("container %s: ports = %+v, want %+v", got.Name, got.Ports, want[i].Ports)
 		}
 		assertResources(t, got.Name, got.Resources, want[i].Resources)
 	}
@@ -241,5 +257,108 @@ func TestReportsPodsCreatedAfterStart(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("watcher returned error: %v", err)
+	}
+}
+
+func TestParseImageDigest(t *testing.T) {
+	cases := []struct {
+		name    string
+		imageID string
+		want    string
+	}{
+		{"registry with digest", "example.com/app@sha256:abc123", "sha256:abc123"},
+		{"docker-pullable prefix", "docker-pullable://registry.k8s.io/pause@sha256:def456", "sha256:def456"},
+		{"registry with port and path", "registry.internal:5000/team/app@sha256:0011ff", "sha256:0011ff"},
+		{"bare digest", "sha256:cafebabe", "sha256:cafebabe"},
+		{"empty", "", ""},
+		{"tag only, no digest yet", "example.com/app:1.2.3", ""},
+		{"local reference without digest", "docker.io/library/redis:7", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseImageDigest(c.imageID); got != c.want {
+				t.Errorf("parseImageDigest(%q) = %q, want %q", c.imageID, got, c.want)
+			}
+		})
+	}
+}
+
+// TestReportsImageDigestOnUpdate covers the load-bearing timing fact: imageID
+// is empty on the initial add and appears only on the status update that
+// follows container start, so the pod must be re-reported for the digest to
+// reach a consumer.
+func TestReportsImageDigestOnUpdate(t *testing.T) {
+	// The pod starts with no container statuses, exactly as it is before its
+	// containers run.
+	p := pod("checkout-1", nil)
+	clientset := fake.NewClientset(p)
+
+	events := make(chan PodInfo, 16)
+	watcher := NewPodWatcher(clientset, func(info PodInfo) { events <- info })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	digestOf := func(info PodInfo, container string) (string, bool) {
+		for _, c := range info.Containers {
+			if c.Name == container {
+				return c.ImageDigest, true
+			}
+		}
+		return "", false
+	}
+
+	// First report: the container has not started, so no digest is known.
+	deadline := time.After(5 * time.Second)
+	select {
+	case info := <-events:
+		if d, ok := digestOf(info, "app"); !ok || d != "" {
+			t.Fatalf("initial report: app digest = %q (present=%v), want empty", d, ok)
+		}
+	case <-deadline:
+		t.Fatal("no initial pod report before timeout")
+	}
+
+	// The kubelet learns the image digests once the containers start and
+	// writes them into status — delivered as an update event.
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{
+		{Name: "app", ImageID: "example.com/app@sha256:appdigest"},
+		{Name: "sidecar", ImageID: "docker-pullable://example.com/proxy@sha256:proxydigest"},
+	}
+	p.Status.InitContainerStatuses = []corev1.ContainerStatus{
+		{Name: "init-db", ImageID: "example.com/migrate@sha256:initdigest"},
+	}
+	if _, err := clientset.CoreV1().Pods("shop").Update(ctx, p, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("updating pod status: %v", err)
+	}
+
+	// A later report must carry the digests parsed from imageID.
+	deadline = time.After(5 * time.Second)
+	for {
+		select {
+		case info := <-events:
+			d, ok := digestOf(info, "app")
+			if !ok || d == "" {
+				continue // an earlier, pre-update report still draining
+			}
+			if d != "sha256:appdigest" {
+				t.Fatalf("app digest = %q, want sha256:appdigest", d)
+			}
+			if got, _ := digestOf(info, "sidecar"); got != "sha256:proxydigest" {
+				t.Errorf("sidecar digest = %q, want sha256:proxydigest", got)
+			}
+			if got, _ := digestOf(info, "init-db"); got != "sha256:initdigest" {
+				t.Errorf("init-db digest = %q, want sha256:initdigest", got)
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatalf("watcher returned error: %v", err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no pod report carrying the image digest before timeout")
+		}
 	}
 }
