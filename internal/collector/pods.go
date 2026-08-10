@@ -5,6 +5,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,14 +40,29 @@ type Resources struct {
 	MemoryLimitBytes   *int64 `json:"memory_limit_bytes,omitempty"`
 }
 
-// Container is the collected view of a container: name, image, and declared
-// resources only. Env, args, and command are deliberately never read
-// (filter early).
+// ContainerPort is a declared port from the pod spec — the fact that a
+// container announces it, and nothing about whether it is ever used. Declared
+// ports are how the controller locates pprof endpoints without blind scans
+// (docs/security.md §4). Name and Protocol are omitted when unset.
+type ContainerPort struct {
+	Name     string `json:"name,omitempty"`
+	Port     int32  `json:"port"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// Container is the collected view of a container: name, image, the image
+// digest once the container has started, declared resources, and declared
+// ports. Env, args, and command are deliberately never read (filter early).
 type Container struct {
-	Name      string    `json:"name"`
-	Image     string    `json:"image"`
-	Init      bool      `json:"init,omitempty"`
-	Resources Resources `json:"resources"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
+	// ImageDigest is the content digest (e.g. "sha256:…") the kubelet reports
+	// for the running image. It is empty until the container starts, because
+	// the runtime only knows it after pulling the image — see describe.
+	ImageDigest string          `json:"image_digest,omitempty"`
+	Init        bool            `json:"init,omitempty"`
+	Resources   Resources       `json:"resources"`
+	Ports       []ContainerPort `json:"ports,omitempty"`
 }
 
 // PodInfo is the collected view of one pod.
@@ -75,6 +91,12 @@ type PodWatcher struct {
 
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
+	// reportedSig deduplicates pod reports across the many status updates a
+	// pod receives: the collected view is re-sent only when its image-digest
+	// signature changes (digests appear on the update that follows container
+	// start, never on the initial add). Losing the map on restart is harmless
+	// — the pod is simply reported once more.
+	reportedSig map[types.UID]string
 
 	// index maps admitted pods to what the usage poller needs to attribute
 	// kubelet samples. Excluded pods are never in it — absence means "drop
@@ -101,6 +123,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		onPod:        onPod,
 		filter:       NewPodFilter(nil, nil),
 		reportedOOMs: make(map[string]struct{}),
+		reportedSig:  make(map[types.UID]string),
 		index:        make(map[types.UID]podIndexEntry),
 		nameIndex:    make(map[string]types.UID),
 	}
@@ -148,14 +171,16 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		AddFunc: func(obj any) {
 			if pod, ok := obj.(*corev1.Pod); ok && w.admit(pod, true) {
 				w.indexPod(pod)
-				w.onPod(w.describe(pod))
+				w.reportPodIfChanged(pod)
 				w.reportOOMKills(pod)
 			}
 		},
-		// OOM kills happen after a pod appears and arrive as status
-		// updates; the pod itself is not re-reported. Admission is
-		// re-evaluated so an opt-out annotation added mid-flight takes
-		// effect immediately.
+		// Status updates carry facts absent from the initial add — OOM
+		// kills, and container image digests, which the runtime only knows
+		// after starting the container. The pod is re-reported when its
+		// digest signature changes (reportPodIfChanged dedups the frequent
+		// no-op updates). Admission is re-evaluated so an opt-out annotation
+		// added mid-flight takes effect immediately.
 		UpdateFunc: func(_, obj any) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
@@ -163,6 +188,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 			}
 			if w.admit(pod, false) {
 				w.indexPod(pod)
+				w.reportPodIfChanged(pod)
 				w.reportOOMKills(pod)
 			} else {
 				w.dropPod(pod.UID)
@@ -208,6 +234,10 @@ func (w *PodWatcher) dropPod(uid types.UID) {
 		delete(w.index, uid)
 	}
 	w.indexMu.Unlock()
+
+	w.mu.Lock()
+	delete(w.reportedSig, uid)
+	w.mu.Unlock()
 }
 
 // LookupPod resolves a pod UID to its namespace and workload. It reports
@@ -265,15 +295,117 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 		QOSClass:  string(pod.Status.QOSClass),
 		Workload:  w.resolveWorkload(pod),
 	}
+	digests := containerDigests(pod)
 	for _, c := range pod.Spec.InitContainers {
-		info.Containers = append(info.Containers,
-			Container{Name: c.Name, Image: c.Image, Init: true, Resources: resourcesOf(&c)})
+		info.Containers = append(info.Containers, Container{
+			Name: c.Name, Image: c.Image, Init: true,
+			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
+		})
 	}
 	for _, c := range pod.Spec.Containers {
-		info.Containers = append(info.Containers,
-			Container{Name: c.Name, Image: c.Image, Resources: resourcesOf(&c)})
+		info.Containers = append(info.Containers, Container{
+			Name: c.Name, Image: c.Image,
+			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
+		})
 	}
 	return info
+}
+
+// reportPodIfChanged reports the pod through onPod, but only when its collected
+// view has materially changed since the last report — specifically when a
+// container's image digest first appears or changes. imageID is populated only
+// after the kubelet pulls and starts the container, so it arrives on a status
+// update rather than the initial add; without re-reporting, the digest would
+// never reach a consumer. Deduplicating on the digest signature keeps the many
+// unrelated status updates (readiness, conditions) from re-reporting an
+// otherwise unchanged pod.
+func (w *PodWatcher) reportPodIfChanged(pod *corev1.Pod) {
+	info := w.describe(pod)
+	sig := digestSignature(info.Containers)
+	w.mu.Lock()
+	prev, seen := w.reportedSig[pod.UID]
+	changed := !seen || prev != sig
+	if changed {
+		w.reportedSig[pod.UID] = sig
+	}
+	w.mu.Unlock()
+	if changed {
+		w.onPod(info)
+	}
+}
+
+// digestSignature is a compact fingerprint of the containers' image digests,
+// used to decide whether a status update is worth re-reporting. Container
+// names cannot contain the separators, so the encoding is unambiguous.
+func digestSignature(containers []Container) string {
+	var b strings.Builder
+	for _, c := range containers {
+		b.WriteString(c.Name)
+		b.WriteByte('=')
+		b.WriteString(c.ImageDigest)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// containerDigests maps container name to the image content digest reported in
+// status, for the containers that have started. Init and regular container
+// statuses are both consulted. Containers without a digest yet are simply
+// absent from the map.
+func containerDigests(pod *corev1.Pod) map[string]string {
+	var digests map[string]string
+	collect := func(statuses []corev1.ContainerStatus) {
+		for _, s := range statuses {
+			digest := parseImageDigest(s.ImageID)
+			if digest == "" {
+				continue
+			}
+			if digests == nil {
+				digests = make(map[string]string)
+			}
+			digests[s.Name] = digest
+		}
+	}
+	collect(pod.Status.InitContainerStatuses)
+	collect(pod.Status.ContainerStatuses)
+	return digests
+}
+
+// parseImageDigest extracts the content digest from a container status
+// imageID. The kubelet reports imageID in a few shapes depending on the
+// runtime: "registry/repo@sha256:…", the older
+// "docker-pullable://registry/repo@sha256:…", or occasionally a bare
+// "sha256:…" with no repository. The digest itself — everything from the
+// algorithm prefix on — is what identifies the image content across registries
+// and mirrors, so the registry prefix is discarded and only the digest kept.
+// Returns "" when the imageID carries no digest (e.g. before the image is
+// pulled, or a runtime that reports only a local reference).
+func parseImageDigest(imageID string) string {
+	if at := strings.LastIndex(imageID, "@"); at >= 0 {
+		return imageID[at+1:]
+	}
+	// No repository prefix: accept a bare digest, reject a bare tag/reference.
+	if strings.HasPrefix(imageID, "sha256:") {
+		return imageID
+	}
+	return ""
+}
+
+// portsOf reduces a container's declared ports to the collected view: the
+// spec fact only, with no interpretation of use.
+func portsOf(c *corev1.Container) []ContainerPort {
+	if len(c.Ports) == 0 {
+		return nil
+	}
+	ports := make([]ContainerPort, 0, len(c.Ports))
+	for _, p := range c.Ports {
+		ports = append(ports, ContainerPort{
+			Name:     p.Name,
+			Port:     p.ContainerPort,
+			Protocol: string(p.Protocol),
+		})
+	}
+	return ports
 }
 
 // resourcesOf normalizes a container's declared requests and limits:

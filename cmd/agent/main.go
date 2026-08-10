@@ -137,6 +137,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"node", n.Name,
 			"instance_type", n.InstanceType,
 			"capacity_type", n.CapacityType,
+			"kernel_version", n.KernelVersion,
 			"allocatable_cpu_milli", n.AllocatableCPUMilli,
 			"allocatable_memory_bytes", n.AllocatableMemoryBytes,
 			"capacity_cpu_milli", n.CapacityCPUMilli,

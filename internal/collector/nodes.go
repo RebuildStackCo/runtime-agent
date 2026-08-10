@@ -13,13 +13,15 @@ import (
 )
 
 // NodeInfo is the collected view of one node: its size (allocatable and
-// capacity, normalized to millicores and bytes) and the two labels the cost
-// model needs — instance type and capacity type. Nothing else is read from
-// node objects (see docs/security.md §4).
+// capacity, normalized to millicores and bytes), the two labels the cost model
+// needs — instance type and capacity type — and the kernel version, which
+// determines whether the node can run the eBPF profile (CAP_BPF needs kernel
+// 5.8+). Nothing else is read from node objects (see docs/security.md §4).
 type NodeInfo struct {
 	Name                   string `json:"name"`
 	InstanceType           string `json:"instance_type,omitempty"`
 	CapacityType           string `json:"capacity_type,omitempty"` // "spot", "on-demand", or "" when undeterminable
+	KernelVersion          string `json:"kernel_version,omitempty"`
 	AllocatableCPUMilli    int64  `json:"allocatable_cpu_milli"`
 	AllocatableMemoryBytes int64  `json:"allocatable_memory_bytes"`
 	CapacityCPUMilli       int64  `json:"capacity_cpu_milli"`
@@ -110,6 +112,7 @@ func describeNode(node *corev1.Node) NodeInfo {
 		Name:                   node.Name,
 		InstanceType:           instanceType(node.Labels),
 		CapacityType:           capacityType(node.Labels),
+		KernelVersion:          node.Status.NodeInfo.KernelVersion,
 		AllocatableCPUMilli:    node.Status.Allocatable.Cpu().MilliValue(),
 		AllocatableMemoryBytes: node.Status.Allocatable.Memory().Value(),
 		CapacityCPUMilli:       node.Status.Capacity.Cpu().MilliValue(),

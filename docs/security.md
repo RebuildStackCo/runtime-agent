@@ -76,7 +76,7 @@ all, and the chart is entirely write-free. Nothing else anywhere carries
 |---|---|---|
 | `pods` | get/list/watch | Map containers to workloads; read `requests`/`limits` from spec; detect OOM kills via `status.containerStatuses[].lastState.terminated.reason == "OOMKilled"`; read `containerPorts` to locate pprof endpoints |
 | `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod |
-| `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model |
+| `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges-ebpf-profile-only)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
 | its own identity Secret | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret. Not emitted when `persistence.enabled: true` |
@@ -267,6 +267,13 @@ classes with different sensitivity and different default policies:
   `spec.containers[].ports`, `ownerReferences`, and `status`. It explicitly
   discards `env`, `args`, and `command` before anything is stored or
   transported, because these fields frequently contain inline credentials.
+  From `status` it reads the container image digest
+  (`status.containerStatuses[].imageID`, kept as the content digest only) and
+  OOM-kill terminations — nothing else.
+- From node objects, the agent keeps only size (`allocatable`/`capacity`), the
+  instance-type and capacity-type labels, and `status.nodeInfo.kernelVersion`
+  (a version string, used to report eBPF-profile readiness). No other node
+  labels, annotations, addresses, or `status` fields are read.
 
 ### Profile filtering (applies at collection, not at egress)
 

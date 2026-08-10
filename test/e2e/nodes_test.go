@@ -56,6 +56,11 @@ func TestNodeWatcherAgainstRealCluster(t *testing.T) {
 			t.Errorf("node %s: capacity (%d cpu / %d mem) below allocatable (%d cpu / %d mem)",
 				name, n.CapacityCPUMilli, n.CapacityMemoryBytes, n.AllocatableCPUMilli, n.AllocatableMemoryBytes)
 		}
+		// Every real node reports a kernel version; it is what gates eBPF
+		// profile readiness (CAP_BPF needs kernel 5.8+).
+		if n.KernelVersion == "" {
+			t.Errorf("node %s: kernel version is empty, want the node's reported kernel", name)
+		}
 	}
 
 	cancel()
