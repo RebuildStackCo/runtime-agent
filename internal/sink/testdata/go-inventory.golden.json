@@ -1,0 +1,26 @@
+{
+  "kind": "go_inventory",
+  "sequence": 4,
+  "records": [
+    {
+      "namespace": "search",
+      "workload_kind": "StatefulSet",
+      "workload_name": "index",
+      "container": "app",
+      "go_version": "go1.25.0",
+      "module_path": "github.com/acme/index",
+      "image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "pgo": false
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "app",
+      "go_version": "go1.26.1",
+      "module_path": "github.com/acme/web",
+      "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "pgo": true
+    }
+  ]
+}

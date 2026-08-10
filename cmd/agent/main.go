@@ -26,12 +26,14 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
+	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
@@ -233,17 +235,53 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		},
 	)
 
+	// The Go inventory joins node-role build-info facts against the workload
+	// index (ADR 0010). It exists only when the receiver does; the receiver's
+	// callback ingests into it, and the coverage goroutine flushes it to the
+	// spool on the same cadence as everything else. Loss-harmless: it is
+	// rebuilt from the next node scan (ADR 0003).
+	var goStore *inventory.Store
+	if cfg.NodeIntake.Enabled {
+		goStore = inventory.NewStore()
+	}
+	var inventoryMu sync.Mutex
+	var goInventorySeq int64
+	flushInventory := func() {
+		if goStore == nil || spool == nil {
+			return
+		}
+		inventoryMu.Lock()
+		defer inventoryMu.Unlock()
+		goInventorySeq++
+		if err := spool.WriteGoInventory(goInventorySeq, goStore.Snapshot()); err != nil {
+			logger.Error("spooling go inventory", "error", err)
+		}
+	}
+
 	// Excluded pods are reported as aggregate counts only, never by name
-	// (docs/security.md §8).
+	// (docs/security.md §8). Inventory counters are aggregate too: no identity
+	// of an unjoined fact appears, only a count (CLAUDE.md invariant 6).
 	logCoverage := func() {
 		c := filter.Snapshot()
-		logger.Info("coverage",
+		attrs := []any{
 			"pods_observed", c.PodsObserved,
 			"excluded_namespace_filter", c.ExcludedNamespaceFilter,
 			"excluded_namespace_annotation", c.ExcludedNamespaceAnnotation,
 			"excluded_pod_annotation", c.ExcludedPodAnnotation,
 			"usage_signals", usagePoller.Signals(),
-		)
+		}
+		if goStore != nil {
+			ic := goStore.Counters()
+			attrs = append(attrs,
+				"go_inventory_records", ic.Records,
+				"go_versions", ic.GoVersions,
+				"go_pgo_builds", ic.PGOBuilds,
+				"go_facts_received", ic.FactsReceived,
+				"go_facts_joined", ic.FactsJoined,
+				"go_facts_unjoined", ic.FactsUnjoined,
+			)
+		}
+		logger.Info("coverage", attrs...)
 	}
 
 	// Watchers run until ctx is canceled; a failing watcher must bring the
@@ -260,6 +298,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				return
 			case <-ticker.C:
 				logCoverage()
+				flushInventory()
 			}
 		}
 	}()
@@ -272,9 +311,25 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 
 	// The node-intake receiver is optional (only the ebpf/node profile ships a
 	// DaemonSet). When enabled it becomes one more lifecycle task, validating
-	// node tokens locally against the cluster JWKS (ADR 0010).
+	// node tokens locally against the cluster JWKS (ADR 0010) and joining each
+	// report into the Go inventory.
 	if cfg.NodeIntake.Enabled {
-		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake)
+		resolver := podContainerResolver{pw: podWatcher}
+		onReport := func(id nodeauth.Identity, report nodescan.Report) {
+			goStore.Ingest(report, resolver)
+			ic := goStore.Counters()
+			logger.Info("node report received",
+				"from_subject", id.Subject,
+				"node", report.Node,
+				"binaries", len(report.Binaries),
+				"go_found", report.Counters.GoFound,
+				"filtered_infra", report.Counters.FilteredInfra,
+				"unreadable", report.Counters.Unreadable,
+				"inventory_records", ic.Records,
+				"facts_unjoined", ic.FactsUnjoined,
+			)
+		}
+		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport)
 		if err != nil {
 			return fmt.Errorf("configuring node intake: %w", err)
 		}
@@ -298,15 +353,18 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	}
 	wg.Wait()
 	logCoverage()
+	// A final flush lands any inventory joined since the last periodic write.
+	// The coverage goroutine has returned (ctx is canceled), so this is the
+	// only writer; flushInventory serializes regardless.
+	flushInventory()
 	return errors.Join(errs...)
 }
 
 // buildNodeIntake constructs the node-intake receiver: a token verifier backed
 // by the cluster JWKS (fetched over the API server's in-cluster transport, no
-// TokenReview) and an HTTP server that decodes node reports. For this slice the
-// report is authenticated, decoded, and logged in aggregate; the join into a
-// payload lands in the next slice.
-func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake) (*nodeintake.Server, error) {
+// TokenReview) and an HTTP server that decodes node reports and hands each to
+// onReport (which joins it into the Go inventory, ADR 0010).
+func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report)) (*nodeintake.Server, error) {
 	addr := cfg.ListenAddress
 	if addr == "" {
 		addr = config.DefaultNodeIntakeListenAddress
@@ -325,22 +383,27 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 	}
 	verifier := nodeauth.NewVerifier(keys, audience, nodeauth.WithExpectedSubject(cfg.ExpectedSubject))
 
-	onReport := func(id nodeauth.Identity, report nodescan.Report) {
-		// Aggregate-only: identities of filtered-out binaries are already gone
-		// (the node filtered them, ADR 0009); here we log what arrived and from
-		// whom. The per-workload join and payload come in the next slice.
-		logger.Info("node report received",
-			"from_subject", id.Subject,
-			"node", report.Node,
-			"binaries", len(report.Binaries),
-			"processes_scanned", report.Counters.ProcessesScanned,
-			"go_found", report.Counters.GoFound,
-			"filtered_infra", report.Counters.FilteredInfra,
-			"unreadable", report.Counters.Unreadable,
-		)
-	}
-
 	handler := nodeintake.NewHandler(verifier, logger, onReport)
 	logger.Info("node intake enabled", "addr", addr, "audience", audience, "expected_subject", cfg.ExpectedSubject)
 	return nodeintake.NewServer(addr, handler, logger), nil
+}
+
+// podContainerResolver adapts PodWatcher's container lookup to the inventory
+// join's resolver interface (ADR 0010).
+type podContainerResolver struct {
+	pw *collector.PodWatcher
+}
+
+func (r podContainerResolver) LookupContainer(podUID types.UID, containerID string) (inventory.Resolved, bool) {
+	ns, workload, container, digest, ok := r.pw.LookupContainer(podUID, containerID)
+	if !ok {
+		return inventory.Resolved{}, false
+	}
+	return inventory.Resolved{
+		Namespace:    ns,
+		WorkloadKind: workload.Kind,
+		WorkloadName: workload.Name,
+		Container:    container,
+		ImageDigest:  digest,
+	}, true
 }
