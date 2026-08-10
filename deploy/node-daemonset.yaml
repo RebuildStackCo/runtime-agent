@@ -1,0 +1,101 @@
+# Node role — raw manifest (ADR 0009). No Helm chart lives in this repo yet;
+# this file is what the e2e deploys and the reference for the eventual chart.
+#
+# The defining property of the node role is at the bottom of this file: its
+# ServiceAccount has NO Role, RoleBinding, ClusterRole, or ClusterRoleBinding
+# anywhere — not one RBAC rule — and its token is not even mounted. The node
+# role never calls the Kubernetes API. Everything it reads is under /proc.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runtime-agent
+---
+# Zero-RBAC identity. Deliberately bound to nothing. `automountServiceAccountToken`
+# is false on the pod (below), so no API credential is ever placed in the
+# container.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runtime-agent-node
+  namespace: runtime-agent
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: runtime-agent-node
+  namespace: runtime-agent
+  labels:
+    app.kubernetes.io/name: runtime-agent
+    app.kubernetes.io/component: node
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-agent
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-agent
+        app.kubernetes.io/component: node
+    spec:
+      serviceAccountName: runtime-agent-node
+      # No API credential in the container: the node role holds no client.
+      automountServiceAccountToken: false
+      # Share the host PID namespace so the scanner sees every process on the
+      # node and can open its /proc/<pid>/exe (ADR 0009). This is the only
+      # host-level privilege the node role takes; there are no eBPF
+      # capabilities (CAP_BPF/CAP_PERFMON) and no privileged flag.
+      hostPID: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        # Reading root-owned /proc/<pid>/exe requires matching credentials;
+        # the scanner runs as root but drops every capability (see container).
+        runAsUser: 0
+        runAsNonRoot: false
+      # A node agent must run on every node, including control-plane nodes.
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: node
+          image: runtime-agent:latest
+          args:
+            - node
+            - -proc
+            - /host/proc
+            - -interval
+            - 60s
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              # The one capability the node role needs. Container processes are
+              # non-dumpable, so the kernel's ptrace access check blocks reading
+              # another container's /proc/<pid>/exe without it (ADR 0009,
+              # docs/security.md §7). This is NOT an eBPF capability: there is no
+              # CAP_BPF/CAP_PERFMON here — the buildinfo scanner does not load
+              # eBPF programs.
+              add:
+                - SYS_PTRACE
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+              # Pick up mounts that appear on the host after the pod starts.
+              mountPropagation: HostToContainer
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory

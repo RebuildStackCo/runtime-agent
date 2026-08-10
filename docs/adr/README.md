@@ -45,3 +45,4 @@ stays in place.
 - [0006. Usage collection: kubelet counters, mergeable windows, snapshot delivery](0006-usage-collection-kubelet-rollups.md)
 - [0007. Durability is optional: snapshot delivery bounds loss, disk is a knob](0007-optional-durability.md)
 - [0008. Agent identity lives in a namespaced Secret — the product's one write grant](0008-identity-in-secret.md)
+- [0009. The node role: an on-node Go-binary scanner with zero API access](0009-node-role-binary-scanner.md)

@@ -6,7 +6,11 @@ LDFLAGS := -X main.version=$(VERSION)
 E2E_CLUSTER ?= runtime-agent-e2e
 SMOKE_SECONDS ?= 5
 
-.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke
+IMAGE ?= runtime-agent
+IMAGE_TAG ?= $(VERSION)
+SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
+
+.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -40,6 +44,24 @@ smoke: build ## Run the agent for SMOKE_SECONDS against the kind cluster (see cl
 	KUBECONFIG=$$kubeconfig ./bin/agent >/dev/null 2>"$$log" & pid=$$!; \
 	sleep $(SMOKE_SECONDS); kill -TERM $$pid; wait $$pid; \
 	echo "smoke log: $$log"
+
+image: ## Build the agent container image (controller + node roles, one binary)
+	docker build -t $(IMAGE):$(IMAGE_TAG) --build-arg VERSION=$(VERSION) .
+
+sample-image: ## Build the e2e "known Go process" workload image
+	docker build -t $(SAMPLE_IMAGE) test/e2e/sample
+
+kind-load: image sample-image ## Load the agent and sample images into the kind cluster
+	go tool kind load docker-image $(IMAGE):$(IMAGE_TAG) $(SAMPLE_IMAGE) --name $(E2E_CLUSTER)
+
+node-e2e: kind-load ## Deploy the node DaemonSet in kind and assert Go-binary detection; log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	set -o pipefail; \
+	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
+	E2E_SAMPLE_IMAGE=$(SAMPLE_IMAGE) \
+	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestNodeScanner 2>&1 \
+		| tee test/e2e/logs/node-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 clean:
 	rm -rf bin
