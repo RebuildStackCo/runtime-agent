@@ -9,8 +9,11 @@ SMOKE_SECONDS ?= 5
 IMAGE ?= runtime-agent
 IMAGE_TAG ?= $(VERSION)
 SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
+# A shell-bearing image loaded into kind as a sidecar so the inventory e2e can
+# read the controller's spool (the agent image is distroless — no shell).
+SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e
+.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -62,6 +65,18 @@ node-e2e: kind-load ## Deploy the node DaemonSet in kind and assert Go-binary de
 	E2E_SAMPLE_IMAGE=$(SAMPLE_IMAGE) \
 	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestNodeScanner 2>&1 \
 		| tee test/e2e/logs/node-e2e-$$(date +%Y%m%d-%H%M%S).log
+
+inventory-e2e: kind-load ## Deploy controller + node DaemonSet + sample in kind and assert the go_inventory payload in the controller spool; log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	docker pull $(SPOOL_READER_IMAGE)
+	go tool kind load docker-image $(SPOOL_READER_IMAGE) --name $(E2E_CLUSTER)
+	set -o pipefail; \
+	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
+	E2E_SAMPLE_IMAGE=$(SAMPLE_IMAGE) \
+	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
+	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestGoInventoryEndToEnd 2>&1 \
+		| tee test/e2e/logs/inventory-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 clean:
 	rm -rf bin

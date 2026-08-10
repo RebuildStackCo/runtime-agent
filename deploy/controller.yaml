@@ -1,0 +1,147 @@
+# Controller — raw manifest for the node-intake receiver (ADR 0010). No Helm
+# chart lives in this repo yet; this file is what the e2e deploys and a reference
+# for the eventual chart. It is deliberately scoped to what the node→controller
+# inventory path needs: the read RBAC the collectors use (security.md §4), the
+# read-only JWKS discovery grant for local token validation (no TokenReview, no
+# write verb), the receiver Service, and a spool volume. It does NOT include the
+# backend enrollment/identity machinery (ADR 0005/0008) — that is a later slice.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runtime-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runtime-agent-controller
+  namespace: runtime-agent
+---
+# The controller's access is read-only (security.md §4). The two nonResourceURL
+# GETs are OIDC discovery + JWKS, used to validate node tokens locally — a read,
+# never a write, and specifically NOT `create tokenreviews`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: runtime-agent-controller
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes/proxy]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [replicasets, deployments, statefulsets, daemonsets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - nonResourceURLs: ["/openid/v1/jwks", "/.well-known/openid-configuration"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: runtime-agent-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: runtime-agent-controller
+subjects:
+  - kind: ServiceAccount
+    name: runtime-agent-controller
+    namespace: runtime-agent
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-agent-controller
+  namespace: runtime-agent
+data:
+  config.yaml: |
+    spool:
+      dir: /var/spool/runtime-agent
+    nodeIntake:
+      enabled: true
+      listenAddress: ":8080"
+      # Must match the audience the node DaemonSet's projected token requests.
+      audience: rebuildstack-controller
+      # Pin the accepted caller to the node role's ServiceAccount.
+      expectedSubject: "system:serviceaccount:runtime-agent:runtime-agent-node"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime-agent-controller
+  namespace: runtime-agent
+  labels:
+    app.kubernetes.io/name: runtime-agent
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    app.kubernetes.io/name: runtime-agent
+    app.kubernetes.io/component: controller
+  ports:
+    - name: node-intake
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-agent-controller
+  namespace: runtime-agent
+  labels:
+    app.kubernetes.io/name: runtime-agent
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-agent
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-agent
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: runtime-agent-controller
+      containers:
+        - name: controller
+          image: runtime-agent:latest
+          args:
+            - -config
+            - /etc/runtime-agent/config.yaml
+          ports:
+            - name: node-intake
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/runtime-agent
+              readOnly: true
+            - name: spool
+              mountPath: /var/spool/runtime-agent
+      volumes:
+        - name: config
+          configMap:
+            name: runtime-agent-controller
+        # emptyDir by default (ADR 0007): unshipped payloads are loss-harmless.
+        - name: spool
+          emptyDir: {}

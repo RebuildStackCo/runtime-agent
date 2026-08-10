@@ -80,8 +80,9 @@ func TestNodeScannerAgainstRealCluster(t *testing.T) {
 	waitPodRunning(ctx, t, clientset, ns, "goworkload")
 
 	// Deploy the node role from the shipped manifest, retargeted at this
-	// namespace and the kind-loaded image.
-	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage)
+	// namespace and the kind-loaded image. No controller endpoint here — this
+	// test asserts on the node's own log, log-only mode.
+	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage, "")
 
 	nodePod := waitDaemonSetPod(ctx, t, clientset, ns)
 	t.Logf("node pod: %s", nodePod)
@@ -158,10 +159,13 @@ func scanLog(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, pod
 
 // deployNodeDaemonSet decodes the shipped manifest and applies its
 // ServiceAccount and DaemonSet into ns, overriding only the namespace, the
-// image, the pull policy, and the scan interval. The zero-RBAC ServiceAccount
-// (no Role/RoleBinding is created anywhere) and the securityContext are applied
-// exactly as written.
-func deployNodeDaemonSet(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image string) {
+// image, the pull policy, and the scan interval. When controllerEndpoint is
+// non-empty, the -controller-endpoint arg is added so the node ships its
+// findings there (ADR 0010); empty runs the node log-only. The zero-RBAC
+// ServiceAccount (no Role/RoleBinding is created anywhere), the projected
+// controller-audience token volume, and the securityContext are applied exactly
+// as written.
+func deployNodeDaemonSet(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, controllerEndpoint string) {
 	t.Helper()
 	data, err := os.ReadFile(nodeManifestPath)
 	if err != nil {
@@ -208,6 +212,9 @@ func deployNodeDaemonSet(ctx context.Context, t *testing.T, cs kubernetes.Interf
 			// Shorten the interval so the test observes repeated passes quickly;
 			// the first pass runs at startup regardless.
 			c.Args = []string{"node", "-proc", "/host/proc", "-interval", "15s"}
+			if controllerEndpoint != "" {
+				c.Args = append(c.Args, "-controller-endpoint", controllerEndpoint)
+			}
 			if _, err := cs.AppsV1().DaemonSets(ns).Create(ctx, &ds, metav1.CreateOptions{}); err != nil {
 				t.Fatalf("creating DaemonSet: %v", err)
 			}
