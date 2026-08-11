@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.70.1
 	go.opentelemetry.io/ebpf-profiler v0.0.202632

@@ -57,7 +57,7 @@ what actually landed.
 
 ## Slice ordering
 
-1 (done) → 2 → 3 → 4 → 5 → 6 → 7. Each slice is one PR with tests. `security.md`
+1 → 2 → 3 → 4 → 5 → 5.5 → 6 → 7. Each slice is one PR with tests. `security.md`
 changes only when a slice changes *what* is collected/transmitted (mainly 3–4).
 
 ---
@@ -230,39 +230,80 @@ profiles defensible — tested as a control, not a formatter. **Depends on.** 3.
 
 ---
 
-## Slice 5 — validation + spool payload + golden
+## Slice 5 — serialize + validate + spool payload + golden
 
-**Goal.** Validate a filtered profile and land it in the spool as a payload.
+**Reconciliation (found by review, 2026-08-11).** The node has **no durable
+spool** (ADR 0008/0009: nothing durable on the node); the spool lives on the
+**controller** (`cmd/agent/main.go`), which is also the only component with the
+API access to resolve a container to its namespace/workload/image digest (ADR
+0009 gives the node zero API access). So a profile's full key is a
+**controller-side** fact: the node knows only container ID / PID / capture
+interval, and the controller joins the rest via PodWatcher — exactly the ADR 0010
+inventory pattern. That node→controller **transport + join** is a distinct step,
+split out into slice 5.5 below. This slice builds the pieces that stand alone.
 
-**In scope.** Validation (parses; sample type `cpu/nanoseconds`; a service
-(non-`runtime.*`) function in the top; else drop + counter, never ship); the
-`profilePayload{Kind, ...key..., pprof []byte}` with key (namespace, workload,
-container, image digest, **capture interval `start–end`**, `source=ebpf`); a
-`Spool.WriteProfile(...)`; a golden test.
-**Out of scope.** Targeting (slice 6), e2e (slice 7).
+**Goal.** Turn a filtered profile into validated, spoolable pprof bytes, and give
+the controller a writer for it.
+
+**In scope (all unit-testable in isolation now).**
+- `internal/nodeprofile/pprof.go`: filtered `[]Sample` → **gzipped
+  `cpu/nanoseconds`** pprof bytes. The profiler reports `samples/count`; convert
+  to CPU nanoseconds via the sampling period (`value = count × 1e9/rate`) so the
+  output matches the documented `cpu/nanoseconds` contract (ADR §5, security §8).
+  Deterministic function/location ordering.
+- `internal/nodeprofile/validate.go`: parse; require a `cpu/nanoseconds` sample
+  type; require a service function (not `runtime.*`, not the `[filtered]`
+  placeholder) among the top functions by value; else invalid + reason, never
+  ship.
+- `internal/sink/spool.go`: `profilePayload{Kind:"ebpf_profile", namespace,
+  workload, container, image digest, capture start/end, source:"ebpf",
+  pprof []byte}` + `Spool.WriteProfile(key, pprof)`. Adds `github.com/google/pprof`.
+- Golden `internal/sink/testdata/profile.golden.json`.
+
+**Out of scope.** Node→controller transport + join (slice 5.5), the live
+capture→filter→serialize→validate→ship pipeline and its cadence (slice 6),
+targeting (6), e2e (7).
 
 **Key window is the capture interval, not a wall-clock bucket — decided.** The
 window in the key is the specific capture's `start–end`, so **every capture has a
-unique key** and no capture is ever silently superseded. This is deliberate: a
-wall-clock bucket (e.g. one hour) would make rotation's 2nd and 3rd capture of the
-same workload within the bucket overwrite the 1st under the spool's same-key
-supersede rule — silent loss. Profiles therefore use **per-capture filenames**
-(e.g. `profile-<ns>-<workload>-<container>-<start>-<end>.json`), NOT the
-superseding fixed-name pattern that `go-inventory` uses; the `maxAge` sweep
-(ADR 0003/0007) is what bounds their number, not supersession.
+unique key** and no capture is silently superseded. A wall-clock bucket would let
+rotation's 2nd/3rd capture of a workload overwrite the 1st under the same-key
+supersede rule — silent loss. Profiles use **per-capture filenames**
+(`profile-<ns>-<workload>-<container>-<start>-<end>.json`), NOT the superseding
+fixed-name pattern; the `maxAge` sweep (ADR 0003/0007) bounds their number.
 
-**Files.** `internal/nodeprofile/validate.go` + tests; `internal/sink/spool.go`
-(new payload + writer); `internal/sink/testdata/profile.golden.json`;
-spool tests.
+**Golden stability.** gzip output is not guaranteed stable across toolchains, so
+the **serializer is tested by decode-and-assert** (sample type, functions,
+values), and the **spool golden uses a fixed pprof byte fixture** (fixed key +
+fixed bytes) — the golden guards the payload wrapper (invariant 2), not gzip.
 
-**Notes.** pprof bytes are gzipped protobuf; in the JSON payload they encode as
-base64 (`[]byte`). Golden fixture must be deterministic (fixed key + fixed bytes).
-
-**Tests.** invalid profiles (bad sample type / only runtime.* in top / unparsable)
-→ dropped + counted, not written; valid → one spool file, golden byte-match; the
-supersede/sweep behavior consistent with other payloads.
+**Tests.** serialize round-trips to a `cpu/nanoseconds` profile with the right
+functions/values; invalid profiles (bad sample type / only `runtime.*` / not
+parseable) rejected with a reason; `WriteProfile` with a fixed key + fixed bytes →
+one per-capture file, golden byte-match; sweep bounds count (no supersession).
 
 **Holds invariants.** 6 (sink invariant/golden), 7. **Depends on.** 4.
+
+---
+
+## Slice 5.5 — node → controller profile transport + join
+
+**Goal.** Ship a validated, filtered profile from the node to the controller
+(node-initiated, like ADR 0010) and have the controller enrich the key and spool
+it. This is where a profile actually leaves the node.
+
+**In scope.** A node→controller profile endpoint (separate from the 0010
+inventory receiver, same projected-token auth); the node ships the validated
+pprof bytes + the **node-known key** (container ID, PID, capture interval,
+`source=ebpf`) — only allow-list-filtered bytes leave (slice 4); the controller
+**joins** container ID → namespace / workload / image digest via PodWatcher (as
+0010 does for inventory), fills the full key, and calls `WriteProfile` (slice 5).
+An unjoined profile (informer lag, filtered-out pod) is counted and dropped, never
+guessed (0010 §5).
+**Out of scope.** The capture cadence / rotation (slice 6), e2e (7).
+
+**Holds invariants.** 1 (backend edge untouched), 2 (node zero API), 3 (only
+filtered bytes leave), 6. **Depends on.** 5.
 
 ---
 
