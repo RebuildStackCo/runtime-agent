@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e
+.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e profile-gate-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -77,6 +77,14 @@ inventory-e2e: kind-load ## Deploy controller + node DaemonSet + sample in kind 
 	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
 	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestGoInventoryEndToEnd 2>&1 \
 		| tee test/e2e/logs/inventory-e2e-$$(date +%Y%m%d-%H%M%S).log
+
+profile-gate-e2e: kind-load ## Deploy the ebpf node variant in kind and assert the eBPF gate refuses gracefully while the scanner keeps running; log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	set -o pipefail; \
+	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
+	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestEBPFGateRefusesGracefully 2>&1 \
+		| tee test/e2e/logs/profile-gate-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 clean:
 	rm -rf bin
