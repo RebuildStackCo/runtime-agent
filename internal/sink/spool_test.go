@@ -189,6 +189,52 @@ func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	}
 }
 
+func TestGoldenProfilePayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	key := ProfileKey{
+		Namespace:    "acme",
+		Workload:     "api",
+		Container:    "server",
+		ImageDigest:  "sha256:deadbeef",
+		CaptureStart: time.Unix(1_700_000_000, 0).UTC(),
+		CaptureEnd:   time.Unix(1_700_000_060, 0).UTC(),
+	}
+	// A fixed byte fixture, not freshly serialized: gzip output is not stable
+	// across toolchains, so the golden guards the payload wrapper, not gzip.
+	pprofBytes := []byte("FIXED-PPROF-BYTES\x00\x01\x02\x03")
+	if err := s.WriteProfile(key, pprofBytes); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "profile-acme-api-server-1700000000-1700000060.json"), "profile.golden.json")
+}
+
+// TestProfilesDoNotSupersede is the counterpart to the inventory supersede test:
+// each capture is its own window, so two captures of the same workload produce
+// two files, never one (ADR 0011 §6 — no silent loss under rotation).
+func TestProfilesDoNotSupersede(t *testing.T) {
+	s, dir := newTestSpool(t)
+	key := func(start int64) ProfileKey {
+		return ProfileKey{
+			Namespace: "n", Workload: "w", Container: "c",
+			CaptureStart: time.Unix(start, 0).UTC(),
+			CaptureEnd:   time.Unix(start+60, 0).UTC(),
+		}
+	}
+	if err := s.WriteProfile(key(100), []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteProfile(key(200), []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "profile-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Errorf("got %d profile files, want 2 (captures do not supersede)", len(files))
+	}
+}
+
 func TestSnapshotSupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
 	records := fixedRecords()

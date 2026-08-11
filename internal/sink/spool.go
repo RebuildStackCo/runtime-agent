@@ -76,6 +76,37 @@ type goInventoryPayload struct {
 	Records  []inventory.GoRecord `json:"records"`
 }
 
+// profilePayload is one captured eBPF CPU profile: the allow-list-filtered,
+// symbolized pprof bytes (gzipped protobuf, base64 in JSON) plus the natural key
+// that identifies which workload and capture window it belongs to. Unlike
+// go-inventory it does not supersede: each capture is a distinct window
+// (ProfileKey.CaptureStart–CaptureEnd), so profiles accumulate and are bounded by
+// the maxAge sweep, never overwritten (ADR 0011 §6). The pprof bytes were reduced
+// to allowed frames on the node before this payload was formed (ADR 0011 §4).
+type profilePayload struct {
+	Kind         string    `json:"kind"`
+	Namespace    string    `json:"namespace"`
+	Workload     string    `json:"workload"`
+	Container    string    `json:"container"`
+	ImageDigest  string    `json:"image_digest,omitempty"`
+	CaptureStart time.Time `json:"capture_start"`
+	CaptureEnd   time.Time `json:"capture_end"`
+	Source       string    `json:"source"`
+	Pprof        []byte    `json:"pprof"`
+}
+
+// ProfileKey identifies a captured profile. The namespace/workload/image-digest
+// are the controller's join of the node's container ID (ADR 0011 §5.5, the ADR
+// 0010 pattern); the capture interval makes every capture's key unique.
+type ProfileKey struct {
+	Namespace    string
+	Workload     string
+	Container    string
+	ImageDigest  string
+	CaptureStart time.Time
+	CaptureEnd   time.Time
+}
+
 type windowKey struct {
 	start   time.Time
 	seconds int64
@@ -156,6 +187,29 @@ func (s *Spool) WriteGoInventory(sequence int64, records []inventory.GoRecord) e
 		Records:  records,
 	}
 	return s.write("go-inventory.json", payload)
+}
+
+// WriteProfile writes one captured eBPF CPU profile. Unlike the superseding
+// go-inventory, each capture is its own file keyed by workload and capture
+// interval (ADR 0011 §6), so concurrent or rotated captures of the same workload
+// never overwrite one another; the maxAge sweep bounds how many accumulate. The
+// pprof bytes must already be allow-list-filtered and validated (ADR 0011 §4–5).
+func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
+	payload := profilePayload{
+		Kind:         "ebpf_profile",
+		Namespace:    key.Namespace,
+		Workload:     key.Workload,
+		Container:    key.Container,
+		ImageDigest:  key.ImageDigest,
+		CaptureStart: key.CaptureStart,
+		CaptureEnd:   key.CaptureEnd,
+		Source:       "ebpf",
+		Pprof:        pprof,
+	}
+	name := fmt.Sprintf("profile-%s-%s-%s-%d-%d.json",
+		key.Namespace, key.Workload, key.Container,
+		key.CaptureStart.Unix(), key.CaptureEnd.Unix())
+	return s.write(name, payload)
 }
 
 // write marshals the payload and lands it atomically: temp file in the same
