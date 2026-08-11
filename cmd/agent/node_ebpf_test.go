@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,23 @@ func TestEBPFGateRefusesGracefully(t *testing.T) {
 				t.Errorf("log missing refusal line:\n%s", buf.String())
 			}
 		})
+	}
+}
+
+// TestRunEBPFCaptureGraceful checks the capture wiring's graceful path: when the
+// profiler is unavailable it records program_load_failed and returns rather than
+// blocking or panicking. On Linux this would attempt a real eBPF load (needs a
+// privileged BTF host — that path is exercised by the slice-7 e2e), so it is
+// skipped there.
+func TestRunEBPFCaptureGraceful(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("attempts a real eBPF load on linux; covered by the slice-7 capture e2e")
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := newEBPFGateMetrics()
+	runEBPFCapture(context.Background(), logger, m)
+	if m.refusals[ebpfgate.ReasonProgramLoadFailed] != 1 {
+		t.Errorf("program_load_failed = %d, want 1", m.refusals[ebpfgate.ReasonProgramLoadFailed])
 	}
 }
 

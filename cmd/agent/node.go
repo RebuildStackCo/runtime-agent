@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -53,13 +55,16 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	defer logger.Info("node scanner stopping")
 
 	// eBPF readiness gate (ADR 0011). Evaluated once, before any profiling.
-	// This slice only gates and reports: the profiler itself is wired in a
-	// later slice. A refusal degrades to scanner-only — never an escalation to
-	// privileged — and the scanner below runs regardless. ebpfMetrics is the
-	// in-process counter; a report consumer surfaces it when the profiler ships.
+	// When the gate passes, the profiler runs alongside the scanner in its own
+	// goroutine. A refusal — at the gate or later at eBPF program load —
+	// degrades to scanner-only, never an escalation to privileged. ebpfMetrics
+	// is the in-process counter; a report consumer surfaces it when the
+	// targeting slice ships.
 	ebpfMetrics := newEBPFGateMetrics()
 	if *enableEBPF {
-		ebpfGate(logger, *procRoot, *sysRoot, ebpfMetrics)
+		if res := ebpfGate(logger, *procRoot, *sysRoot, ebpfMetrics); res.Supported() {
+			go runEBPFCapture(ctx, logger, ebpfMetrics)
+		}
 	}
 
 	scanOnce := func() {
@@ -160,4 +165,22 @@ func ebpfGate(logger *slog.Logger, procRoot, sysRoot string, m *ebpfGateMetrics)
 		"btf", res.BTFPresent,
 	)
 	return res
+}
+
+// runEBPFCapture runs the eBPF CPU profiler alongside the scanner in its own
+// goroutine, blocking until ctx is cancelled. If the profiler cannot load or
+// attach — ErrUnsupported, e.g. a non-Linux build or a kernel that refuses the
+// programs after the version gate passed — it is a graceful refusal recorded as
+// program_load_failed, and the node keeps scanning (ADR 0011 §2). It surfaces no
+// symbols; only the profiler's aggregate progress counters are logged.
+func runEBPFCapture(ctx context.Context, logger *slog.Logger, m *ebpfGateMetrics) {
+	err := nodeprofile.Run(ctx, logger, nodeprofile.Config{})
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	m.refusals[ebpfgate.ReasonProgramLoadFailed]++
+	logger.Warn("ebpf capture stopped; continuing as scanner",
+		"reason", string(ebpfgate.ReasonProgramLoadFailed),
+		"error", err,
+	)
 }

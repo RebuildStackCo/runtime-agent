@@ -1,0 +1,25 @@
+runtime-agent
+Copyright RebuildStack
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party software
+--------------------
+
+This product depends on and links the following third-party software:
+
+  go.opentelemetry.io/ebpf-profiler
+    Licensed under the Apache License, Version 2.0.
+
+    This module embeds compiled eBPF programs (its support/ebpf/* sources)
+    whose license is the GNU General Public License, version 2 (GPL-2.0):
+    the Linux kernel requires eBPF programs that use certain helpers to
+    declare a GPL-compatible license. The compiled bytecode is shipped
+    inside the module via go:embed and is loaded into the kernel at runtime;
+    it is not copied into this repository. A build of runtime-agent that
+    enables the `ebpf` profile therefore constitutes a combined work that
+    includes GPL-2.0-licensed eBPF bytecode. Builds without the `ebpf`
+    profile do not load or distribute that bytecode.
+
+    See the dependency's own LICENSE and LICENSES/ for the full terms of its
+    Apache-2.0 code and its GPL-2.0 eBPF sources.
