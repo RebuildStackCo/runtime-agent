@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -29,6 +30,8 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	interval := fs.Duration("interval", time.Minute, "scan interval; 0 runs a single pass and exits")
 	endpoint := fs.String("controller-endpoint", "", "controller URL to POST scan reports to; empty runs log-only")
 	tokenPath := fs.String("token-path", defaultControllerTokenPath, "path to the projected controller-audience ServiceAccount token")
+	enableEBPF := fs.Bool("enable-ebpf", false, "master switch for the eBPF CPU profiler (ADR 0011); when set, the node checks eBPF readiness at startup and refuses gracefully if the kernel cannot support it")
+	sysRoot := fs.String("sys", "/sys", "sysfs root used to check kernel BTF at <sys>/kernel/btf/vmlinux")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -48,6 +51,16 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		"node", node,
 	)
 	defer logger.Info("node scanner stopping")
+
+	// eBPF readiness gate (ADR 0011). Evaluated once, before any profiling.
+	// This slice only gates and reports: the profiler itself is wired in a
+	// later slice. A refusal degrades to scanner-only — never an escalation to
+	// privileged — and the scanner below runs regardless. ebpfMetrics is the
+	// in-process counter; a report consumer surfaces it when the profiler ships.
+	ebpfMetrics := newEBPFGateMetrics()
+	if *enableEBPF {
+		ebpfGate(logger, *procRoot, *sysRoot, ebpfMetrics)
+	}
 
 	scanOnce := func() {
 		res, err := scanner.Scan()
@@ -109,4 +122,42 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 			scanOnce()
 		}
 	}
+}
+
+// ebpfGateMetrics counts eBPF readiness outcomes per reason. In this slice it is
+// in-process only; a report consumer surfaces it to the controller when the
+// profiler ships (ADR 0011). The map key is the low-cardinality refusal reason,
+// so a fleet's counts show *why* nodes declined (e.g. kernel_too_old vs
+// btf_absent), which is what we would need to know to support new kernels.
+type ebpfGateMetrics struct {
+	ready    int
+	refusals map[ebpfgate.Reason]int
+}
+
+func newEBPFGateMetrics() *ebpfGateMetrics {
+	return &ebpfGateMetrics{refusals: make(map[ebpfgate.Reason]int)}
+}
+
+// ebpfGate evaluates the eBPF readiness gate once, logs a clear line, records
+// the outcome on m, and returns it. A refusal is deliberately non-fatal: the
+// node keeps running the Go-binary scanner rather than escalating to privileged
+// (ADR 0011 §2). It logs only the kernel version and BTF fact — never anything
+// derived from a customer workload.
+func ebpfGate(logger *slog.Logger, procRoot, sysRoot string, m *ebpfGateMetrics) ebpfgate.Result {
+	res := ebpfgate.Probe(procRoot, sysRoot)
+	if res.Supported() {
+		m.ready++
+		logger.Info("ebpf profile ready",
+			"kernel", res.KernelVersion,
+			"btf", res.BTFPresent,
+		)
+		return res
+	}
+	m.refusals[res.Reason]++
+	logger.Warn("ebpf profile refused; continuing as scanner",
+		"reason", string(res.Reason),
+		"kernel", res.KernelVersion,
+		"btf", res.BTFPresent,
+	)
+	return res
 }

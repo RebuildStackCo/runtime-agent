@@ -1,0 +1,147 @@
+# Node role — `ebpf` profile variant (ADR 0011). This is an ALTERNATIVE to
+# node-daemonset.yaml, not an addition: it deploys the same node role with the
+# eBPF CPU profiler enabled. Apply this OR the scanner-only manifest, never both
+# (they share names). The eventual Helm chart collapses the two into one
+# template gated by the install profile (security.md §3).
+#
+# The difference from the scanner-only manifest is deliberately small and
+# auditable: exactly two added capabilities (CAP_BPF, CAP_PERFMON), one added
+# read-only host mount (/sys/kernel/btf for CO-RE symbolization), and the
+# -enable-ebpf master switch. Still NO privileged, NO writable host mount, and
+# the same zero-RBAC identity. On a kernel < 5.8 or without BTF the profiler
+# refuses gracefully and the node keeps running the scanner (ADR 0011 §2).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runtime-agent
+---
+# Zero-RBAC identity — identical to the scanner variant. Bound to nothing;
+# automountServiceAccountToken is false on the pod, so no API credential is ever
+# placed in the container. Adding eBPF capabilities does NOT grant Kubernetes
+# API access: capabilities are a kernel concept, RBAC is an API-server concept.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runtime-agent-node
+  namespace: runtime-agent
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: runtime-agent-node
+  namespace: runtime-agent
+  labels:
+    app.kubernetes.io/name: runtime-agent
+    app.kubernetes.io/component: node
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-agent
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-agent
+        app.kubernetes.io/component: node
+    spec:
+      serviceAccountName: runtime-agent-node
+      # No *API* credential in the container (see the scanner manifest for the
+      # full argument). The projected token below is audience-bound to the
+      # controller and rejected by the API server; zero RBAC still holds.
+      automountServiceAccountToken: false
+      # Share the host PID namespace so the scanner and profiler see node
+      # processes (ADR 0009). Host PID plus CAP_BPF + CAP_PERFMON (container,
+      # below) are this variant's host-level privileges — still no privileged
+      # flag and no writable host path.
+      hostPID: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsUser: 0
+        runAsNonRoot: false
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: node
+          image: runtime-agent:latest
+          args:
+            - node
+            - -proc
+            - /host/proc
+            - -interval
+            - 60s
+            # Enable the eBPF CPU profiler (ADR 0011). The master switch; the
+            # eligible set and all ceilings arrive from the node ConfigMap in a
+            # later slice. On an unsupported kernel the node refuses gracefully.
+            - -enable-ebpf
+            # sysfs root for the BTF readiness check (<sys>/kernel/btf/vmlinux),
+            # served by the read-only /sys/kernel/btf mount below.
+            - -sys
+            - /sys
+            - -controller-endpoint
+            - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-inventory
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                # Scanner capability (ADR 0009): read another container's
+                # /proc/<pid>/exe past the ptrace access check.
+                - SYS_PTRACE
+                # eBPF profiler capabilities (ADR 0011, kernel 5.8+): load eBPF
+                # programs and perform perf sampling. These two — and only these
+                # two — are what the `ebpf` profile adds over the scanner. There
+                # is still no privileged flag.
+                - BPF
+                - PERFMON
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              # Higher than the scanner's 100m: the profiler samples under an
+              # overhead ceiling, but perf sampling and on-node symbolization
+              # cost more than reading buildinfo.
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+              mountPropagation: HostToContainer
+            - name: host-btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+            - name: controller-token
+              mountPath: /var/run/secrets/rebuildstack.co/controller-token
+              readOnly: true
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        # Kernel BTF, read-only. Required by the profiler's CO-RE eBPF programs
+        # for stack unwinding and on-node symbolization (ADR 0011, security.md
+        # §7.2). This is the one host path this variant adds over the scanner,
+        # and it is read-only. Absent on kernels without BTF — the readiness
+        # gate reports btf_absent and the profiler stays off.
+        - name: host-btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: Directory
+        - name: controller-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: rebuildstack-controller
+                  expirationSeconds: 3600
+                  path: token
