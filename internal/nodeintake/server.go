@@ -9,8 +9,12 @@ import (
 	"time"
 )
 
-// The receiver's path. Nodes POST their reports here.
-const reportPath = "/v1/node-inventory"
+// The receiver paths. Nodes POST their inventory reports to reportPath and their
+// captured profiles to profilePath (ADR 0010, ADR 0011 §5.5).
+const (
+	reportPath  = "/v1/node-inventory"
+	profilePath = "/v1/node-profile"
+)
 
 // Server runs the node-intake HTTP receiver until its context is canceled.
 // It is one more long-lived task in the controller's lifecycle, alongside the
@@ -21,11 +25,16 @@ type Server struct {
 	logger  *slog.Logger
 }
 
-// NewServer wires a receiver listening on addr that dispatches the report path
-// to handler. addr follows net/http conventions (e.g. ":8080").
-func NewServer(addr string, handler http.Handler, logger *slog.Logger) *Server {
+// NewServer wires a receiver listening on addr that dispatches the inventory
+// path to inventory and, when non-nil, the profile path to profile. addr follows
+// net/http conventions (e.g. ":8080"). Both endpoints share the one port, the
+// one token audience, and the one NetworkPolicy.
+func NewServer(addr string, inventory, profile http.Handler, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
-	mux.Handle(reportPath, handler)
+	mux.Handle(reportPath, inventory)
+	if profile != nil {
+		mux.Handle(profilePath, profile)
+	}
 	return &Server{addr: addr, handler: mux, logger: logger}
 }
 
