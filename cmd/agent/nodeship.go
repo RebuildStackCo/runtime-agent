@@ -108,6 +108,57 @@ func readProjectedToken(path string) (string, error) {
 	return token, nil
 }
 
+// targetsClient asks the controller which workloads to profile (ADR 0011 §3).
+// Unlike the shippers, this reply carries data — the config-bounded top-N list;
+// the node intersects it with its own pods and re-checks it against the eligible
+// set before acting, so a controller can only prioritize within what the node's
+// config already permits.
+type targetsClient struct {
+	endpoint  string
+	tokenPath string
+	client    *http.Client
+}
+
+// newTargetsClient builds a client for endpoint, or returns nil when empty.
+func newTargetsClient(endpoint, tokenPath string) *targetsClient {
+	if endpoint == "" {
+		return nil
+	}
+	return &targetsClient{
+		endpoint:  endpoint,
+		tokenPath: tokenPath,
+		client:    &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// fetch queries the controller and returns the published targets.
+func (c *targetsClient) fetch(ctx context.Context) ([]nodeintake.Target, error) {
+	token, err := readProjectedToken(c.tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading controller token: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, nil) // #nosec G704 -- endpoint is operator-set config, not tainted input
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.client.Do(req) // #nosec G704 -- endpoint is operator-set config, not tainted input
+	if err != nil {
+		return nil, fmt.Errorf("querying targets: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return nil, fmt.Errorf("controller rejected targets query: status %d", resp.StatusCode)
+	}
+	var out nodeintake.TargetsResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding targets: %w", err)
+	}
+	return out.Targets, nil
+}
+
 // profileShipper delivers one captured eBPF CPU profile to the controller's
 // profile endpoint (ADR 0011 §5.5), over the same node-initiated, projected-
 // token transport as the inventory shipper. Only already allow-list-filtered
