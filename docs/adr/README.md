@@ -47,3 +47,4 @@ stays in place.
 - [0008. Agent identity lives in a namespaced Secret — the product's one write grant](0008-identity-in-secret.md)
 - [0009. The node role: an on-node Go-binary scanner with zero API access](0009-node-role-binary-scanner.md)
 - [0010. Node → controller inventory channel: node-initiated HTTP, projected-token auth, local JWKS validation](0010-node-to-controller-inventory-channel.md)
+- [0011. On-node eBPF CPU profiling: embedded profiler, node-side symbolization, config-bounded targeting query](0011-node-ebpf-cpu-profiling.md)
