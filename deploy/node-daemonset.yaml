@@ -48,8 +48,10 @@ spec:
       automountServiceAccountToken: false
       # Share the host PID namespace so the scanner sees every process on the
       # node and can open its /proc/<pid>/exe (ADR 0009). This is the only
-      # host-level privilege the node role takes; there are no eBPF
-      # capabilities (CAP_BPF/CAP_PERFMON) and no privileged flag.
+      # host-level privilege the *scanner* variant takes; it adds no eBPF
+      # capabilities and no privileged flag. The `ebpf` profile variant
+      # (deploy/node-daemonset-ebpf.yaml, ADR 0011) adds CAP_BPF + CAP_PERFMON
+      # on top — still without privileged.
       hostPID: true
       securityContext:
         seccompProfile:
@@ -89,12 +91,13 @@ spec:
             capabilities:
               drop:
                 - ALL
-              # The one capability the node role needs. Container processes are
-              # non-dumpable, so the kernel's ptrace access check blocks reading
-              # another container's /proc/<pid>/exe without it (ADR 0009,
-              # docs/security.md §7). This is NOT an eBPF capability: there is no
-              # CAP_BPF/CAP_PERFMON here — the buildinfo scanner does not load
-              # eBPF programs.
+              # The one capability the *scanner* variant needs. Container
+              # processes are non-dumpable, so the kernel's ptrace access check
+              # blocks reading another container's /proc/<pid>/exe without it
+              # (ADR 0009, docs/security.md §7). SYS_PTRACE is not an eBPF
+              # capability — this scanner loads no eBPF programs. The `ebpf`
+              # variant (deploy/node-daemonset-ebpf.yaml) adds CAP_BPF +
+              # CAP_PERFMON alongside it (ADR 0011, §7.2).
               add:
                 - SYS_PTRACE
           resources:
