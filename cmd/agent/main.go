@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
+	"github.com/RebuildStackCo/runtime-agent/internal/targeting"
 )
 
 // version is set at build time via -ldflags.
@@ -212,9 +214,21 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			)
 		}
 	}
+	// The targeting publisher (ADR 0011 §3, §6b) ranks eligible workloads by
+	// consumption from each usage snapshot and publishes the top N for the node
+	// targets query. Created only when profiling is enabled; the snapshot
+	// callback feeds it deep-copied records, so it never races the Accumulator.
+	var targetsPublisher *targeting.Publisher
+	if cfg.Profiling.Enabled {
+		pc := cfg.Profiling.Normalized()
+		targetsPublisher = targeting.NewPublisher(cfg.Profiling.EligibleNamespaces, cfg.Profiling.EligibleWorkloads, pc.TopN)
+	}
 	usagePoller := collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
 		func(sequence int64, records []*rollup.Record) {
 			logRecords("usage rollup snapshot", sequence, records)
+			if targetsPublisher != nil {
+				targetsPublisher.Publish(records)
+			}
 			if spool != nil {
 				if err := spool.WriteUsageSnapshot(sequence, records); err != nil {
 					logger.Error("spooling usage snapshot", "error", err)
@@ -368,7 +382,13 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				"profiles_received", n)
 		}
 
-		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile)
+		// Pass the publisher as a nil-safe TargetSource: a typed nil pointer
+		// would make a non-nil interface, so only assign when it exists.
+		var targetSource nodeintake.TargetSource
+		if targetsPublisher != nil {
+			targetSource = targetsPublisher
+		}
+		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile, targetSource)
 		if err != nil {
 			return fmt.Errorf("configuring node intake: %w", err)
 		}
@@ -403,7 +423,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 // by the cluster JWKS (fetched over the API server's in-cluster transport, no
 // TokenReview) and an HTTP server that decodes node reports and hands each to
 // onReport (which joins it into the Go inventory, ADR 0010).
-func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport)) (*nodeintake.Server, error) {
+func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport), targets nodeintake.TargetSource) (*nodeintake.Server, error) {
 	addr := cfg.ListenAddress
 	if addr == "" {
 		addr = config.DefaultNodeIntakeListenAddress
@@ -424,8 +444,15 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 
 	handler := nodeintake.NewHandler(verifier, logger, onReport)
 	profileHandler := nodeintake.NewProfileHandler(verifier, logger, onProfile)
-	logger.Info("node intake enabled", "addr", addr, "audience", audience, "expected_subject", cfg.ExpectedSubject)
-	return nodeintake.NewServer(addr, handler, profileHandler, logger), nil
+	// The targets query endpoint is mounted only when a source is configured
+	// (profiling enabled); a nil interface leaves the route absent.
+	var targetsHandler http.Handler
+	if targets != nil {
+		targetsHandler = nodeintake.NewTargetsHandler(verifier, logger, targets)
+	}
+	logger.Info("node intake enabled", "addr", addr, "audience", audience,
+		"expected_subject", cfg.ExpectedSubject, "targeting", targets != nil)
+	return nodeintake.NewServer(addr, handler, profileHandler, targetsHandler, logger), nil
 }
 
 // podContainerResolver adapts PodWatcher's container lookup to the inventory

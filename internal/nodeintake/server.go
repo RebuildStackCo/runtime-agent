@@ -14,6 +14,7 @@ import (
 const (
 	reportPath  = "/v1/node-inventory"
 	profilePath = "/v1/node-profile"
+	targetsPath = "/v1/node-targets"
 )
 
 // Server runs the node-intake HTTP receiver until its context is canceled.
@@ -25,15 +26,21 @@ type Server struct {
 	logger  *slog.Logger
 }
 
-// NewServer wires a receiver listening on addr that dispatches the inventory
-// path to inventory and, when non-nil, the profile path to profile. addr follows
-// net/http conventions (e.g. ":8080"). Both endpoints share the one port, the
-// one token audience, and the one NetworkPolicy.
-func NewServer(addr string, inventory, profile http.Handler, logger *slog.Logger) *Server {
+// NewServer wires a receiver listening on addr. It always dispatches the
+// inventory path to inventory, and mounts the profile and targets paths when
+// their handlers are non-nil. addr follows net/http conventions (e.g. ":8080").
+// All endpoints share the one port, the one token audience, and the one
+// NetworkPolicy. The inventory and profile endpoints are one-way pushes (the
+// reply is an ack); the targets endpoint is the config-bounded query whose reply
+// carries data (ADR 0011 §3).
+func NewServer(addr string, inventory, profile, targets http.Handler, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 	mux.Handle(reportPath, inventory)
 	if profile != nil {
 		mux.Handle(profilePath, profile)
+	}
+	if targets != nil {
+		mux.Handle(targetsPath, targets)
 	}
 	return &Server{addr: addr, handler: mux, logger: logger}
 }
