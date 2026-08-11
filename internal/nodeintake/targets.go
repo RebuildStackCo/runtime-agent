@@ -2,57 +2,61 @@ package nodeintake
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 )
 
-// Target names one workload the controller suggests the node profile. It carries
-// identifiers only — nothing the node executes.
-type Target struct {
-	Namespace    string `json:"namespace"`
-	WorkloadKind string `json:"workload_kind"`
-	WorkloadName string `json:"workload_name"`
+// targetsMaxBodyBytes caps a targets query body. It carries only a node name.
+const targetsMaxBodyBytes = 4 << 10 // 4 KiB
+
+// TargetsRequest is a node's targets query. It carries the node's own name so
+// the controller can scope the answer to containers on that node — the node
+// cannot resolve a container to a workload itself (no API access, ADR 0009).
+type TargetsRequest struct {
+	Node string `json:"node"`
 }
 
-// TargetsResponse is the reply to a node's targets query.
+// TargetsResponse is the reply: the runtime container IDs on the querying node
+// that belong to the top-N eligible workloads. These are node-actionable — the
+// node profiles the processes whose cgroup container ID is in this set.
 type TargetsResponse struct {
-	Targets []Target `json:"targets"`
+	ContainerIDs []string `json:"container_ids"`
 }
 
-// TargetSource yields the currently published top-N targets. The controller's
-// publisher implements it by reading an atomically published snapshot — never
-// the live rollup state (ADR 0011 §6b concurrency note).
-type TargetSource interface {
-	Snapshot() []Target
+// NodeTargeter answers, for a node, which container IDs it should profile. The
+// controller implements it by expanding the published top-N workloads to the
+// containers of their pods on that node (via PodWatcher).
+type NodeTargeter interface {
+	ContainersForNode(node string) []string
 }
 
-// TargetsHandler answers a node's targets query with the top-N workloads by
-// consumption.
+// TargetsHandler answers a node's targets query with the container IDs to
+// profile on that node.
 //
 // This is the one node↔controller endpoint whose reply carries data the node
-// acts on, and it is a deliberate, config-bounded exception to the one-way reply
+// acts on — a deliberate, config-bounded exception to the one-way reply
 // discipline of ADR 0010 §1 (ADR 0011 §3). It does not break invariant 1: the
-// reply is data derived from the cluster's own rollups (workload identifiers),
-// never configuration or a command; the external backend is untouched; and the
-// node's ConfigMap — not this reply — bounds what may be profiled and how much.
-// The published snapshot is already filtered to the eligible set and capped at
-// TopN, and the node re-checks eligibility before it acts. The worst a rogue
-// controller can do is reorder already-permitted targets within already-set
-// ceilings.
+// reply is container identifiers derived from the cluster's own rollups and
+// PodWatcher, never configuration or a command; the external backend is
+// untouched; and the operator's ConfigMap — the eligible set the publisher
+// filters to — bounds what may be named. Eligibility is enforced on the
+// controller (here and again at the ship-time join, ADR 0011 §5.5), because the
+// node has no API to check it. The worst a rogue controller can do is reorder
+// already-permitted targets.
 type TargetsHandler struct {
 	verifier TokenVerifier
-	source   TargetSource
+	targeter NodeTargeter
 	logger   *slog.Logger
 }
 
 // NewTargetsHandler builds the targets query handler.
-func NewTargetsHandler(verifier TokenVerifier, logger *slog.Logger, source TargetSource) *TargetsHandler {
-	return &TargetsHandler{verifier: verifier, source: source, logger: logger}
+func NewTargetsHandler(verifier TokenVerifier, logger *slog.Logger, targeter NodeTargeter) *TargetsHandler {
+	return &TargetsHandler{verifier: verifier, targeter: targeter, logger: logger}
 }
 
-// ServeHTTP authenticates the caller and returns the published targets. The
-// query is parameterless — the top-N is cluster-wide — so no request body is
-// read; the node intersects the reply with its own pods locally.
+// ServeHTTP authenticates the caller, reads the node name, and returns the
+// container IDs to profile on that node.
 func (h *TargetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -70,7 +74,23 @@ func (h *TargetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := TargetsResponse{Targets: h.source.Snapshot()}
+	var req TargetsRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, targetsMaxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			http.Error(w, "query too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "malformed query", http.StatusBadRequest)
+		return
+	}
+	if req.Node == "" {
+		http.Error(w, "node required", http.StatusBadRequest)
+		return
+	}
+
+	resp := TargetsResponse{ContainerIDs: h.targeter.ContainersForNode(req.Node)}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)

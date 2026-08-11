@@ -14,16 +14,25 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
+
+// Target names one workload the controller has ranked worth profiling. It is a
+// controller-internal identifier: the node cannot act on it (it can't resolve a
+// container to a workload), so it never goes on the wire — the controller
+// expands the published targets to node-scoped container IDs at query time.
+type Target struct {
+	Namespace    string
+	WorkloadKind string
+	WorkloadName string
+}
 
 // Publisher ranks eligible workloads by CPU consumption and publishes the top N.
 type Publisher struct {
 	eligibleNS map[string]struct{}
 	eligibleWL map[string]struct{} // empty => every workload in an eligible namespace
 	topN       int
-	current    atomic.Pointer[[]nodeintake.Target]
+	current    atomic.Pointer[[]Target]
 }
 
 // NewPublisher builds a publisher bound to the operator's eligible set and TopN.
@@ -45,12 +54,12 @@ func NewPublisher(eligibleNamespaces, eligibleWorkloads []string, topN int) *Pub
 // snapshot callback, where records are already a deep copy — so it never races
 // the Accumulator. Consumption is summed per workload across the records.
 func (p *Publisher) Publish(records []*rollup.Record) {
-	sum := make(map[nodeintake.Target]int64)
+	sum := make(map[Target]int64)
 	for _, r := range records {
 		if !p.eligible(r.Namespace, r.WorkloadName) {
 			continue
 		}
-		t := nodeintake.Target{
+		t := Target{
 			Namespace:    r.Namespace,
 			WorkloadKind: r.WorkloadKind,
 			WorkloadName: r.WorkloadName,
@@ -59,7 +68,7 @@ func (p *Publisher) Publish(records []*rollup.Record) {
 	}
 
 	type ranked struct {
-		t nodeintake.Target
+		t Target
 		v int64
 	}
 	rs := make([]ranked, 0, len(sum))
@@ -78,7 +87,7 @@ func (p *Publisher) Publish(records []*rollup.Record) {
 	})
 
 	n := min(p.topN, len(rs))
-	top := make([]nodeintake.Target, 0, n)
+	top := make([]Target, 0, n)
 	for i := range n {
 		top = append(top, rs[i].t)
 	}
@@ -87,7 +96,7 @@ func (p *Publisher) Publish(records []*rollup.Record) {
 
 // Snapshot returns the currently published targets, or nil before the first
 // Publish. It is safe to call from the request goroutine.
-func (p *Publisher) Snapshot() []nodeintake.Target {
+func (p *Publisher) Snapshot() []Target {
 	if v := p.current.Load(); v != nil {
 		return *v
 	}

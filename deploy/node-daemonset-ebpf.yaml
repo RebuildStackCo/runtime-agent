@@ -87,6 +87,13 @@ spec:
             - /sys
             - -controller-endpoint
             - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-inventory
+            # Where to ask which containers to profile, and where to ship the
+            # captured, filtered profiles (ADR 0011 §3, §5.5). Same controller
+            # Service, same projected-token auth, different paths.
+            - -targets-endpoint
+            - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-targets
+            - -profile-endpoint
+            - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-profile
           env:
             - name: NODE_NAME
               valueFrom:

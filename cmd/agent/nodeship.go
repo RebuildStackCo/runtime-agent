@@ -131,16 +131,22 @@ func newTargetsClient(endpoint, tokenPath string) *targetsClient {
 	}
 }
 
-// fetch queries the controller and returns the published targets.
-func (c *targetsClient) fetch(ctx context.Context) ([]nodeintake.Target, error) {
+// fetch queries the controller with this node's name and returns the container
+// IDs on this node that the controller says to profile.
+func (c *targetsClient) fetch(ctx context.Context, node string) ([]string, error) {
 	token, err := readProjectedToken(c.tokenPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading controller token: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, nil) // #nosec G704 -- endpoint is operator-set config, not tainted input
+	body, err := json.Marshal(nodeintake.TargetsRequest{Node: node})
+	if err != nil {
+		return nil, fmt.Errorf("encoding targets query: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body)) // #nosec G704 -- endpoint is operator-set config, not tainted input
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := c.client.Do(req) // #nosec G704 -- endpoint is operator-set config, not tainted input
@@ -156,7 +162,7 @@ func (c *targetsClient) fetch(ctx context.Context) ([]nodeintake.Target, error) 
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decoding targets: %w", err)
 	}
-	return out.Targets, nil
+	return out.ContainerIDs, nil
 }
 
 // profileShipper delivers one captured eBPF CPU profile to the controller's

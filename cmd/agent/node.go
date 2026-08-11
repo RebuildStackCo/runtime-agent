@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
-	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -37,6 +35,8 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	enableEBPF := fs.Bool("enable-ebpf", false, "master switch for the eBPF CPU profiler (ADR 0011); when set, the node checks eBPF readiness at startup and refuses gracefully if the kernel cannot support it")
 	sysRoot := fs.String("sys", "/sys", "sysfs root used to check kernel BTF at <sys>/kernel/btf/vmlinux")
 	configPath := fs.String("config", "", "path to the agent configuration file (YAML); supplies the eBPF profiling config (ADR 0011)")
+	targetsEndpoint := fs.String("targets-endpoint", "", "controller URL to query for profiling targets (ADR 0011); empty disables targeting")
+	profileEndpoint := fs.String("profile-endpoint", "", "controller URL to ship captured profiles to (ADR 0011); empty runs capture-only")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -87,7 +87,9 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 			"overhead_ceiling_pct", profiling.OverheadCeilingPercent,
 		)
 		if res := ebpfGate(logger, *procRoot, *sysRoot, ebpfMetrics); res.Supported() {
-			go runEBPFCapture(ctx, logger, ebpfMetrics)
+			targetsCl := newTargetsClient(*targetsEndpoint, *tokenPath)
+			profileSh := newProfileShipper(*profileEndpoint, *tokenPath)
+			go runProfilingPipeline(ctx, logger, profiling, *procRoot, node, targetsCl, profileSh, ebpfMetrics)
 		}
 	}
 
@@ -189,22 +191,4 @@ func ebpfGate(logger *slog.Logger, procRoot, sysRoot string, m *ebpfGateMetrics)
 		"btf", res.BTFPresent,
 	)
 	return res
-}
-
-// runEBPFCapture runs the eBPF CPU profiler alongside the scanner in its own
-// goroutine, blocking until ctx is cancelled. If the profiler cannot load or
-// attach — ErrUnsupported, e.g. a non-Linux build or a kernel that refuses the
-// programs after the version gate passed — it is a graceful refusal recorded as
-// program_load_failed, and the node keeps scanning (ADR 0011 §2). It surfaces no
-// symbols; only the profiler's aggregate progress counters are logged.
-func runEBPFCapture(ctx context.Context, logger *slog.Logger, m *ebpfGateMetrics) {
-	err := nodeprofile.Run(ctx, logger, nodeprofile.Config{})
-	if err == nil || errors.Is(err, context.Canceled) {
-		return
-	}
-	m.refusals[ebpfgate.ReasonProgramLoadFailed]++
-	logger.Warn("ebpf capture stopped; continuing as scanner",
-		"reason", string(ebpfgate.ReasonProgramLoadFailed),
-		"error", err,
-	)
 }
