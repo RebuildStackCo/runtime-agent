@@ -34,6 +34,11 @@ const (
 	ReasonKernelTooOld  Reason = "kernel_too_old" // kernel older than 5.8
 	ReasonBTFAbsent     Reason = "btf_absent"     // /sys/kernel/btf/vmlinux missing
 	ReasonKernelUnknown Reason = "kernel_unknown" // osrelease unreadable/unparseable
+	// ReasonProgramLoadFailed is set by the capture driver, not Probe: the
+	// version gate can pass yet the eBPF programs still fail to load or attach
+	// (LSM, kernel lockdown, perf_event_paranoid). It is handled with the same
+	// graceful discipline as a too-old kernel (ADR 0011 §2, constraint b).
+	ReasonProgramLoadFailed Reason = "program_load_failed"
 )
 
 // Minimum kernel for CAP_BPF/CAP_PERFMON (ADR 0011, security.md §7.2).
