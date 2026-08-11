@@ -295,22 +295,36 @@ Compensating controls, all set in the shipped manifest
 - Runs as UID 0 (needed to match the credentials of the root processes it
   reads); bounded by all of the above and by the absence of API access.
 
-### 7.2 The eBPF CPU profiler (future, `ebpf` profile)
+### 7.2 The eBPF CPU profiler (opt-in `ebpf` profile, ADR 0011)
 
-Not yet shipped. When enabled it adds, on top of the scanner's privileges:
+Off by default; enabled only in the `ebpf` profile. When enabled it adds, on top
+of the scanner's privileges, exactly two capabilities and one read-only host
+mount — never `privileged`:
 
 | Privilege | Why |
 |---|---|
-| `CAP_BPF` + `CAP_PERFMON` | Load eBPF programs and perform perf sampling for CPU profiles (kernel 5.8+) |
-| hostPath mounts — **TBD (exact list)** | Required by the embedded eBPF profiler for stack unwinding and on-node symbolization (expected: kernel BTF; final list will be pinned here) |
+| `CAP_BPF` + `CAP_PERFMON` | Load eBPF programs and perform perf sampling for CPU profiles. These are the *minimum* for the embedded profiler; `privileged` is **not** used and `allowPrivilegeEscalation` stays `false`, so the container cannot acquire capabilities beyond these two |
+| host `/sys/kernel/btf`, read-only | Kernel BTF, required by the profiler's CO-RE eBPF programs for stack unwinding and on-node symbolization. This is the one additional host path beyond the scanner's `/proc`; no writable host mount is added |
 
-On kernels older than 5.8, where `CAP_BPF`/`CAP_PERFMON` do not exist, the
-`ebpf` profile is unsupported rather than silently escalated.
+**Kernel floor with a graceful refusal.** `CAP_BPF`/`CAP_PERFMON` exist only on
+kernel 5.8+, and the profiler needs BTF. On a kernel that lacks either, the
+`ebpf` profile does not start the profiler, reports the unmet requirement, and
+increments a counter — the Go-binary scanner keeps running. The profile is
+degraded and visible, never silently escalated to `privileged`.
 
-**Symbolization happens on the node.** Your binaries are never uploaded
-anywhere. Stack addresses are resolved to function names locally, and only
-symbolized, filtered profiles (see [§8](#8-data-collected-and-data-leaving-the-cluster))
-leave the node — and only towards the in-cluster controller.
+**Symbolization happens on the node.** Your binaries are never copied or
+uploaded. Stack addresses are resolved to function names locally against the
+running binary, and only symbolized, allow-list-filtered profiles (see
+[§8](#8-data-collected-and-data-leaving-the-cluster)) leave the node — and only
+towards the in-cluster controller.
+
+**What decides who gets profiled.** The node asks the controller which of the
+node's *already-permitted* workloads rank highest by consumption, but the
+eligible set and every ceiling (which namespaces/modules may be profiled at all,
+the capture duration, the frequency, and the overhead cap) live only in the
+node's ConfigMap. The controller's answer can prioritize within that permission
+but can never widen it — no reply turns profiling on for a workload your
+configuration did not already allow (ADR 0011 §3).
 
 ---
 
@@ -340,11 +354,27 @@ classes with different sensitivity and different default policies:
   (a version string, used to report eBPF-profile readiness). No other node
   labels, annotations, addresses, or `status` fields are read.
 
-### Profile filtering (applies at collection, not at egress)
+### Profile filtering (applies on the node, before egress — ADR 0011)
 
-- Stack frames are filtered by Go module path against your allow-list.
-  Frames from paths not on the list (Kubernetes components, service meshes,
-  observability stacks, this agent itself) are dropped.
+- Stack frames are filtered by Go module path on the node that captured them.
+  The policy has three parts: frames whose module path is on **your client
+  allow-list** are kept; **standard-library and `runtime` frames are always
+  kept** (they carry no structure of your code and make a profile readable);
+  **third-party dependency frames are governed by config and dropped by
+  default.** Everything else (Kubernetes components, service meshes,
+  observability stacks, this agent itself) is dropped. Only the kept frames and
+  an aggregate count of what was dropped leave the node — never the identities
+  of dropped functions.
+- eBPF profiles are **validated on the node before they are queued to leave**: a
+  profile is shipped only if it parses, carries a `cpu`/`nanoseconds` sample
+  type, and has a service (non-`runtime.*`) function in its top. A profile that
+  fails is dropped and counted, never sent. What does leave is keyed as a
+  profile payload — pprof bytes plus (namespace, workload, container, image
+  digest, time window, `source=ebpf`).
+- These are **flame-graph / hot-function profiles, not PGO profiles.** The eBPF
+  profiler's output omits data Go's PGO requires (`Function.start_line`, inline
+  frames), so it is used for attribution and coverage only; PGO, if ever
+  offered, comes from native pprof, not from this path (ADR 0011).
 - Aggregated metric rollups are hourly mergeable histograms per workload —
   no raw per-second samples are shipped.
 - Raw, unfiltered samples exist only in a 24–48h ring buffer on an ephemeral
