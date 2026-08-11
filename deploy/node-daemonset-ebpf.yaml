@@ -72,9 +72,15 @@ spec:
             - -interval
             - 60s
             # Enable the eBPF CPU profiler (ADR 0011). The master switch; the
-            # eligible set and all ceilings arrive from the node ConfigMap in a
-            # later slice. On an unsupported kernel the node refuses gracefully.
+            # eligible set and all ceilings come from the ConfigMap mounted
+            # below via -config. On an unsupported kernel the node refuses
+            # gracefully.
             - -enable-ebpf
+            # The profiling config: eligible workload set, symbol allow-list,
+            # capture cadence, overhead ceiling (ADR 0011). -enable-ebpf above is
+            # the master switch; this is additive.
+            - -config
+            - /etc/runtime-agent/config.yaml
             # sysfs root for the BTF readiness check (<sys>/kernel/btf/vmlinux),
             # served by the read-only /sys/kernel/btf mount below.
             - -sys
@@ -124,6 +130,9 @@ spec:
             - name: controller-token
               mountPath: /var/run/secrets/rebuildstack.co/controller-token
               readOnly: true
+            - name: config
+              mountPath: /etc/runtime-agent
+              readOnly: true
       volumes:
         - name: host-proc
           hostPath:
@@ -145,3 +154,33 @@ spec:
                   audience: rebuildstack-controller
                   expirationSeconds: 3600
                   path: token
+        # The profiling config (ADR 0011). Helm-rendered in a real install; here
+        # a plain ConfigMap. Read once at startup, never reconfigured remotely
+        # (ADR 0001).
+        - name: config
+          configMap:
+            name: runtime-agent-node-config
+---
+# Sample profiling config. The eligible set is an explicit allow-list: with it
+# empty, no workload is profiled — an operator opts specific namespaces in. The
+# symbol allow-list is what makes shipping a stack trace defensible (ADR 0011 §4,
+# security.md §8): only frames from these module prefixes leave the node.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-agent-node-config
+  namespace: runtime-agent
+data:
+  config.yaml: |
+    profiling:
+      # Which workloads may be profiled at all (empty = none).
+      eligibleNamespaces: []
+      # eligibleWorkloads: []          # optional, within the namespaces above
+      # The customer's own Go module-path prefixes whose frames may leave the
+      # node. Everything else (third-party, unsymbolized) is redacted.
+      allowedModulePrefixes: []
+      thirdPartySymbols: drop          # drop (default) | keep
+      topN: 5
+      captureDurationSeconds: 60
+      intervalSeconds: 300
+      overheadCeilingPercent: 5

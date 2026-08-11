@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
@@ -34,9 +36,21 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	tokenPath := fs.String("token-path", defaultControllerTokenPath, "path to the projected controller-audience ServiceAccount token")
 	enableEBPF := fs.Bool("enable-ebpf", false, "master switch for the eBPF CPU profiler (ADR 0011); when set, the node checks eBPF readiness at startup and refuses gracefully if the kernel cannot support it")
 	sysRoot := fs.String("sys", "/sys", "sysfs root used to check kernel BTF at <sys>/kernel/btf/vmlinux")
+	configPath := fs.String("config", "", "path to the agent configuration file (YAML); supplies the eBPF profiling config (ADR 0011)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	// The node reads the same config file as the controller, for the eBPF
+	// profiling knobs (ADR 0011): the eligible workload set, the symbol
+	// allow-list, and the capture cadence/overhead. -enable-ebpf remains the
+	// master switch; this config is additive. The pipeline that consumes it
+	// arrives in a later slice — here it is loaded, normalized, and logged.
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	profiling := cfg.Profiling.Normalized()
 
 	// The node identity for the report; the DaemonSet sets NODE_NAME via the
 	// downward API. Empty is acceptable (the controller keys facts by pod UID
@@ -62,6 +76,16 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	// targeting slice ships.
 	ebpfMetrics := newEBPFGateMetrics()
 	if *enableEBPF {
+		logger.Info("ebpf profiling config",
+			"eligible_namespaces", len(profiling.EligibleNamespaces),
+			"eligible_workloads", len(profiling.EligibleWorkloads),
+			"allowed_module_prefixes", len(profiling.AllowedModulePrefixes),
+			"third_party_symbols", profiling.ThirdPartySymbols,
+			"top_n", profiling.TopN,
+			"capture_duration_s", profiling.CaptureDurationSeconds,
+			"interval_s", profiling.IntervalSeconds,
+			"overhead_ceiling_pct", profiling.OverheadCeilingPercent,
+		)
 		if res := ebpfGate(logger, *procRoot, *sysRoot, ebpfMetrics); res.Supported() {
 			go runEBPFCapture(ctx, logger, ebpfMetrics)
 		}

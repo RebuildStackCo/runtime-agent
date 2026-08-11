@@ -66,3 +66,45 @@ func TestMissingFileIsAnError(t *testing.T) {
 		t.Fatal("Load accepted a missing file")
 	}
 }
+
+func TestLoadsProfiling(t *testing.T) {
+	path := write(t, `
+profiling:
+  enabled: true
+  eligibleNamespaces: ["shop", "api"]
+  allowedModulePrefixes: ["github.com/acme/app"]
+  thirdPartySymbols: keep
+  topN: 3
+  captureDurationSeconds: 30
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Profiling
+	if !p.Enabled || len(p.EligibleNamespaces) != 2 || p.AllowedModulePrefixes[0] != "github.com/acme/app" {
+		t.Fatalf("profiling parsed wrong: %+v", p)
+	}
+	if p.ThirdPartySymbols != "keep" || p.TopN != 3 || p.CaptureDurationSeconds != 30 {
+		t.Errorf("profiling fields wrong: %+v", p)
+	}
+}
+
+func TestProfilingNormalizedDefaults(t *testing.T) {
+	p := Profiling{}.Normalized()
+	if p.ThirdPartySymbols != ThirdPartySymbolsDrop {
+		t.Errorf("thirdPartySymbols default = %q, want drop", p.ThirdPartySymbols)
+	}
+	if p.TopN != DefaultProfilingTopN || p.CaptureDurationSeconds != DefaultProfilingCaptureDurationSeconds ||
+		p.IntervalSeconds != DefaultProfilingIntervalSeconds || p.OverheadCeilingPercent != DefaultProfilingOverheadCeilingPercent {
+		t.Errorf("numeric defaults not applied: %+v", p)
+	}
+	// Normalized must not invent an eligible set.
+	if len(p.EligibleNamespaces) != 0 {
+		t.Errorf("Normalized invented an eligible set: %+v", p.EligibleNamespaces)
+	}
+	// A set value is preserved.
+	if got := (Profiling{TopN: 9}).Normalized(); got.TopN != 9 {
+		t.Errorf("set TopN overwritten: %d", got.TopN)
+	}
+}
