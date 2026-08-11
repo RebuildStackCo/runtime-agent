@@ -111,6 +111,7 @@ type PodWatcher struct {
 type podIndexEntry struct {
 	namespace string
 	name      string
+	node      string
 	workload  WorkloadRef
 	// containers maps each started container's runtime ID (normalized: no
 	// runtime prefix, lowercase) to its name and image digest. It is what the
@@ -230,6 +231,7 @@ func (w *PodWatcher) indexPod(pod *corev1.Pod) {
 	entry := podIndexEntry{
 		namespace:  pod.Namespace,
 		name:       pod.Name,
+		node:       pod.Spec.NodeName,
 		workload:   w.resolveWorkload(pod),
 		containers: containerIndex(pod),
 	}
@@ -332,6 +334,38 @@ func (w *PodWatcher) LookupContainer(podUID types.UID, containerID string) (name
 		return "", WorkloadRef{}, "", "", false
 	}
 	return entry.namespace, entry.workload, ci.name, ci.imageDigest, true
+}
+
+// ContainerOnNode is one running container attributed to its workload. It scopes
+// a node's profiling targets (ADR 0011 §3): the controller expands the published
+// top-N workloads to the containers of their pods on a given node, because the
+// node cannot resolve a container to a workload itself (no API access, ADR 0009).
+type ContainerOnNode struct {
+	Namespace   string
+	Workload    WorkloadRef
+	ContainerID string
+}
+
+// ContainersOnNode returns every indexed container whose pod is scheduled on
+// node. It is how the controller answers a node's targets query with container
+// IDs the node can act on.
+func (w *PodWatcher) ContainersOnNode(node string) []ContainerOnNode {
+	w.indexMu.RLock()
+	defer w.indexMu.RUnlock()
+	var out []ContainerOnNode
+	for _, entry := range w.index {
+		if entry.node != node {
+			continue
+		}
+		for cid := range entry.containers {
+			out = append(out, ContainerOnNode{
+				Namespace:   entry.namespace,
+				Workload:    entry.workload,
+				ContainerID: cid,
+			})
+		}
+	}
+	return out
 }
 
 // admit runs the pod through the filter, consulting the namespace's

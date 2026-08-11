@@ -136,7 +136,16 @@ func (s *Scanner) scanPID(pid int, res *Result) {
 // file yields the zero binding — the process is still a valid find, just
 // unattributed to a pod.
 func (s *Scanner) binding(pid int) PodBinding {
-	raw, err := os.ReadFile(filepath.Join(s.procRoot, strconv.Itoa(pid), "cgroup"))
+	return ReadBinding(s.procRoot, pid)
+}
+
+// ReadBinding reads and parses the cgroup of process pid under procRoot,
+// returning the pod UID and container ID the kubelet encodes into the cgroup
+// path (ADR 0009 §2). A missing or unreadable cgroup yields the zero binding. It
+// is exported so the node profiler can attribute a sample's PID to a pod and
+// container without duplicating the parsing.
+func ReadBinding(procRoot string, pid int) PodBinding {
+	raw, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cgroup")) // #nosec G304 -- procRoot is an operator-set flag; pid is a live process
 	if err != nil {
 		return PodBinding{}
 	}

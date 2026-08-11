@@ -382,13 +382,15 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				"profiles_received", n)
 		}
 
-		// Pass the publisher as a nil-safe TargetSource: a typed nil pointer
-		// would make a non-nil interface, so only assign when it exists.
-		var targetSource nodeintake.TargetSource
+		// The targeter expands the publisher's top-N workloads to the container
+		// IDs of their pods on the querying node (the node can't do that — no API
+		// access). A nil-safe interface keeps the route absent when profiling is
+		// off (a typed nil pointer would make a non-nil interface).
+		var targeter nodeintake.NodeTargeter
 		if targetsPublisher != nil {
-			targetSource = targetsPublisher
+			targeter = nodeTargeter{publisher: targetsPublisher, pw: podWatcher}
 		}
-		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile, targetSource)
+		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile, targeter)
 		if err != nil {
 			return fmt.Errorf("configuring node intake: %w", err)
 		}
@@ -423,7 +425,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 // by the cluster JWKS (fetched over the API server's in-cluster transport, no
 // TokenReview) and an HTTP server that decodes node reports and hands each to
 // onReport (which joins it into the Go inventory, ADR 0010).
-func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport), targets nodeintake.TargetSource) (*nodeintake.Server, error) {
+func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport), targeter nodeintake.NodeTargeter) (*nodeintake.Server, error) {
 	addr := cfg.ListenAddress
 	if addr == "" {
 		addr = config.DefaultNodeIntakeListenAddress
@@ -447,12 +449,41 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 	// The targets query endpoint is mounted only when a source is configured
 	// (profiling enabled); a nil interface leaves the route absent.
 	var targetsHandler http.Handler
-	if targets != nil {
-		targetsHandler = nodeintake.NewTargetsHandler(verifier, logger, targets)
+	if targeter != nil {
+		targetsHandler = nodeintake.NewTargetsHandler(verifier, logger, targeter)
 	}
 	logger.Info("node intake enabled", "addr", addr, "audience", audience,
-		"expected_subject", cfg.ExpectedSubject, "targeting", targets != nil)
+		"expected_subject", cfg.ExpectedSubject, "targeting", targeter != nil)
 	return nodeintake.NewServer(addr, handler, profileHandler, targetsHandler, logger), nil
+}
+
+// nodeTargeter answers a node's targets query: it intersects the publisher's
+// top-N eligible workloads with the containers PodWatcher sees on that node, and
+// returns their container IDs. This is where a cluster-wide workload ranking
+// becomes a node-actionable set (ADR 0011 §3): the node profiles the processes
+// whose cgroup container ID is returned here.
+type nodeTargeter struct {
+	publisher *targeting.Publisher
+	pw        *collector.PodWatcher
+}
+
+func (t nodeTargeter) ContainersForNode(node string) []string {
+	top := t.publisher.Snapshot()
+	if len(top) == 0 {
+		return nil
+	}
+	want := make(map[targeting.Target]struct{}, len(top))
+	for _, w := range top {
+		want[w] = struct{}{}
+	}
+	var out []string
+	for _, c := range t.pw.ContainersOnNode(node) {
+		key := targeting.Target{Namespace: c.Namespace, WorkloadKind: c.Workload.Kind, WorkloadName: c.Workload.Name}
+		if _, ok := want[key]; ok {
+			out = append(out, c.ContainerID)
+		}
+	}
+	return out
 }
 
 // podContainerResolver adapts PodWatcher's container lookup to the inventory

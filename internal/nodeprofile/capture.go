@@ -37,17 +37,33 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Run starts the eBPF CPU profiler, accumulating symbolized samples in an
-// in-memory Buffer and periodically logging aggregate counters only. It blocks
-// until ctx is cancelled (returning nil) or returns an error wrapping
-// ErrUnsupported when the profiler cannot run. It never logs symbol-bearing
-// data: before the allow-list filter (a later slice), the captured profile
-// exists nowhere but the Buffer this function owns.
-func Run(ctx context.Context, logger *slog.Logger, cfg Config) error {
+// Session is a running capture. The pipeline drains it once per window; the
+// profiler keeps accumulating in the background until ctx (passed to Start) is
+// cancelled.
+type Session struct {
+	buf *Buffer
+}
+
+// Start loads and attaches the eBPF profiler and begins accumulating symbolized
+// samples in the background, returning a Session to drain. Setup failures
+// (non-Linux build, or the programs failing to load/attach) are returned
+// synchronously as an error wrapping ErrUnsupported, so the caller degrades to
+// scanner-only. Before the allow-list filter, the captured profile exists
+// nowhere but the Session's Buffer.
+func Start(ctx context.Context, logger *slog.Logger, cfg Config) (*Session, error) {
 	buf := &Buffer{}
 	rep := newTraceReporter(buf)
-	return startCapture(ctx, logger, cfg.withDefaults(), rep, buf)
+	run, err := startCapture(ctx, logger, cfg.withDefaults(), rep)
+	if err != nil {
+		return nil, err
+	}
+	go run()
+	return &Session{buf: buf}, nil
 }
+
+// Drain cuts the current window: it returns the samples accumulated since the
+// last Drain and resets the buffer.
+func (s *Session) Drain() []Sample { return s.buf.Drain() }
 
 // logProgress emits an aggregate-only progress line. It is the single place the
 // capture path logs anything about a running profile, and it logs counts, never

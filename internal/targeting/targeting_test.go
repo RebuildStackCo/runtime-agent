@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -15,7 +14,7 @@ func rec(ns, name string, cpu int64) *rollup.Record {
 	return &r
 }
 
-func names(ts []nodeintake.Target) string {
+func names(ts []Target) string {
 	out := make([]string, len(ts))
 	for i, t := range ts {
 		out[i] = t.WorkloadName

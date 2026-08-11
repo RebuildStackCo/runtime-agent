@@ -68,3 +68,14 @@ func (b *Buffer) Samples() []Sample {
 	copy(out, b.samples)
 	return out
 }
+
+// Drain returns the accumulated samples and resets the buffer so the next
+// capture window starts empty. It is how the pipeline cuts a window.
+func (b *Buffer) Drain() []Sample {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := b.samples
+	b.samples = nil
+	b.frames = 0
+	return out
+}

@@ -309,10 +309,21 @@ filtered bytes leave), 6. **Depends on.** 5.
 
 ## Slice 6 — targeting: node asks controller
 
+> **Correction (landed in 6c).** The node has no API access, so it cannot map its
+> own containers to a namespace/workload. Therefore: the targets reply is
+> **container IDs scoped to the querying node** (the node sends its NODE_NAME; the
+> controller expands the top-N workloads to their pods' containers on that node
+> via `PodWatcher.ContainersOnNode`), not workload identifiers; **eligibility is
+> enforced controller-only** (at the targeting reply and again at the ship-time
+> join) — the node re-checks only the symbol allow-list, which it can; and the
+> overhead ceiling maps to **SamplesPerSecond** (the profiler can't be cheaply
+> paused), not a duty cycle. Split into 6a (config) / 6b (targeting query) /
+> 6c (live pipeline).
+
 **Goal.** Node-initiated, config-bounded targeting. On its own interval the node
-POSTs a targets query to a new controller endpoint; the controller answers top-N
-workloads by consumption from its rollups; the node profiles within its config's
-eligible set and ceilings.
+POSTs a targets query to a new controller endpoint; the controller answers with
+the container IDs on that node that belong to the top-N eligible workloads; the
+node profiles those, bounded by its config's ceilings.
 
 **In scope.** The new controller endpoint (separate from the 0010 inventory
 receiver, same projected-token auth); the node query client; the node role learns

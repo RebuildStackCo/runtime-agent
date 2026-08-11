@@ -451,3 +451,41 @@ func TestReportsImageDigestOnUpdate(t *testing.T) {
 		}
 	}
 }
+
+func TestContainersOnNode(t *testing.T) {
+	owner := controllerRef("ReplicaSet", "web-7d9f")
+	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "shop", Name: "web-7d9f", UID: "uid-web-7d9f",
+		OwnerReferences: []metav1.OwnerReference{controllerRef("Deployment", "web")},
+	}}
+	p := pod("web-7d9f-abcde", &owner)
+	p.Spec.NodeName = "node-1"
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{
+		{Name: "app", ContainerID: "containerd://AAA111", ImageID: "example.com/app@sha256:d"},
+	}
+
+	clientset := fake.NewClientset(rs, p)
+	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = watcher.Run(ctx) }()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		cs := watcher.ContainersOnNode("node-1")
+		if len(cs) > 0 {
+			if cs[0].Namespace != "shop" || cs[0].Workload.Name != "web" || cs[0].ContainerID != "aaa111" {
+				t.Errorf("container on node = %+v, want shop/Deployment web/aaa111", cs[0])
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("container never appeared on node-1")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if cs := watcher.ContainersOnNode("other-node"); len(cs) != 0 {
+		t.Errorf("other-node should have no containers, got %+v", cs)
+	}
+}
