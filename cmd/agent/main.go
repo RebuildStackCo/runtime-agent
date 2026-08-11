@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -329,7 +330,45 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				"facts_unjoined", ic.FactsUnjoined,
 			)
 		}
-		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport)
+		// Captured profiles arrive on a second endpoint. The node ships already
+		// allow-list-filtered pprof bytes with only what it can see locally
+		// (pod UID / container ID); the controller joins those to a workload via
+		// PodWatcher — exactly as it joins inventory facts — and spools the
+		// profile. An unjoinable profile (informer lag, or a pod outside the
+		// controller's filters) is counted and dropped, never guessed (ADR 0010
+		// §5, ADR 0011 §5.5).
+		var profilesReceived, profilesUnjoined atomic.Uint64
+		onProfile := func(id nodeauth.Identity, report nodeintake.ProfileReport) {
+			ns, workload, container, digest, ok := podWatcher.LookupContainer(types.UID(report.PodUID), report.ContainerID)
+			if !ok {
+				n := profilesUnjoined.Add(1)
+				logger.Warn("profile dropped: pod/container not in inventory",
+					"from_subject", id.Subject, "node", report.Node, "profiles_unjoined", n)
+				return
+			}
+			key := sink.ProfileKey{
+				Namespace:    ns,
+				Workload:     workload.Name,
+				Container:    container,
+				ImageDigest:  digest,
+				CaptureStart: report.CaptureStart,
+				CaptureEnd:   report.CaptureEnd,
+			}
+			if spool != nil {
+				if err := spool.WriteProfile(key, report.Pprof); err != nil {
+					logger.Error("writing profile to spool failed", "error", err,
+						"namespace", ns, "workload", workload.Name)
+					return
+				}
+			}
+			n := profilesReceived.Add(1)
+			logger.Info("profile received",
+				"from_subject", id.Subject, "node", report.Node,
+				"namespace", ns, "workload", workload.Name, "container", container,
+				"profiles_received", n)
+		}
+
+		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile)
 		if err != nil {
 			return fmt.Errorf("configuring node intake: %w", err)
 		}
@@ -364,7 +403,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 // by the cluster JWKS (fetched over the API server's in-cluster transport, no
 // TokenReview) and an HTTP server that decodes node reports and hands each to
 // onReport (which joins it into the Go inventory, ADR 0010).
-func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report)) (*nodeintake.Server, error) {
+func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport)) (*nodeintake.Server, error) {
 	addr := cfg.ListenAddress
 	if addr == "" {
 		addr = config.DefaultNodeIntakeListenAddress
@@ -384,8 +423,9 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 	verifier := nodeauth.NewVerifier(keys, audience, nodeauth.WithExpectedSubject(cfg.ExpectedSubject))
 
 	handler := nodeintake.NewHandler(verifier, logger, onReport)
+	profileHandler := nodeintake.NewProfileHandler(verifier, logger, onProfile)
 	logger.Info("node intake enabled", "addr", addr, "audience", audience, "expected_subject", cfg.ExpectedSubject)
-	return nodeintake.NewServer(addr, handler, logger), nil
+	return nodeintake.NewServer(addr, handler, profileHandler, logger), nil
 }
 
 // podContainerResolver adapts PodWatcher's container lookup to the inventory
