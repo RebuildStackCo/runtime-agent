@@ -108,9 +108,15 @@ func TestEBPFCaptureEndToEnd(t *testing.T) {
 	}
 }
 
-// waitForEBPFReadyOrSkip blocks until the node logs the eBPF gate ready, or skips
-// the test when the node cannot support capture (cap-apply failure or a refusal
-// for btf_absent / kernel_too_old). It reuses the gate-refusal detection.
+// waitForEBPFReadyOrSkip blocks until the node's eBPF profiler actually starts
+// capturing (the only signal that the full path can be asserted), or skips the
+// test when capture is unavailable in this environment. The gate reporting
+// "ready" is NOT sufficient: the kernel-version + BTF gate can pass and the
+// tracer still fail to load — most notably inside kind's nested container, where
+// the profiler's system-analysis step fails with program_load_failed even though
+// the gate passed (docs/spikes/ebpf-capture-e2e.md). Skips cover every case where
+// capture cannot run here: caps not grantable, the gate refusing (btf_absent /
+// kernel_too_old), or the tracer failing to load (program_load_failed).
 func waitForEBPFReadyOrSkip(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, pod string) {
 	t.Helper()
 	deadline := time.Now().Add(4 * time.Minute)
@@ -119,20 +125,64 @@ func waitForEBPFReadyOrSkip(ctx context.Context, t *testing.T, cs kubernetes.Int
 			t.Skipf("node cannot grant CAP_BPF/CAP_PERFMON, so the eBPF profiler never starts "+
 				"(e.g. Docker Desktop / linuxkit): %s", reason)
 		}
-		refused, _, ready := ebpfGateLog(ctx, t, cs, ns, pod)
-		if ready {
-			return
+		st := readEBPFNodeState(ctx, t, cs, ns, pod)
+		if st.captureStarted {
+			return // the tracer loaded and is capturing; assert the full path
 		}
-		if refused != nil {
-			switch refused.Reason {
-			case "btf_absent", "kernel_too_old":
-				t.Skipf("node kernel cannot support eBPF capture (reason %q); the capture path needs "+
-					"a Linux host with BTF", refused.Reason)
-			}
+		if st.captureUnavailable {
+			t.Skipf("eBPF gate passed but the profiler could not load here (reason %q); the capture "+
+				"path needs a host where the eBPF tracer loads — not kind's nested container, whose "+
+				"system-analysis step fails (see docs/spikes/ebpf-capture-e2e.md)", st.unavailableReason)
+		}
+		switch st.refusedReason {
+		case "btf_absent", "kernel_too_old":
+			t.Skipf("node kernel cannot support eBPF capture (reason %q); the capture path needs "+
+				"a Linux host with BTF", st.refusedReason)
 		}
 		time.Sleep(3 * time.Second)
 	}
-	t.Fatalf("eBPF gate did not report ready before timeout (pod %s/%s)", ns, pod)
+	t.Fatalf("eBPF profiler neither started capturing nor reported unavailable before timeout (pod %s/%s)", ns, pod)
+}
+
+// ebpfNodeState is the capture-relevant subset of the node's structured log.
+type ebpfNodeState struct {
+	captureStarted     bool   // the eBPF tracer loaded and is capturing
+	captureUnavailable bool   // the tracer failed to load; node degraded to scanner
+	unavailableReason  string // reason on captureUnavailable (e.g. program_load_failed)
+	refusedReason      string // reason on a gate refusal (btf_absent / kernel_too_old)
+}
+
+// readEBPFNodeState streams the node pod's log and reports what the eBPF profiler
+// did: gate ready, tracer started, or tracer unavailable / gate refused (with the
+// reason). It reads the whole log each call, so the latest state wins.
+func readEBPFNodeState(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, pod string) ebpfNodeState {
+	t.Helper()
+	var st ebpfNodeState
+	stream, err := cs.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{}).Stream(ctx)
+	if err != nil {
+		t.Logf("getting logs for %s (will retry): %v", pod, err)
+		return st
+	}
+	defer func() { _ = stream.Close() }()
+
+	sc := bufio.NewScanner(stream)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		var l gateLine
+		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
+			continue
+		}
+		switch {
+		case l.Msg == "ebpf capture started":
+			st.captureStarted = true
+		case strings.HasPrefix(l.Msg, "ebpf capture unavailable"):
+			st.captureUnavailable = true
+			st.unavailableReason = l.Reason
+		case strings.HasPrefix(l.Msg, "ebpf profile refused"):
+			st.refusedReason = l.Reason
+		}
+	}
+	return st
 }
 
 // spoolProfilePayload mirrors the fields of an ebpf_profile spool file this test
