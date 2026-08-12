@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e profile-gate-e2e
+.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e profile-gate-e2e profile-capture-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -85,6 +85,18 @@ profile-gate-e2e: kind-load ## Deploy the ebpf node variant in kind and assert t
 	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
 	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestEBPFGateRefusesGracefully 2>&1 \
 		| tee test/e2e/logs/profile-gate-e2e-$$(date +%Y%m%d-%H%M%S).log
+
+profile-capture-e2e: kind-load ## Deploy controller + ebpf node + CPU-hot sample in kind and assert the full eBPF capture→filter→ship→spool path (ADR 0011); skips where the host cannot run eBPF (no BTF / no CAP_BPF, e.g. Docker Desktop); log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	docker pull $(SPOOL_READER_IMAGE)
+	go tool kind load docker-image $(SPOOL_READER_IMAGE) --name $(E2E_CLUSTER)
+	set -o pipefail; \
+	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
+	E2E_SAMPLE_IMAGE=$(SAMPLE_IMAGE) \
+	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
+	go test -tags e2e -count=1 -timeout 20m -v ./test/e2e/ -run TestEBPFCaptureEndToEnd 2>&1 \
+		| tee test/e2e/logs/profile-capture-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 clean:
 	rm -rf bin

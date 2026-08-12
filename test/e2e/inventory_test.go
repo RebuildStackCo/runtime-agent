@@ -81,7 +81,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 
 	// The controller: read RBAC, JWKS discovery grant, node-intake receiver, and
 	// a spool with a shell sidecar to read it.
-	deployController(ctx, t, clientset, ns, agentImage)
+	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns))
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
 
@@ -221,10 +221,10 @@ func deploySampleWorkload(ctx context.Context, t *testing.T, cs kubernetes.Inter
 // deployController decodes deploy/controller.yaml and applies it into ns. It
 // retargets the namespace, uniquely renames the cluster-scoped RBAC objects (so
 // concurrent runs and cleanup are safe), points them at this run's
-// ServiceAccount, overrides the image, renders the ConfigMap for this namespace,
-// and adds the shell sidecar that shares the spool volume so the test can read
-// the payload the controller writes.
-func deployController(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image string) {
+// ServiceAccount, overrides the image, installs configYAML as the ConfigMap for
+// this namespace, and adds the shell sidecar that shares the spool volume so the
+// test can read the payload the controller writes.
+func deployController(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, configYAML string) {
 	t.Helper()
 	data, err := os.ReadFile(controllerManifestPath)
 	if err != nil {
@@ -292,9 +292,7 @@ func deployController(ctx context.Context, t *testing.T, cs kubernetes.Interface
 			var cm corev1.ConfigMap
 			mustUnmarshal(t, doc, &cm)
 			cm.Namespace = ns
-			// Render the config for this namespace: the expected subject is the
-			// node role's ServiceAccount in ns.
-			cm.Data["config.yaml"] = renderControllerConfig(ns)
+			cm.Data["config.yaml"] = configYAML
 			create(ctx, t, "ConfigMap", func() error {
 				_, err := cs.CoreV1().ConfigMaps(ns).Create(ctx, &cm, metav1.CreateOptions{})
 				return err
