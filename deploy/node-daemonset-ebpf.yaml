@@ -6,7 +6,7 @@
 #
 # The difference from the scanner-only manifest is deliberately small and
 # auditable: exactly two added capabilities (CAP_BPF, CAP_PERFMON), one added
-# read-only host mount (/sys/kernel/btf for CO-RE symbolization), and the
+# read-only host mount (/sys/kernel for kernel BTF), and the
 # -enable-ebpf master switch. Still NO privileged, NO writable host mount, and
 # the same zero-RBAC identity. On a kernel < 5.8 or without BTF the profiler
 # refuses gracefully and the node keeps running the scanner (ADR 0011 §2).
@@ -82,7 +82,7 @@ spec:
             - -config
             - /etc/runtime-agent/config.yaml
             # sysfs root for the BTF readiness check (<sys>/kernel/btf/vmlinux),
-            # served by the read-only /sys/kernel/btf mount below.
+            # served by the read-only /sys/kernel mount below.
             - -sys
             - /sys
             - -controller-endpoint
@@ -131,8 +131,8 @@ spec:
               mountPath: /host/proc
               readOnly: true
               mountPropagation: HostToContainer
-            - name: host-btf
-              mountPath: /sys/kernel/btf
+            - name: host-sys-kernel
+              mountPath: /sys/kernel
               readOnly: true
             - name: controller-token
               mountPath: /var/run/secrets/rebuildstack.co/controller-token
@@ -145,14 +145,18 @@ spec:
           hostPath:
             path: /proc
             type: Directory
-        # Kernel BTF, read-only. Required by the profiler's CO-RE eBPF programs
-        # for stack unwinding and on-node symbolization (ADR 0011, security.md
-        # §7.2). This is the one host path this variant adds over the scanner,
-        # and it is read-only. Absent on kernels without BTF — the readiness
-        # gate reports btf_absent and the profiler stays off.
-        - name: host-btf
+        # Kernel BTF, read-only, for the profiler's CO-RE eBPF programs (stack
+        # unwinding and on-node symbolization; ADR 0011, security.md §7.2). We
+        # mount the always-present parent /sys/kernel rather than /sys/kernel/btf
+        # directly: on a kernel without BTF the btf/ directory does not exist, and
+        # a hostPath of a missing directory blocks the pod from starting — which
+        # would defeat the graceful refusal whose whole point is that the node
+        # still runs as the scanner. The readiness gate checks
+        # /sys/kernel/btf/vmlinux under this mount and reports btf_absent when it
+        # is missing.
+        - name: host-sys-kernel
           hostPath:
-            path: /sys/kernel/btf
+            path: /sys/kernel
             type: Directory
         - name: controller-token
           projected:
