@@ -366,10 +366,12 @@ of them snapshots of current state that replace their predecessor rather than
 accumulating history:
 
 - **`workload_metadata`** — per (namespace, workload, container, image digest):
-  the image reference, QoS class, declared requests and limits, declared
-  container ports, how many replicas currently carry that build, and the counts
-  of those replicas per pod phase and per node name. It contains no pod names:
-  replicas are counted, not listed.
+  the image reference, declared requests and limits, and declared container
+  ports, plus a `pod` block with the QoS class, how many replicas currently
+  carry that build, and the counts of those replicas per pod phase and per node
+  name. A pod with several containers appears as one record per container, each
+  repeating the same `pod` block. It contains no pod names: replicas are
+  counted, not listed.
 - **`node_metadata`** — per node: name, size, instance type, capacity type,
   zone, region, kernel version.
 

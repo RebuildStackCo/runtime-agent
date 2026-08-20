@@ -35,29 +35,18 @@ type Key struct {
 	ImageDigest string `json:"image_digest,omitempty"`
 }
 
-// Record is the declared shape of one workload container plus the placement of
-// the replicas that carry it. Every field is copied from the pod spec or
-// status; none is derived from a threshold.
-type Record struct {
-	Key
-	// Image is the reference as written in the spec (tag or digest form). It is
-	// kept alongside the resolved digest because a tag is what a human
-	// recognizes and what a GitOps diff shows.
-	Image string `json:"image"`
-	// Init marks an init container. Its resources participate in scheduling
-	// differently from a regular container's, so the distinction must survive.
-	Init bool `json:"init,omitempty"`
-	// QOSClass is the pod-level class the kubelet assigned. It is a property of
-	// the whole pod, denormalized onto each of its containers; pods sharing this
-	// record's key share their spec, so they share the class.
+// PodScope holds the facts of this record that belong to the pod rather than to
+// the container the record is keyed by. They live in their own object so their
+// scope is visible in the payload itself: a pod with three containers produces
+// three records, and each repeats the same pod facts. Flattened onto the record,
+// `replicas: 2` on three container records reads as six replicas to anyone
+// summing them — plausible, wrong, and with no failing test to catch it. Nested,
+// summing `pod.replicas` across a pod's containers is self-evidently
+// meaningless.
+type PodScope struct {
+	// QOSClass is assigned by the kubelet from the whole pod's containers, so
+	// it is a property of the pod even though every container shares it.
 	QOSClass string `json:"qos_class,omitempty"`
-	// Resources preserves the distinction between an unset request or limit
-	// (nil) and one explicitly set to zero — the difference is the whole point
-	// of several findings, and JSON omits nil rather than flattening it.
-	Resources collector.Resources `json:"resources"`
-	// Ports are the container's declared ports. Declaring a port is not using
-	// it; that inference belongs to the backend.
-	Ports []collector.ContainerPort `json:"ports,omitempty"`
 	// Replicas is how many collected pods currently carry this container of
 	// this build.
 	Replicas int `json:"replicas"`
@@ -70,6 +59,29 @@ type Record struct {
 	// fewer than Replicas; that shortfall is itself the pending-scheduling
 	// signal, not a gap in collection.
 	Nodes map[string]int `json:"nodes,omitempty"`
+}
+
+// Record is the declared shape of one workload container plus the placement of
+// the replicas that carry it. Every field is copied from the pod spec or
+// status; none is derived from a threshold.
+type Record struct {
+	Key
+	// Image is the reference as written in the spec (tag or digest form). It is
+	// kept alongside the resolved digest because a tag is what a human
+	// recognizes and what a GitOps diff shows.
+	Image string `json:"image"`
+	// Init marks an init container. Its resources participate in scheduling
+	// differently from a regular container's, so the distinction must survive.
+	Init bool `json:"init,omitempty"`
+	// Resources preserves the distinction between an unset request or limit
+	// (nil) and one explicitly set to zero — the difference is the whole point
+	// of several findings, and JSON omits nil rather than flattening it.
+	Resources collector.Resources `json:"resources"`
+	// Ports are the container's declared ports. Declaring a port is not using
+	// it; that inference belongs to the backend.
+	Ports []collector.ContainerPort `json:"ports,omitempty"`
+	// Pod carries the facts that belong to the pod, not to this container.
+	Pod PodScope `json:"pod"`
 }
 
 // Aggregate reduces a pod snapshot to one record per (workload container,
@@ -96,20 +108,22 @@ func Aggregate(pods []collector.PodInfo) []Record {
 					Key:       key,
 					Image:     c.Image,
 					Init:      c.Init,
-					QOSClass:  pod.QOSClass,
 					Resources: c.Resources,
 					Ports:     c.Ports,
-					Phases:    make(map[string]int),
-					Nodes:     make(map[string]int),
+					Pod: PodScope{
+						QOSClass: pod.QOSClass,
+						Phases:   make(map[string]int),
+						Nodes:    make(map[string]int),
+					},
 				}
 				byKey[key] = rec
 			}
-			rec.Replicas++
+			rec.Pod.Replicas++
 			if pod.Phase != "" {
-				rec.Phases[pod.Phase]++
+				rec.Pod.Phases[pod.Phase]++
 			}
 			if pod.Node != "" {
-				rec.Nodes[pod.Node]++
+				rec.Pod.Nodes[pod.Node]++
 			}
 		}
 	}

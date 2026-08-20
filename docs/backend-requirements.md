@@ -85,11 +85,11 @@ The agent ships, per cluster:
   window totals — CPU core-seconds, CFS throttling periods, and PSI stall
   time where the cluster exposes it (ADR 0006)
 - workload and node metadata: names, namespaces, owner chains, image
-  digests, Go version, module path, declared requests/limits and QoS class,
-  declared container ports, replica counts per pod phase and per node,
-  instance types, capacity type, allocatable, and node zone/region. These
-  arrive as superseding snapshots of current state, not as a change log
-  (ADR 0012)
+  digests, Go version, module path, declared requests/limits, declared
+  container ports, and — in a per-record `pod` block — QoS class and replica
+  counts per pod phase and per node; plus instance types, capacity type,
+  allocatable, and node zone/region. These arrive as superseding snapshots of
+  current state, not as a change log (ADR 0012)
 - OOM and restart events
 - symbolized, allow-list-filtered profiles, keyed to image digest
 - a coverage report: **aggregate counts per filter type** (discovered /
@@ -120,6 +120,16 @@ a declared value and a measured one are different kinds of claim, and
 collapsing them yields a confident wrong answer with no failing test to show
 for it. The registry of kinds, their natural keys, and their delivery
 discipline is [ADR 0012](adr/0012-payload-registry-and-provenance.md).
+
+**Records are container-scoped; a differently scoped fact is nested**
+([ADR 0014](adr/0014-scoped-facts-are-nested.md)). Usage rollups and workload
+metadata are keyed per container, because requests, limits and CFS quota are
+declared and enforced per container. A pod with an injected sidecar therefore
+appears as several records sharing a workload and differing in `container`.
+Summing their totals gives the pod or workload total — that is the intended use.
+Facts that belong to the pod rather than the container are not repeated as
+top-level fields but nested in a `pod` object, so a reader can tell from the
+payload alone what a field is a fact about.
 
 **Measured payloads state what was observed, and the backend MUST use it**
 ([ADR 0013](adr/0013-observation-completeness.md)). Each usage payload carries an

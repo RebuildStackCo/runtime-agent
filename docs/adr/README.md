@@ -53,3 +53,4 @@ stays in place.
 - [0011. On-node eBPF CPU profiling: embedded profiler, node-side symbolization, config-bounded targeting query](0011-node-ebpf-cpu-profiling.md)
 - [0012. Payload registry, provenance discriminator, and metadata delivery](0012-payload-registry-and-provenance.md)
 - [0013. Observation completeness: measured payloads carry what the agent saw](0013-observation-completeness.md)
+- [0014. Facts of a different scope than the record's key are nested, not flattened](0014-scoped-facts-are-nested.md)
