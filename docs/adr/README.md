@@ -52,3 +52,4 @@ stays in place.
 - [0010. Node → controller inventory channel: node-initiated HTTP, projected-token auth, local JWKS validation](0010-node-to-controller-inventory-channel.md)
 - [0011. On-node eBPF CPU profiling: embedded profiler, node-side symbolization, config-bounded targeting query](0011-node-ebpf-cpu-profiling.md)
 - [0012. Payload registry, provenance discriminator, and metadata delivery](0012-payload-registry-and-provenance.md)
+- [0013. Observation completeness: measured payloads carry what the agent saw](0013-observation-completeness.md)

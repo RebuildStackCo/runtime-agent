@@ -1,8 +1,19 @@
 {
   "kind": "usage_snapshot",
+  "source": "measured",
   "sequence": 7,
   "window_start": "2026-08-06T10:00:00Z",
   "window_seconds": 3600,
+  "observation": {
+    "poll_interval_seconds": 30,
+    "polls_attempted": 240,
+    "polls_failed": 3,
+    "signals": [
+      "cpu",
+      "memory",
+      "throttling"
+    ]
+  },
   "records": [
     {
       "namespace": "search",
@@ -13,9 +24,12 @@
       "window_seconds": 3600,
       "cpu": {
         "core_nanoseconds": 90000000000,
+        "covered_nanoseconds": 60000000000,
         "throttled_periods": 0,
         "total_periods": 0,
+        "throttling_samples": 0,
         "psi_stall_nanoseconds": 0,
+        "psi_samples": 0,
         "samples": 1,
         "min_milli": 1500,
         "max_milli": 1500,
@@ -29,6 +43,7 @@
         "max_bytes": 2147483648,
         "sum_bytes": 2147483648,
         "psi_stall_nanoseconds": 0,
+        "psi_samples": 0,
         "hist_bytes": {
           "2147483648": 1
         }
@@ -43,9 +58,12 @@
       "window_seconds": 3600,
       "cpu": {
         "core_nanoseconds": 21000000000,
+        "covered_nanoseconds": 60000000000,
         "throttled_periods": 40,
         "total_periods": 100,
+        "throttling_samples": 1,
         "psi_stall_nanoseconds": 4000000,
+        "psi_samples": 1,
         "samples": 2,
         "min_milli": 200,
         "max_milli": 500,
@@ -60,6 +78,7 @@
         "max_bytes": 100663296,
         "sum_bytes": 167772160,
         "psi_stall_nanoseconds": 1000000,
+        "psi_samples": 1,
         "hist_bytes": {
           "67108864": 1,
           "94906265": 1

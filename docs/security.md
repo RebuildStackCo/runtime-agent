@@ -379,6 +379,24 @@ identity never appears in either payload. Every payload declares its
 provenance (`source`), so declared values can never be silently merged with
 measured or sampled ones.
 
+### What the agent says about its own collection (ADR 0013)
+
+Usage payloads carry, alongside the numbers, what the agent actually observed
+while producing them. This is metadata about the agent's own polling — it
+describes no workload and identifies nothing in your cluster:
+
+- an `observation` block per payload: the poll cadence, cumulative counts of
+  kubelet requests attempted and failed, and which kubelet signals this cluster
+  exposes (e.g. whether PSI is available);
+- per record: how much of the window that container was observed for, and how
+  many observations carried each signal.
+
+The purpose is honesty about gaps. Without it, a container that was never
+throttled and a container whose node could not be scraped produce identical
+records, and an analysis outside the cluster cannot tell them apart — the
+distinction is unrecoverable once the moment has passed. No pod, node, or
+workload is named in this data; the failure counts are cluster-wide totals.
+
 ### Profile filtering (applies on the node, before egress — ADR 0011)
 
 - Stack frames are filtered by Go module path on the node that captured them.

@@ -51,6 +51,18 @@ func fixedRecords() []*rollup.Record {
 	return acc.Snapshots()
 }
 
+// fixedObservation is a deterministic collection state: a cluster where some
+// scrapes have failed and PSI is not exposed. The golden must show that a
+// failed scrape is visible in the payload, not inferable only from logs.
+func fixedObservation() collector.Observation {
+	return collector.Observation{
+		PollIntervalSeconds: 30,
+		PollsAttempted:      240,
+		PollsFailed:         3,
+		Signals:             []string{"cpu", "memory", "throttling"},
+	}
+}
+
 func checkGolden(t *testing.T, gotPath, goldenName string) {
 	t.Helper()
 	got, err := os.ReadFile(gotPath) // #nosec G304 -- test-controlled path
@@ -98,7 +110,7 @@ func closedFile(dir string) string {
 
 func TestGoldenUsageSnapshotPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteUsageSnapshot(7, fixedRecords()); err != nil {
+	if err := s.WriteUsageSnapshot(7, fixedRecords(), fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, snapshotFile(dir), "usage-snapshot.golden.json")
@@ -106,7 +118,7 @@ func TestGoldenUsageSnapshotPayload(t *testing.T) {
 
 func TestGoldenClosedWindowPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteClosedWindows(fixedRecords()); err != nil {
+	if err := s.WriteClosedWindows(fixedRecords(), fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, closedFile(dir), "usage-window.golden.json")
@@ -356,10 +368,10 @@ func TestProfilesDoNotSupersede(t *testing.T) {
 func TestSnapshotSupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
 	records := fixedRecords()
-	if err := s.WriteUsageSnapshot(1, records); err != nil {
+	if err := s.WriteUsageSnapshot(1, records, fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteUsageSnapshot(2, records); err != nil {
+	if err := s.WriteUsageSnapshot(2, records, fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -388,10 +400,10 @@ func TestSnapshotSupersedesOnDisk(t *testing.T) {
 func TestClosedWindowReplacesSnapshot(t *testing.T) {
 	s, dir := newTestSpool(t)
 	records := fixedRecords()
-	if err := s.WriteUsageSnapshot(1, records); err != nil {
+	if err := s.WriteUsageSnapshot(1, records, fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteClosedWindows(records); err != nil {
+	if err := s.WriteClosedWindows(records, fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -417,7 +429,7 @@ func TestSweepDropsExpiredAndTempFiles(t *testing.T) {
 	}
 
 	// The sweep rides the snapshot cadence.
-	if err := s.WriteUsageSnapshot(1, fixedRecords()); err != nil {
+	if err := s.WriteUsageSnapshot(1, fixedRecords(), fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 
