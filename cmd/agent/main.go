@@ -36,6 +36,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
+	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
@@ -273,6 +274,33 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 	}
 
+	// Workload and node metadata are derived from the watchers' live indexes on
+	// each flush rather than accumulated from events: a snapshot is the current
+	// state of the cluster, so it drops what the cluster dropped and needs no
+	// state of its own (ADR 0003, loss-harmless). Both are superseding batches,
+	// ordered by their own sequence; the flush runs only on the coverage
+	// goroutine, so that sequence needs no synchronization.
+	var metadataSeq int64
+	flushMetadata := func() {
+		if spool == nil {
+			return
+		}
+		metadataSeq++
+		records := metadata.Aggregate(podWatcher.Pods())
+		if err := spool.WriteWorkloadMetadata(metadataSeq, records); err != nil {
+			logger.Error("spooling workload metadata", "error", err)
+		}
+		nodes := nodeWatcher.Nodes()
+		if err := spool.WriteNodeMetadata(metadataSeq, nodes); err != nil {
+			logger.Error("spooling node metadata", "error", err)
+		}
+		logger.Info("metadata flushed",
+			"sequence", metadataSeq,
+			"workload_records", len(records),
+			"nodes", len(nodes),
+		)
+	}
+
 	// Excluded pods are reported as aggregate counts only, never by name
 	// (docs/security.md §8). Inventory counters are aggregate too: no identity
 	// of an unjoined fact appears, only a count (CLAUDE.md invariant 6).
@@ -313,6 +341,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				return
 			case <-ticker.C:
 				logCoverage()
+				flushMetadata()
 				flushInventory()
 			}
 		}

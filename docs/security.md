@@ -336,7 +336,7 @@ classes with different sensitivity and different default policies:
 | Data class | Examples | Sensitivity | Default policy |
 |---|---|---|---|
 | Resource metrics | CPU usage, working set, throttling ratios, requests/limits, node allocatable | Low (numbers) | Collected for everything visible, minus the infrastructure deny-list and your filters |
-| Workload metadata | Workload names, namespaces, image digests, Go version, module path | Medium | Same as metrics |
+| Workload metadata | Workload names, namespaces, image digests, Go version, module path, node zone and instance type | Medium | Same as metrics |
 | Profiles (stack traces) | Function names, call graphs | **High** — function names reveal the structure of your code | **Explicit allow-list only.** A stack trace never leaves the cluster unless its module path is on the allow-list you configured |
 
 ### Field minimization
@@ -350,9 +350,34 @@ classes with different sensitivity and different default policies:
   (`status.containerStatuses[].imageID`, kept as the content digest only) and
   OOM-kill terminations — nothing else.
 - From node objects, the agent keeps only size (`allocatable`/`capacity`), the
-  instance-type and capacity-type labels, and `status.nodeInfo.kernelVersion`
-  (a version string, used to report eBPF-profile readiness). No other node
-  labels, annotations, addresses, or `status` fields are read.
+  instance-type and capacity-type labels, the topology labels
+  (`topology.kubernetes.io/zone` and `/region`, with their deprecated
+  `failure-domain.beta.kubernetes.io/` equivalents), and
+  `status.nodeInfo.kernelVersion` (a version string, used to report
+  eBPF-profile readiness). No other node labels, annotations, addresses, or
+  `status` fields are read. Zone and region are how resource usage is
+  attributed to a failure domain and to the corresponding lines of your cloud
+  bill; they are labels your cluster already publishes.
+
+### Workload and node metadata (ADR 0012)
+
+The declared shape of your workloads leaves the cluster as two payloads, both
+of them snapshots of current state that replace their predecessor rather than
+accumulating history:
+
+- **`workload_metadata`** — per (namespace, workload, container, image digest):
+  the image reference, QoS class, declared requests and limits, declared
+  container ports, how many replicas currently carry that build, and the counts
+  of those replicas per pod phase and per node name. It contains no pod names:
+  replicas are counted, not listed.
+- **`node_metadata`** — per node: name, size, instance type, capacity type,
+  zone, region, kernel version.
+
+Both are limited to what passes your filters — a pod excluded by a namespace
+filter or an opt-out annotation is absent from the snapshot entirely, and its
+identity never appears in either payload. Every payload declares its
+provenance (`source`), so declared values can never be silently merged with
+measured or sampled ones.
 
 ### Profile filtering (applies on the node, before egress — ADR 0011)
 

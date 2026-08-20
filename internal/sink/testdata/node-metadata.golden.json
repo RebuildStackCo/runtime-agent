@@ -1,0 +1,31 @@
+{
+  "kind": "node_metadata",
+  "source": "structural",
+  "sequence": 7,
+  "nodes": [
+    {
+      "name": "node-1",
+      "instance_type": "m6i.large",
+      "capacity_type": "on-demand",
+      "zone": "eu-west-1a",
+      "region": "eu-west-1",
+      "kernel_version": "6.1.0-generic",
+      "allocatable_cpu_milli": 1930,
+      "allocatable_memory_bytes": 7516192768,
+      "capacity_cpu_milli": 2000,
+      "capacity_memory_bytes": 8589934592
+    },
+    {
+      "name": "node-2",
+      "instance_type": "m6i.large",
+      "capacity_type": "spot",
+      "zone": "eu-west-1b",
+      "region": "eu-west-1",
+      "kernel_version": "6.1.0-generic",
+      "allocatable_cpu_milli": 1930,
+      "allocatable_memory_bytes": 7516192768,
+      "capacity_cpu_milli": 2000,
+      "capacity_memory_bytes": 8589934592
+    }
+  ]
+}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
+	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -25,6 +26,20 @@ import (
 // extended outage degrades to memory-only behavior instead of filling the
 // volume (ADR 0007).
 const DefaultMaxAge = 24 * time.Hour
+
+// Provenance classes. Every payload declares how its facts were obtained, so
+// the backend can never merge epistemically different data under one natural
+// key: a value read from a spec is not the same kind of claim as a value the
+// kubelet measured or a profiler sampled. The discriminator is per payload
+// kind because a kind has exactly one provenance.
+const (
+	// SourceStructural is read from an object's spec or status: declared,
+	// deterministic, true the moment it is read and independent of any
+	// sampling.
+	SourceStructural = "structural"
+	// SourceEBPF is sampled by the on-node profiler (ADR 0011).
+	SourceEBPF = "ebpf"
+)
 
 // Spool writes payload files into one directory. Methods may be called from
 // different goroutines as long as no two writers target the same natural
@@ -74,6 +89,31 @@ type goInventoryPayload struct {
 	Kind     string               `json:"kind"`
 	Sequence int64                `json:"sequence,omitempty"`
 	Records  []inventory.GoRecord `json:"records"`
+}
+
+// workloadMetadataPayload is the declared shape of every collected workload
+// container — requests, limits, QoS, ports — and where its replicas run. Like
+// go-inventory it is a single superseding batch under a fixed natural key (the
+// payload kind): it describes current cluster state, so the newest snapshot
+// replaces its predecessor rather than accumulating. It carries no window
+// because a spec has no window; it is true as of the flush that wrote it.
+type workloadMetadataPayload struct {
+	Kind     string            `json:"kind"`
+	Source   string            `json:"source"`
+	Sequence int64             `json:"sequence,omitempty"`
+	Records  []metadata.Record `json:"records"`
+}
+
+// nodeMetadataPayload is the current node inventory: size, instance and
+// capacity type, and topology. It is the join target for every placement fact —
+// a workload-metadata record names the nodes its replicas sit on, and this
+// payload is what turns those node names into zones and instance types.
+// Superseding batch, same reasoning as workloadMetadataPayload.
+type nodeMetadataPayload struct {
+	Kind     string               `json:"kind"`
+	Source   string               `json:"source"`
+	Sequence int64                `json:"sequence,omitempty"`
+	Nodes    []collector.NodeInfo `json:"nodes"`
 }
 
 // profilePayload is one captured eBPF CPU profile: the allow-list-filtered,
@@ -189,6 +229,31 @@ func (s *Spool) WriteGoInventory(sequence int64, records []inventory.GoRecord) e
 	return s.write("go-inventory.json", payload)
 }
 
+// WriteWorkloadMetadata writes the current workload metadata as one superseding
+// batch. records must already be in a deterministic order (metadata.Aggregate
+// sorts them) so the payload bytes are stable — the golden contract.
+func (s *Spool) WriteWorkloadMetadata(sequence int64, records []metadata.Record) error {
+	payload := workloadMetadataPayload{
+		Kind:     "workload_metadata",
+		Source:   SourceStructural,
+		Sequence: sequence,
+		Records:  records,
+	}
+	return s.write("workload-metadata.json", payload)
+}
+
+// WriteNodeMetadata writes the current node inventory as one superseding batch.
+// nodes must already be sorted by name (NodeWatcher.Nodes does it).
+func (s *Spool) WriteNodeMetadata(sequence int64, nodes []collector.NodeInfo) error {
+	payload := nodeMetadataPayload{
+		Kind:     "node_metadata",
+		Source:   SourceStructural,
+		Sequence: sequence,
+		Nodes:    nodes,
+	}
+	return s.write("node-metadata.json", payload)
+}
+
 // WriteProfile writes one captured eBPF CPU profile. Unlike the superseding
 // go-inventory, each capture is its own file keyed by workload and capture
 // interval (ADR 0011 §6), so concurrent or rotated captures of the same workload
@@ -203,7 +268,7 @@ func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
 		ImageDigest:  key.ImageDigest,
 		CaptureStart: key.CaptureStart,
 		CaptureEnd:   key.CaptureEnd,
-		Source:       "ebpf",
+		Source:       SourceEBPF,
 		Pprof:        pprof,
 	}
 	name := fmt.Sprintf("profile-%s-%s-%s-%d-%d.json",

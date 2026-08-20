@@ -1,0 +1,53 @@
+{
+  "kind": "workload_metadata",
+  "source": "structural",
+  "sequence": 7,
+  "records": [
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "app",
+      "image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "image": "example.com/web:1.2.3",
+      "qos_class": "Burstable",
+      "resources": {
+        "cpu_request_milli": 500,
+        "cpu_limit_milli": 2000,
+        "memory_request_bytes": 268435456,
+        "memory_limit_bytes": 1073741824
+      },
+      "ports": [
+        {
+          "name": "http",
+          "port": 8080,
+          "protocol": "TCP"
+        }
+      ],
+      "replicas": 2,
+      "phases": {
+        "Running": 2
+      },
+      "nodes": {
+        "node-1": 1,
+        "node-2": 1
+      }
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "app",
+      "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "image": "example.com/web:1.3.0",
+      "qos_class": "Burstable",
+      "resources": {
+        "cpu_request_milli": 1000
+      },
+      "replicas": 1,
+      "phases": {
+        "Pending": 1
+      }
+    }
+  ]
+}

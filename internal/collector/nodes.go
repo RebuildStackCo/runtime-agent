@@ -13,14 +13,22 @@ import (
 )
 
 // NodeInfo is the collected view of one node: its size (allocatable and
-// capacity, normalized to millicores and bytes), the two labels the cost model
-// needs — instance type and capacity type — and the kernel version, which
-// determines whether the node can run the eBPF profile (CAP_BPF needs kernel
-// 5.8+). Nothing else is read from node objects (see docs/security.md §4).
+// capacity, normalized to millicores and bytes), the labels the cost model
+// needs — instance type, capacity type, and topology (zone and region) — and
+// the kernel version, which determines whether the node can run the eBPF
+// profile (CAP_BPF needs kernel 5.8+). Nothing else is read from node objects
+// (see docs/security.md §4).
+//
+// Zone and region are the join keys for anything the backend attributes to a
+// placement: which replicas sit in which failure domain, and which lines of a
+// cloud bill a workload belongs to. They are labels the cluster already
+// publishes; the agent copies them and draws no conclusion from them.
 type NodeInfo struct {
 	Name                   string `json:"name"`
 	InstanceType           string `json:"instance_type,omitempty"`
 	CapacityType           string `json:"capacity_type,omitempty"` // "spot", "on-demand", or "" when undeterminable
+	Zone                   string `json:"zone,omitempty"`
+	Region                 string `json:"region,omitempty"`
 	KernelVersion          string `json:"kernel_version,omitempty"`
 	AllocatableCPUMilli    int64  `json:"allocatable_cpu_milli"`
 	AllocatableMemoryBytes int64  `json:"allocatable_memory_bytes"`
@@ -29,20 +37,21 @@ type NodeInfo struct {
 }
 
 // NodeWatcher lists all nodes and keeps watching for new ones. Every observed
-// node is reported through the onNode callback.
+// node is reported through the onNode callback, and the current view of every
+// live node is kept for the node-metadata snapshot.
 type NodeWatcher struct {
 	clientset kubernetes.Interface
 	onNode    func(NodeInfo)
 
 	mu    sync.RWMutex
-	names map[string]struct{}
+	nodes map[string]NodeInfo
 }
 
 // NewNodeWatcher returns a watcher that calls onNode for every node present
 // at start and for every node added afterwards. onNode is called from the
 // informer goroutine and must not block.
 func NewNodeWatcher(clientset kubernetes.Interface, onNode func(NodeInfo)) *NodeWatcher {
-	return &NodeWatcher{clientset: clientset, onNode: onNode, names: make(map[string]struct{})}
+	return &NodeWatcher{clientset: clientset, onNode: onNode, nodes: make(map[string]NodeInfo)}
 }
 
 // Names returns the currently known node names, sorted. The usage poller
@@ -50,12 +59,27 @@ func NewNodeWatcher(clientset kubernetes.Interface, onNode func(NodeInfo)) *Node
 // which simply defers the first poll — cumulative counters lose nothing.
 func (w *NodeWatcher) Names() []string {
 	w.mu.RLock()
-	out := make([]string, 0, len(w.names))
-	for name := range w.names {
+	out := make([]string, 0, len(w.nodes))
+	for name := range w.nodes {
 		out = append(out, name)
 	}
 	w.mu.RUnlock()
 	sort.Strings(out)
+	return out
+}
+
+// Nodes returns the current collected view of every live node, sorted by name
+// so the payload bytes are deterministic (the golden contract,
+// docs/development.md). Deleted nodes are absent: the snapshot is the current
+// truth, rebuilt from the informer, never an append-only history.
+func (w *NodeWatcher) Nodes() []NodeInfo {
+	w.mu.RLock()
+	out := make([]NodeInfo, 0, len(w.nodes))
+	for _, n := range w.nodes {
+		out = append(out, n)
+	}
+	w.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
@@ -80,10 +104,17 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 	reg, err := nodesInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			if node, ok := obj.(*corev1.Node); ok {
-				w.mu.Lock()
-				w.names[node.Name] = struct{}{}
-				w.mu.Unlock()
-				w.onNode(describeNode(node))
+				w.upsert(node)
+			}
+		},
+		// Nodes are updated constantly (conditions, heartbeats), and almost
+		// none of it touches the collected view. upsert keeps the snapshot
+		// current either way but only reports when the view actually changed —
+		// a relabeled node or one resized in place must not go stale, and an
+		// unchanged one must not spam the log.
+		UpdateFunc: func(_, obj any) {
+			if node, ok := obj.(*corev1.Node); ok {
+				w.upsert(node)
 			}
 		},
 		DeleteFunc: func(obj any) {
@@ -92,7 +123,7 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 			}
 			if node, ok := obj.(*corev1.Node); ok {
 				w.mu.Lock()
-				delete(w.names, node.Name)
+				delete(w.nodes, node.Name)
 				w.mu.Unlock()
 			}
 		},
@@ -106,18 +137,45 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 	return nil
 }
 
+// upsert stores the node's current collected view and reports it through
+// onNode only when it differs from the view already held. NodeInfo is
+// comparable, so "changed" is an ordinary equality test.
+func (w *NodeWatcher) upsert(node *corev1.Node) {
+	info := describeNode(node)
+	w.mu.Lock()
+	prev, existed := w.nodes[info.Name]
+	w.nodes[info.Name] = info
+	w.mu.Unlock()
+	if !existed || prev != info {
+		w.onNode(info)
+	}
+}
+
 // describeNode reduces a node to the collected view.
 func describeNode(node *corev1.Node) NodeInfo {
 	return NodeInfo{
 		Name:                   node.Name,
 		InstanceType:           instanceType(node.Labels),
 		CapacityType:           capacityType(node.Labels),
+		Zone:                   topologyLabel(node.Labels, corev1.LabelTopologyZone, corev1.LabelFailureDomainBetaZone),
+		Region:                 topologyLabel(node.Labels, corev1.LabelTopologyRegion, corev1.LabelFailureDomainBetaRegion),
 		KernelVersion:          node.Status.NodeInfo.KernelVersion,
 		AllocatableCPUMilli:    node.Status.Allocatable.Cpu().MilliValue(),
 		AllocatableMemoryBytes: node.Status.Allocatable.Memory().Value(),
 		CapacityCPUMilli:       node.Status.Capacity.Cpu().MilliValue(),
 		CapacityMemoryBytes:    node.Status.Capacity.Memory().Value(),
 	}
+}
+
+// topologyLabel reads a well-known topology label, falling back to the
+// deprecated beta name still set by older clusters and by some managed
+// providers. An unlabeled node — bare metal, or a provider that publishes no
+// topology — yields "", reported as unknown rather than invented.
+func topologyLabel(labels map[string]string, stable, beta string) string {
+	if v := labels[stable]; v != "" {
+		return v
+	}
+	return labels[beta]
 }
 
 // instanceType reads the well-known instance-type label, falling back to the

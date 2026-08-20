@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -174,6 +175,159 @@ func TestNodeInstanceAndCapacityTypes(t *testing.T) {
 		}
 		if info.CapacityType != c.wantCapacityType {
 			t.Errorf("%s: capacity type = %q, want %q", c.name, info.CapacityType, c.wantCapacityType)
+		}
+	}
+}
+
+// Zone and region are the join keys for placement: without them nothing the
+// agent reports can be attributed to a failure domain or a bill line.
+func TestNodeTopologyLabels(t *testing.T) {
+	cases := []struct {
+		name       string
+		labels     map[string]string
+		wantZone   string
+		wantRegion string
+	}{
+		{
+			name: "stable-labels",
+			labels: map[string]string{
+				"topology.kubernetes.io/zone":   "eu-west-1a",
+				"topology.kubernetes.io/region": "eu-west-1",
+			},
+			wantZone:   "eu-west-1a",
+			wantRegion: "eu-west-1",
+		},
+		{
+			name: "beta-labels-only",
+			labels: map[string]string{
+				"failure-domain.beta.kubernetes.io/zone":   "us-central1-b",
+				"failure-domain.beta.kubernetes.io/region": "us-central1",
+			},
+			wantZone:   "us-central1-b",
+			wantRegion: "us-central1",
+		},
+		{
+			name: "stable-wins-over-beta",
+			labels: map[string]string{
+				"topology.kubernetes.io/zone":            "eu-west-1a",
+				"failure-domain.beta.kubernetes.io/zone": "stale-zone",
+			},
+			wantZone: "eu-west-1a",
+		},
+		{
+			// Bare metal, or a provider that publishes no topology: unknown is
+			// reported as unknown, never invented.
+			name:   "unlabeled",
+			labels: nil,
+		},
+	}
+
+	for _, c := range cases {
+		seen := collectNodes(t, 1, node("node-1", c.labels))
+		info := seen["node-1"]
+		if info.Zone != c.wantZone {
+			t.Errorf("%s: zone = %q, want %q", c.name, info.Zone, c.wantZone)
+		}
+		if info.Region != c.wantRegion {
+			t.Errorf("%s: region = %q, want %q", c.name, info.Region, c.wantRegion)
+		}
+	}
+}
+
+// The node-metadata payload is a snapshot of current state, so a removed node
+// must leave it. Nodes() is also the input to the golden payload, so it must be
+// sorted regardless of map iteration order.
+func TestNodesSnapshotTracksLiveNodesOnly(t *testing.T) {
+	clientset := fake.NewClientset(node("node-c", nil), node("node-a", nil), node("node-b", nil))
+
+	events := make(chan NodeInfo, 16)
+	watcher := NewNodeWatcher(clientset, func(n NodeInfo) { events <- n })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	waitForSnapshot := func(want []string) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			names := make([]string, 0, 3)
+			for _, n := range watcher.Nodes() {
+				names = append(names, n.Name)
+			}
+			if slices.Equal(names, want) {
+				return
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("snapshot = %v, want %v before timeout", names, want)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
+	waitForSnapshot([]string{"node-a", "node-b", "node-c"})
+
+	if err := clientset.CoreV1().Nodes().Delete(ctx, "node-b", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("deleting node: %v", err)
+	}
+	waitForSnapshot([]string{"node-a", "node-c"})
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher returned error: %v", err)
+	}
+	close(events)
+}
+
+// Nodes update constantly (conditions, heartbeats) and almost none of it
+// touches the collected view. A relabeled node must be re-reported; an
+// otherwise unchanged one must not be.
+func TestNodeReportedOnlyWhenViewChanges(t *testing.T) {
+	clientset := fake.NewClientset(node("node-1", nil))
+
+	events := make(chan NodeInfo, 16)
+	watcher := NewNodeWatcher(clientset, func(n NodeInfo) { events <- n })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	select {
+	case <-events:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial node was not reported")
+	}
+
+	// An update that changes nothing in the collected view.
+	unchanged := node("node-1", nil)
+	unchanged.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+	if _, err := clientset.CoreV1().Nodes().Update(ctx, unchanged, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("updating node: %v", err)
+	}
+
+	// One that does.
+	relabeled := node("node-1", map[string]string{"topology.kubernetes.io/zone": "eu-west-1a"})
+	if _, err := clientset.CoreV1().Nodes().Update(ctx, relabeled, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("relabeling node: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case n := <-events:
+			if n.Zone == "eu-west-1a" {
+				cancel()
+				if err := <-done; err != nil {
+					t.Fatalf("watcher returned error: %v", err)
+				}
+				return
+			}
+			t.Errorf("reported an unchanged node view: %+v", n)
+		case <-deadline:
+			t.Fatal("relabeled node was not reported before timeout")
 		}
 	}
 }
