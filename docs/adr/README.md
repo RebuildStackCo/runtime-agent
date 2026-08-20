@@ -55,3 +55,4 @@ stays in place.
 - [0013. Observation completeness: measured payloads carry what the agent saw](0013-observation-completeness.md)
 - [0014. Facts of a different scope than the record's key are nested, not flattened](0014-scoped-facts-are-nested.md)
 - [0015. The node asks the controller which pods it may scan, and fails closed](0015-node-scan-scope.md)
+- [0016. Prometheus is not a data source — not as an option, not for backfill](0016-no-prometheus-as-a-source.md)

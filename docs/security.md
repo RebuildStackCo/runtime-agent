@@ -35,7 +35,7 @@ marked **TBD** are being verified and will be resolved before GA.
 One binary, two roles:
 
 ```
-runtime-agent controller   # StatefulSet, 1 replica — talks to k8s API, Prometheus,
+runtime-agent controller   # StatefulSet, 1 replica — talks to k8s API and
                            #   pod pprof endpoints; sole egress point
 runtime-agent node         # DaemonSet (optional)   — eBPF profiling and Go binary
                            #   detection on the node; talks only to the controller
@@ -62,7 +62,7 @@ your goals; profiles can be upgraded later.
 
 | Profile | Components | Node privileges | What you get |
 |---|---|---|---|
-| `metrics-only` | controller | none | Cost and efficiency findings from usage metrics (kubelet counters via the API server, ADR 0006; Prometheus as a side-channel for history) |
+| `metrics-only` | controller | none | Cost and efficiency findings from usage metrics (kubelet counters via the API server, ADR 0006) and workload metadata |
 | `pprof` | controller | none | Above + CPU/heap profiles pulled from services that already expose `/debug/pprof` |
 | `ebpf` | controller + node DaemonSet | see [§7](#7-node-privileges) | Above + CPU profiles for services without pprof endpoints |
 
@@ -125,7 +125,6 @@ read, never a write.
 
 | Access | Direction | Why | Notes |
 |---|---|---|---|
-| Prometheus HTTP API (`query`, `query_range`) | controller → your Prometheus | Historical metrics over the retention window; enables a report on installation day | Read-only query API. Endpoint set in Helm values. See [§10.1](#101-prometheus-is-a-side-channel) |
 | Pod pprof endpoints | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets is shipped with the chart |
@@ -511,6 +510,10 @@ Stated explicitly so it does not have to be asked:
 - No cloud provider credentials, IAM roles, or billing API access. Node
   pricing uses a static price table plus your stated discount.
 - No external egress from nodes — only the controller crosses the boundary.
+- No access to your monitoring stack. The agent does not query Prometheus,
+  Thanos, Mimir, or any other metrics store — not as an option and not to
+  backfill history at install time (ADR 0016, [§10.1](#101-the-agent-knows-nothing-about-the-time-before-it-was-installed)).
+  It measures what it measures itself.
 - No API access from the node role at all — its ServiceAccount holds zero RBAC,
   and the only token it mounts is audience-bound to the controller, which the
   API server rejects ([§7](#7-node-privileges), ADR 0009/0010). The default API
@@ -522,15 +525,32 @@ Stated explicitly so it does not have to be asked:
 
 ## 10. Known limitations and honest disclosures
 
-### 10.1 Prometheus is a side channel
+### 10.1 The agent knows nothing about the time before it was installed
 
-Kubernetes RBAC does not govern what the agent can read from your Prometheus:
-a Prometheus endpoint typically serves metrics for all namespaces regardless
-of the caller's Kubernetes permissions. If you install namespace-scoped, be
-aware that the metrics path is only constrained by the agent's own namespace
-filters (soft boundary, auditable in the ConfigMap) unless your Prometheus
-deployment enforces tenancy itself (e.g. a tenant-scoped query frontend). If
-you have a scoped query endpoint, point the agent at it.
+Every measurement the agent reports it made itself, from the kubelet counters
+of ADR 0006. It does **not** read your Prometheus — not as an option, not for a
+one-time backfill (ADR 0016) — so a cluster installed today has no usage data
+for yesterday, and a finding that needs a long observation window has to wait
+for that window.
+
+This is a deliberate refusal, not an unbuilt feature. A Prometheus response
+carries no record of what shaped it: recording rules, downsampling and
+`metric_relabel_configs` all alter a series and leave no trace in the answer, so
+the agent could not tell a raw series from a five-minute average, nor a workload
+that did not exist from one a relabel rule discarded. Everything else in this
+agent's protocol declares its provenance and how completely it was observed
+([§8](#8-data-collected-and-data-leaving-the-cluster)); imported series could
+declare neither, and would end up joined with exact data under the same keys.
+There is also a tenancy asymmetry: a Prometheus endpoint typically serves all
+namespaces regardless of the caller's Kubernetes permissions, so your namespace
+filters would be enforced only inside the agent on that path, while every other
+path enforces them at collection.
+
+What does not need history still works on day one: declared requests and limits,
+QoS, topology and placement, probe configuration, and the object journal
+(conditions, restart counts, ReplicaSet revisions, Job timings) are all true at
+install time. What genuinely needs observation reports how long it has been
+observing, so its weight is visible rather than assumed.
 
 ### 10.2 Node-level visibility cannot be namespace-scoped
 
