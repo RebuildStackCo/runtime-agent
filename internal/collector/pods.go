@@ -5,6 +5,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -119,6 +120,10 @@ type podIndexEntry struct {
 	// and container ID, the controller resolves them to a workload and the
 	// image digest it already collects (ADR 0010).
 	containers map[string]containerIdentity
+	// info is the pod's full collected view, kept so the workload-metadata
+	// snapshot is built from the same index that gates every other pod-derived
+	// signal: one admission decision, one lifetime, no second source of truth.
+	info PodInfo
 }
 
 // containerIdentity is what a container ID resolves to within its pod.
@@ -183,8 +188,9 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	reg, err := podsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			if pod, ok := obj.(*corev1.Pod); ok && w.admit(pod, true) {
-				w.indexPod(pod)
-				w.reportPodIfChanged(pod)
+				info := w.describe(pod)
+				w.indexPod(pod, info)
+				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
 			}
 		},
@@ -200,8 +206,9 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 				return
 			}
 			if w.admit(pod, false) {
-				w.indexPod(pod)
-				w.reportPodIfChanged(pod)
+				info := w.describe(pod)
+				w.indexPod(pod, info)
+				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
 			} else {
 				w.dropPod(pod.UID)
@@ -226,19 +233,46 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	return nil
 }
 
-// indexPod records an admitted pod for sample attribution.
-func (w *PodWatcher) indexPod(pod *corev1.Pod) {
+// indexPod records an admitted pod for sample attribution. info is the pod's
+// already-described collected view, which the index also keeps: it is the
+// source of the workload-metadata snapshot, so the snapshot covers exactly the
+// pods that passed the filter and drops a pod the moment the index does.
+func (w *PodWatcher) indexPod(pod *corev1.Pod, info PodInfo) {
 	entry := podIndexEntry{
-		namespace:  pod.Namespace,
-		name:       pod.Name,
-		node:       pod.Spec.NodeName,
-		workload:   w.resolveWorkload(pod),
+		namespace:  info.Namespace,
+		name:       info.Name,
+		node:       info.Node,
+		workload:   info.Workload,
 		containers: containerIndex(pod),
+		info:       info,
 	}
 	w.indexMu.Lock()
 	w.index[pod.UID] = entry
-	w.nameIndex[pod.Namespace+"/"+pod.Name] = pod.UID
+	w.nameIndex[info.Namespace+"/"+info.Name] = pod.UID
 	w.indexMu.Unlock()
+}
+
+// Pods returns the collected view of every admitted, currently indexed pod,
+// sorted by namespace and name so downstream aggregation is deterministic (the
+// golden contract, docs/development.md). Excluded and deleted pods are absent —
+// the snapshot is the current truth, never an append-only history. Container
+// slices are copied, so callers may retain and reorder the result.
+func (w *PodWatcher) Pods() []PodInfo {
+	w.indexMu.RLock()
+	out := make([]PodInfo, 0, len(w.index))
+	for _, entry := range w.index {
+		info := entry.info
+		info.Containers = append([]Container(nil), entry.info.Containers...)
+		out = append(out, info)
+	}
+	w.indexMu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // containerIndex maps each started container's normalized runtime ID to its
@@ -422,14 +456,13 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 // never reach a consumer. Deduplicating on the digest signature keeps the many
 // unrelated status updates (readiness, conditions) from re-reporting an
 // otherwise unchanged pod.
-func (w *PodWatcher) reportPodIfChanged(pod *corev1.Pod) {
-	info := w.describe(pod)
+func (w *PodWatcher) reportPodIfChanged(uid types.UID, info PodInfo) {
 	sig := digestSignature(info.Containers)
 	w.mu.Lock()
-	prev, seen := w.reportedSig[pod.UID]
+	prev, seen := w.reportedSig[uid]
 	changed := !seen || prev != sig
 	if changed {
-		w.reportedSig[pod.UID] = sig
+		w.reportedSig[uid] = sig
 	}
 	w.mu.Unlock()
 	if changed {

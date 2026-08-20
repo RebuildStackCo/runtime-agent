@@ -85,7 +85,11 @@ The agent ships, per cluster:
   window totals — CPU core-seconds, CFS throttling periods, and PSI stall
   time where the cluster exposes it (ADR 0006)
 - workload and node metadata: names, namespaces, owner chains, image
-  digests, Go version, module path, instance types, allocatable
+  digests, Go version, module path, declared requests/limits and QoS class,
+  declared container ports, replica counts per pod phase and per node,
+  instance types, capacity type, allocatable, and node zone/region. These
+  arrive as superseding snapshots of current state, not as a change log
+  (ADR 0012)
 - OOM and restart events
 - symbolized, allow-list-filtered profiles, keyed to image digest
 - a coverage report: **aggregate counts per filter type** (discovered /
@@ -105,6 +109,19 @@ All payloads are denominated in **resource units** (core-hours, GiB-hours,
 counts, ratios). The protocol has no monetary fields: the agent knows nothing
 about prices or invoices, and pricing is applied backend-side at render time
 from a versioned pricing snapshot.
+
+Every payload declares a `kind`, and carries its **provenance** in a `source`
+field: `structural` (read from a spec or status), `measured` (polled from an
+instrument), `journal` (derived from object history), or `sampled`
+(statistical). The field ships today on `workload_metadata`, `node_metadata`
+and `ebpf_profile`; the usage and event payloads gain it with the
+observation-completeness work, and their classes are already fixed by the
+registry, so the backend can map a kind to its provenance either way. The
+backend MUST NOT merge payloads of different provenance under one natural key:
+a declared value and a measured one are different kinds of claim, and
+collapsing them yields a confident wrong answer with no failing test to show
+for it. The registry of kinds, their natural keys, and their delivery
+discipline is [ADR 0012](adr/0012-payload-registry-and-provenance.md).
 
 ### Delivery semantics
 

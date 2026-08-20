@@ -452,6 +452,57 @@ func TestReportsImageDigestOnUpdate(t *testing.T) {
 	}
 }
 
+// The workload-metadata snapshot is built from the pod index, so it inherits
+// the index's admission decision: a pod the filter excluded never appears in
+// it, and a deleted pod leaves it. Identities of excluded pods must not leak
+// into the payload (CLAUDE.md invariant 6).
+func TestPodsSnapshotCoversAdmittedPodsOnly(t *testing.T) {
+	kept := pod("kept", nil)
+	optedOut := pod("opted-out", nil)
+	optedOut.Annotations = map[string]string{CollectAnnotation: "false"}
+
+	clientset := fake.NewClientset(kept, optedOut)
+	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = watcher.Run(ctx) }()
+
+	waitForSnapshot := func(want []string) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			var names []string
+			for _, p := range watcher.Pods() {
+				names = append(names, p.Name)
+			}
+			if reflect.DeepEqual(names, want) {
+				return
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("snapshot = %v, want %v before timeout", names, want)
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}
+
+	waitForSnapshot([]string{"kept"})
+
+	// The snapshot carries the declared view, not just an identity.
+	snapshot := watcher.Pods()
+	if len(snapshot[0].Containers) != 3 {
+		t.Fatalf("containers = %d, want 3 (init + app + sidecar)", len(snapshot[0].Containers))
+	}
+	if snapshot[0].QOSClass != "Burstable" || snapshot[0].Node != "node-1" {
+		t.Errorf("snapshot pod = %+v, want QoS Burstable on node-1", snapshot[0])
+	}
+
+	if err := clientset.CoreV1().Pods("shop").Delete(ctx, "kept", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("deleting pod: %v", err)
+	}
+	waitForSnapshot(nil)
+}
+
 func TestContainersOnNode(t *testing.T) {
 	owner := controllerRef("ReplicaSet", "web-7d9f")
 	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{

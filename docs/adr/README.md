@@ -5,8 +5,11 @@ numbered in order of acceptance. A decision is "significant" when reversing it
 later would be expensive: protocol shape, storage model, security boundaries,
 public contracts.
 
-The rule: **ADR first, code second.** A change of this class lands in the same
-PR as (or after) the ADR that justifies it — never before.
+The rule: **no decision of this class ships undocumented.** The ADR lands in the
+same PR as the code, and may be written either before it (when the decision
+needs settling first) or from the finished implementation (when building is what
+reveals the right shape). What is never acceptable is a merged change of this
+class with no ADR, or an ADR that describes something other than what shipped.
 
 ## Format
 
@@ -48,3 +51,4 @@ stays in place.
 - [0009. The node role: an on-node Go-binary scanner with zero API access](0009-node-role-binary-scanner.md)
 - [0010. Node → controller inventory channel: node-initiated HTTP, projected-token auth, local JWKS validation](0010-node-to-controller-inventory-channel.md)
 - [0011. On-node eBPF CPU profiling: embedded profiler, node-side symbolization, config-bounded targeting query](0011-node-ebpf-cpu-profiling.md)
+- [0012. Payload registry, provenance discriminator, and metadata delivery](0012-payload-registry-and-provenance.md)

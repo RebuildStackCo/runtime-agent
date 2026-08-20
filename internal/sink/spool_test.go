@@ -14,6 +14,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
+	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -186,6 +187,123 @@ func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	}
 	if payload.Sequence != 2 {
 		t.Fatalf("surviving inventory has sequence %d, want 2 (newest supersedes)", payload.Sequence)
+	}
+}
+
+// fixedWorkloadMetadata is a deterministic two-build metadata snapshot, already
+// sorted by key as metadata.Aggregate returns it: one workload mid-rollout
+// (two digests, different requests) and one with no limits set at all.
+func fixedWorkloadMetadata() []metadata.Record {
+	return []metadata.Record{
+		{
+			Key: metadata.Key{
+				Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web",
+				Container:   "app",
+				ImageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			},
+			Image:    "example.com/web:1.2.3",
+			QOSClass: "Burstable",
+			Resources: collector.Resources{
+				CPURequestMilli:    ptr.To[int64](500),
+				CPULimitMilli:      ptr.To[int64](2000),
+				MemoryRequestBytes: ptr.To[int64](256 << 20),
+				MemoryLimitBytes:   ptr.To[int64](1 << 30),
+			},
+			Ports:    []collector.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}},
+			Replicas: 2,
+			Phases:   map[string]int{"Running": 2},
+			Nodes:    map[string]int{"node-1": 1, "node-2": 1},
+		},
+		{
+			Key: metadata.Key{
+				Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web",
+				Container:   "app",
+				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			},
+			Image:    "example.com/web:1.3.0",
+			QOSClass: "Burstable",
+			// No limits declared: nil must stay absent from the payload, never
+			// flatten to zero.
+			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](1000)},
+			Replicas:  1,
+			Phases:    map[string]int{"Pending": 1},
+		},
+	}
+}
+
+func fixedNodeMetadata() []collector.NodeInfo {
+	return []collector.NodeInfo{
+		{
+			Name: "node-1", InstanceType: "m6i.large", CapacityType: "on-demand",
+			Zone: "eu-west-1a", Region: "eu-west-1", KernelVersion: "6.1.0-generic",
+			AllocatableCPUMilli: 1930, AllocatableMemoryBytes: 7 << 30,
+			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
+		},
+		{
+			Name: "node-2", InstanceType: "m6i.large", CapacityType: "spot",
+			Zone: "eu-west-1b", Region: "eu-west-1", KernelVersion: "6.1.0-generic",
+			AllocatableCPUMilli: 1930, AllocatableMemoryBytes: 7 << 30,
+			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
+		},
+	}
+}
+
+func TestGoldenWorkloadMetadataPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteWorkloadMetadata(7, fixedWorkloadMetadata()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "workload-metadata.json"), "workload-metadata.golden.json")
+}
+
+func TestGoldenNodeMetadataPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteNodeMetadata(7, fixedNodeMetadata()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "node-metadata.json"), "node-metadata.golden.json")
+}
+
+// Metadata describes current state, so each flush replaces its predecessor
+// rather than accumulating — the on-disk mirror of upsert-by-key ingest.
+func TestMetadataSupersedesOnDisk(t *testing.T) {
+	s, dir := newTestSpool(t)
+	for _, seq := range []int64{1, 2, 3} {
+		if err := s.WriteWorkloadMetadata(seq, fixedWorkloadMetadata()); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WriteNodeMetadata(seq, fixedNodeMetadata()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("spool holds %d files after three flushes, want 2 (supersede by key)", len(entries))
+	}
+	for _, name := range []string{"workload-metadata.json", "node-metadata.json"} {
+		var payload struct {
+			Kind     string `json:"kind"`
+			Source   string `json:"source"`
+			Sequence int64  `json:"sequence"`
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- test-controlled path
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Sequence != 3 {
+			t.Errorf("%s has sequence %d, want 3 (newest supersedes)", name, payload.Sequence)
+		}
+		// Provenance is what stops the backend merging a declared value with a
+		// measured or sampled one under the same key.
+		if payload.Source != SourceStructural {
+			t.Errorf("%s source = %q, want %q", name, payload.Source, SourceStructural)
+		}
 	}
 }
 
