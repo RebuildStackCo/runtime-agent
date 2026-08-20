@@ -202,10 +202,18 @@ func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	}
 }
 
-// fixedWorkloadMetadata is a deterministic two-build metadata snapshot, already
-// sorted by key as metadata.Aggregate returns it: one workload mid-rollout
-// (two digests, different requests) and one with no limits set at all.
+// fixedWorkloadMetadata is a deterministic metadata snapshot, already sorted by
+// key as metadata.Aggregate returns it, covering the three shapes the payload
+// has to express at once: a workload mid-rollout (two builds of "app" with
+// different requests), a build with no limits declared, and a meshed pod whose
+// sidecar is a second record repeating the same pod facts.
 func fixedWorkloadMetadata() []metadata.Record {
+	running := metadata.PodScope{
+		QOSClass: "Burstable",
+		Replicas: 2,
+		Phases:   map[string]int{"Running": 2},
+		Nodes:    map[string]int{"node-1": 1, "node-2": 1},
+	}
 	return []metadata.Record{
 		{
 			Key: metadata.Key{
@@ -213,18 +221,15 @@ func fixedWorkloadMetadata() []metadata.Record {
 				Container:   "app",
 				ImageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			},
-			Image:    "example.com/web:1.2.3",
-			QOSClass: "Burstable",
+			Image: "example.com/web:1.2.3",
 			Resources: collector.Resources{
 				CPURequestMilli:    ptr.To[int64](500),
 				CPULimitMilli:      ptr.To[int64](2000),
 				MemoryRequestBytes: ptr.To[int64](256 << 20),
 				MemoryLimitBytes:   ptr.To[int64](1 << 30),
 			},
-			Ports:    []collector.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}},
-			Replicas: 2,
-			Phases:   map[string]int{"Running": 2},
-			Nodes:    map[string]int{"node-1": 1, "node-2": 1},
+			Ports: []collector.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}},
+			Pod:   running,
 		},
 		{
 			Key: metadata.Key{
@@ -232,13 +237,29 @@ func fixedWorkloadMetadata() []metadata.Record {
 				Container:   "app",
 				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 			},
-			Image:    "example.com/web:1.3.0",
-			QOSClass: "Burstable",
+			Image: "example.com/web:1.3.0",
 			// No limits declared: nil must stay absent from the payload, never
 			// flatten to zero.
 			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](1000)},
-			Replicas:  1,
-			Phases:    map[string]int{"Pending": 1},
+			Pod: metadata.PodScope{
+				QOSClass: "Burstable",
+				Replicas: 1,
+				Phases:   map[string]int{"Pending": 1},
+			},
+		},
+		{
+			// The sidecar of the same pods. Its pod block is identical to the
+			// app container's — the pods are the same pods, counted once. The
+			// nesting is what makes summing these across containers obviously
+			// wrong instead of merely wrong.
+			Key: metadata.Key{
+				Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web",
+				Container:   "istio-proxy",
+				ImageDigest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			},
+			Image:     "docker.io/istio/proxyv2:1.24.0",
+			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](100)},
+			Pod:       running,
 		},
 	}
 }

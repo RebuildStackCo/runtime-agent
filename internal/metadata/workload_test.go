@@ -45,14 +45,14 @@ func TestAggregateCountsReplicasPhasesAndNodes(t *testing.T) {
 		t.Fatalf("records = %d, want 1 (same workload, same build)", len(got))
 	}
 	rec := got[0]
-	if rec.Replicas != 3 {
-		t.Errorf("replicas = %d, want 3", rec.Replicas)
+	if rec.Pod.Replicas != 3 {
+		t.Errorf("replicas = %d, want 3", rec.Pod.Replicas)
 	}
-	if want := map[string]int{"Running": 2, "Pending": 1}; !reflect.DeepEqual(rec.Phases, want) {
-		t.Errorf("phases = %v, want %v", rec.Phases, want)
+	if want := map[string]int{"Running": 2, "Pending": 1}; !reflect.DeepEqual(rec.Pod.Phases, want) {
+		t.Errorf("phases = %v, want %v", rec.Pod.Phases, want)
 	}
-	if want := map[string]int{"node-a": 2, "node-b": 1}; !reflect.DeepEqual(rec.Nodes, want) {
-		t.Errorf("nodes = %v, want %v", rec.Nodes, want)
+	if want := map[string]int{"node-a": 2, "node-b": 1}; !reflect.DeepEqual(rec.Pod.Nodes, want) {
+		t.Errorf("nodes = %v, want %v", rec.Pod.Nodes, want)
 	}
 }
 
@@ -122,11 +122,11 @@ func TestAggregateUnscheduledPodCountsAsReplicaWithoutNode(t *testing.T) {
 	})
 
 	rec := got[0]
-	if rec.Replicas != 1 {
-		t.Errorf("replicas = %d, want 1", rec.Replicas)
+	if rec.Pod.Replicas != 1 {
+		t.Errorf("replicas = %d, want 1", rec.Pod.Replicas)
 	}
-	if len(rec.Nodes) != 0 {
-		t.Errorf("nodes = %v, want empty for an unscheduled pod", rec.Nodes)
+	if len(rec.Pod.Nodes) != 0 {
+		t.Errorf("nodes = %v, want empty for an unscheduled pod", rec.Pod.Nodes)
 	}
 	if rec.ImageDigest != "" {
 		t.Errorf("image digest = %q, want empty before the container starts", rec.ImageDigest)
@@ -153,6 +153,61 @@ func TestAggregateIsOrderIndependent(t *testing.T) {
 	}
 	if string(first) != string(second) {
 		t.Errorf("aggregation is order-dependent:\n%s\n%s", first, second)
+	}
+}
+
+// A pod with several containers produces one record per container, and each
+// repeats the same pod facts — the pods are the same pods, counted once per
+// record and never multiplied by the container count. The nesting is what makes
+// that legible: pod.replicas on three records is obviously one pod fact seen
+// three times, where a flat replicas field invites a sum.
+func TestAggregatePodFactsRepeatPerContainerWithoutMultiplying(t *testing.T) {
+	withSidecar := func(name, node string) collector.PodInfo {
+		p := pod("acme", name, node, "Running", "sha256:aaa", burstable())
+		p.Containers = append(p.Containers, collector.Container{
+			Name: "istio-proxy", Image: "istio/proxyv2:1.24.0", ImageDigest: "sha256:ccc",
+		})
+		return p
+	}
+	got := Aggregate([]collector.PodInfo{
+		withSidecar("api-1", "node-a"),
+		withSidecar("api-2", "node-b"),
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("records = %d, want 2 (one per container of the same two pods)", len(got))
+	}
+	for _, rec := range got {
+		if rec.Pod.Replicas != 2 {
+			t.Errorf("%s: pod.replicas = %d, want 2 — each record reports the same two pods",
+				rec.Container, rec.Pod.Replicas)
+		}
+		if !reflect.DeepEqual(rec.Pod, got[0].Pod) {
+			t.Errorf("%s: pod block = %+v, want identical to %+v across containers of one pod",
+				rec.Container, rec.Pod, got[0].Pod)
+		}
+	}
+}
+
+// Terminated pods are reported, not dropped: a CronJob's workload legitimately
+// carries dozens of Succeeded pods that consume nothing. Dropping them would be
+// the agent deciding which phases count; reporting them in the breakdown lets
+// the backend decide while keeping the raw replica count readable.
+func TestAggregateReportsTerminatedPodsInTheBreakdown(t *testing.T) {
+	got := Aggregate([]collector.PodInfo{
+		pod("acme", "job-1", "node-a", "Succeeded", "sha256:aaa", burstable()),
+		pod("acme", "job-2", "node-a", "Failed", "sha256:aaa", burstable()),
+		pod("acme", "job-3", "node-a", "Running", "sha256:aaa", burstable()),
+	})
+
+	rec := got[0]
+	if rec.Pod.Replicas != 3 {
+		t.Errorf("replicas = %d, want 3 — terminated pods are counted, not silently dropped", rec.Pod.Replicas)
+	}
+	want := map[string]int{"Succeeded": 1, "Failed": 1, "Running": 1}
+	if !reflect.DeepEqual(rec.Pod.Phases, want) {
+		t.Errorf("phases = %v, want %v — the breakdown is what makes the replica count readable",
+			rec.Pod.Phases, want)
 	}
 }
 

@@ -10,7 +10,6 @@
       "container": "app",
       "image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "image": "example.com/web:1.2.3",
-      "qos_class": "Burstable",
       "resources": {
         "cpu_request_milli": 500,
         "cpu_limit_milli": 2000,
@@ -24,13 +23,16 @@
           "protocol": "TCP"
         }
       ],
-      "replicas": 2,
-      "phases": {
-        "Running": 2
-      },
-      "nodes": {
-        "node-1": 1,
-        "node-2": 1
+      "pod": {
+        "qos_class": "Burstable",
+        "replicas": 2,
+        "phases": {
+          "Running": 2
+        },
+        "nodes": {
+          "node-1": 1,
+          "node-2": 1
+        }
       }
     },
     {
@@ -40,13 +42,37 @@
       "container": "app",
       "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
       "image": "example.com/web:1.3.0",
-      "qos_class": "Burstable",
       "resources": {
         "cpu_request_milli": 1000
       },
-      "replicas": 1,
-      "phases": {
-        "Pending": 1
+      "pod": {
+        "qos_class": "Burstable",
+        "replicas": 1,
+        "phases": {
+          "Pending": 1
+        }
+      }
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "istio-proxy",
+      "image_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "image": "docker.io/istio/proxyv2:1.24.0",
+      "resources": {
+        "cpu_request_milli": 100
+      },
+      "pod": {
+        "qos_class": "Burstable",
+        "replicas": 2,
+        "phases": {
+          "Running": 2
+        },
+        "nodes": {
+          "node-1": 1,
+          "node-2": 1
+        }
       }
     }
   ]
