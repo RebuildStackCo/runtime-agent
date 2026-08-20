@@ -189,6 +189,28 @@ func TestAggregatePodFactsRepeatPerContainerWithoutMultiplying(t *testing.T) {
 	}
 }
 
+// Terminated pods are reported, not dropped: a CronJob's workload legitimately
+// carries dozens of Succeeded pods that consume nothing. Dropping them would be
+// the agent deciding which phases count; reporting them in the breakdown lets
+// the backend decide while keeping the raw replica count readable.
+func TestAggregateReportsTerminatedPodsInTheBreakdown(t *testing.T) {
+	got := Aggregate([]collector.PodInfo{
+		pod("acme", "job-1", "node-a", "Succeeded", "sha256:aaa", burstable()),
+		pod("acme", "job-2", "node-a", "Failed", "sha256:aaa", burstable()),
+		pod("acme", "job-3", "node-a", "Running", "sha256:aaa", burstable()),
+	})
+
+	rec := got[0]
+	if rec.Pod.Replicas != 3 {
+		t.Errorf("replicas = %d, want 3 — terminated pods are counted, not silently dropped", rec.Pod.Replicas)
+	}
+	want := map[string]int{"Succeeded": 1, "Failed": 1, "Running": 1}
+	if !reflect.DeepEqual(rec.Pod.Phases, want) {
+		t.Errorf("phases = %v, want %v — the breakdown is what makes the replica count readable",
+			rec.Pod.Phases, want)
+	}
+}
+
 // Init containers schedule differently from regular ones, so the flag must
 // reach the payload and must not collapse two containers into one record.
 func TestAggregateKeepsInitContainersDistinct(t *testing.T) {

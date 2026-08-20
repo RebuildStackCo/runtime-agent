@@ -131,6 +131,15 @@ Facts that belong to the pod rather than the container are not repeated as
 top-level fields but nested in a `pod` object, so a reader can tell from the
 payload alone what a field is a fact about.
 
+**`pod.phases` is placement and lifecycle, never health.** The counts are
+Kubernetes pod phases verbatim, and the backend MUST NOT read `Running` as
+"healthy": a pod in CrashLoopBackOff is `Running`, and so is one whose readiness
+probe has never passed. Readiness and restart counts are not in this payload.
+`Succeeded` and `Failed` pods are reported too — a CronJob's workload
+legitimately shows dozens of them consuming nothing — so `pod.replicas` should
+be read together with its breakdown rather than alone; the agent reports the
+phases and does not decide which of them count.
+
 **Measured payloads state what was observed, and the backend MUST use it**
 ([ADR 0013](adr/0013-observation-completeness.md)). Each usage payload carries an
 `observation` block — poll cadence, cumulative counts of kubelet requests

@@ -50,9 +50,19 @@ type PodScope struct {
 	// Replicas is how many collected pods currently carry this container of
 	// this build.
 	Replicas int `json:"replicas"`
-	// Phases counts those replicas by pod phase. It sums to Replicas, and it is
-	// what keeps "ten replicas running" distinguishable from "ten replicas
-	// pending" without the agent deciding which matters.
+	// Phases counts those replicas by pod phase (status.phase, verbatim). It
+	// sums to Replicas, and it is what keeps "ten replicas running"
+	// distinguishable from "ten replicas pending" without the agent deciding
+	// which matters. It is also what makes Replicas safe to read: a CronJob's
+	// workload legitimately reports dozens of Succeeded pods that consume
+	// nothing, and the breakdown is what lets a consumer separate them instead
+	// of the agent silently dropping them.
+	//
+	// Phase is placement and lifecycle, never health. "Running" means the pod
+	// is bound to a node with at least one container started — a pod in
+	// CrashLoopBackOff is Running, and so is one whose readiness probe has
+	// never passed. Readiness lives in status.conditions and container
+	// statuses, which this payload does not carry.
 	Phases map[string]int `json:"phases,omitempty"`
 	// Nodes counts those replicas by node name — the join to node metadata, and
 	// through it to zone. Unscheduled pods have no node yet, so Nodes may sum to
