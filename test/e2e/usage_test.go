@@ -205,17 +205,20 @@ func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.
 
 	podWatcher := collector.NewPodWatcher(clientset, func(collector.PodInfo) {})
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(collector.NodeInfo) {})
-	poller := collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
+	// Declared before construction so the callbacks can read the poller's own
+	// observation state, exactly as the agent wires it.
+	var poller *collector.UsagePoller
+	poller = collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
 		func(sequence int64, records []*rollup.Record) {
 			t.Logf("usage snapshot %d: %d records", sequence, len(records))
 			results.put(records)
-			if err := spool.WriteUsageSnapshot(sequence, records); err != nil {
+			if err := spool.WriteUsageSnapshot(sequence, records, poller.Observation()); err != nil {
 				t.Errorf("spooling snapshot: %v", err)
 			}
 		},
 		func(records []*rollup.Record) {
 			results.put(records)
-			if err := spool.WriteClosedWindows(records); err != nil {
+			if err := spool.WriteClosedWindows(records, poller.Observation()); err != nil {
 				t.Errorf("spooling closed windows: %v", err)
 			}
 		},

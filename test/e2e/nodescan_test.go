@@ -29,17 +29,24 @@ const sampleModulePath = "example.com/rebuildstack-e2e/goworkload"
 
 const nodeManifestPath = "../../deploy/node-daemonset.yaml"
 
-// TestNodeScannerAgainstRealCluster deploys the node-role DaemonSet from the
-// shipped manifest into kind alongside a known Go workload, then reads the
-// DaemonSet's structured log and asserts the scanner found the workload with
-// the right module path and Go version, and filtered infrastructure (the agent
-// filters at least itself). It exercises the real image and the real manifest,
-// including the zero-RBAC ServiceAccount and the hardened securityContext.
+// TestNodeScannerFailsClosedWithoutScope deploys the node-role DaemonSet from
+// the shipped manifest into kind alongside a known Go workload, with no scope
+// endpoint, and asserts the scanner reports nothing about it.
+//
+// This is the security property of ADR 0015 proven against the real image and
+// the real manifest: a node that cannot ask the controller which pods passed the
+// customer's filters must scan none of them, because its cgroup gives it a pod
+// UID and never a namespace. A Go workload really is running on the node here —
+// the same one the inventory e2e finds — and it must still not appear, in the
+// payload or in the log.
+//
+// The positive path (workload found, joined, spooled) is TestGoInventoryEndToEnd,
+// which deploys a controller and asserts on the payload rather than the log.
 //
 // It is gated on E2E_AGENT_IMAGE / E2E_SAMPLE_IMAGE (kind-loaded images); use
 // `make node-e2e`. Without them the test skips, since the in-process e2e run
 // (`make e2e`) has no images to deploy.
-func TestNodeScannerAgainstRealCluster(t *testing.T) {
+func TestNodeScannerFailsClosedWithoutScope(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	sampleImage := os.Getenv("E2E_SAMPLE_IMAGE")
 	if agentImage == "" || sampleImage == "" {
@@ -80,35 +87,46 @@ func TestNodeScannerAgainstRealCluster(t *testing.T) {
 	waitPodRunning(ctx, t, clientset, ns, "goworkload")
 
 	// Deploy the node role from the shipped manifest, retargeted at this
-	// namespace and the kind-loaded image. No controller endpoint here — this
-	// test asserts on the node's own log, log-only mode.
-	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage, "")
+	// namespace and the kind-loaded image, with neither a controller nor a scope
+	// endpoint — the misconfiguration this test is about.
+	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage, "", "")
 
 	nodePod := waitDaemonSetPod(ctx, t, clientset, ns)
 	t.Logf("node pod: %s", nodePod)
 
-	// Poll the node role's log until it reports the sample workload found and
-	// at least one infrastructure binary filtered (the agent filters itself).
+	// Poll until the scanner has completed a pass. It must have walked the
+	// process table (so the sample workload was reachable) and kept none of it.
 	deadline := time.Now().Add(5 * time.Minute)
 	for {
 		detected, coverage := scanLog(ctx, t, clientset, ns, nodePod)
-		if detected != nil && coverage != nil {
-			if detected.GoVersion == "" {
-				t.Errorf("sample detected but go_version empty: %+v", detected)
+		if detected != nil {
+			t.Fatalf("the scanner reported a workload with no scope: %+v", detected)
+		}
+		if coverage != nil && coverage.ProcessesScanned > 0 {
+			if coverage.GoFound != 0 {
+				t.Errorf("go_found = %d, want 0 — nothing may be kept without a scope", coverage.GoFound)
 			}
-			if !strings.HasPrefix(detected.GoVersion, "go1.") {
-				t.Errorf("sample go_version = %q, want a go1.x version", detected.GoVersion)
+			if coverage.PodsInScope != 0 {
+				t.Errorf("pods_in_scope = %d, want 0", coverage.PodsInScope)
 			}
-			if coverage.FilteredInfra < 1 {
-				t.Errorf("filtered_infra = %d, want >= 1 (the agent filters at least itself)", coverage.FilteredInfra)
+			if coverage.FilteredScope < 1 {
+				t.Errorf("filtered_scope = %d, want >= 1 (every process dropped on its cgroup)",
+					coverage.FilteredScope)
 			}
-			if coverage.ProcessesScanned < 1 {
-				t.Errorf("processes_scanned = %d, want >= 1", coverage.ProcessesScanned)
+			// Executables are never opened for out-of-scope processes, so the
+			// unreadable counter cannot move either: nothing is collected, as
+			// opposed to collected and dropped.
+			if coverage.Unreadable != 0 {
+				t.Errorf("unreadable = %d, want 0 — no executable may be read out of scope", coverage.Unreadable)
+			}
+			if coverage.FilteredInfra != 0 {
+				t.Errorf("filtered_infra = %d, want 0 — module paths are never extracted out of scope",
+					coverage.FilteredInfra)
 			}
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("node role did not report the sample workload (%s) and a filtered-infra coverage line before timeout", sampleModulePath)
+			t.Fatal("node role never reported a scan coverage line before timeout")
 		}
 		time.Sleep(3 * time.Second)
 	}
@@ -120,7 +138,9 @@ type logLine struct {
 	MainModule       string `json:"main_module"`
 	GoVersion        string `json:"go_version"`
 	ProcessesScanned int    `json:"processes_scanned"`
+	PodsInScope      int    `json:"pods_in_scope"`
 	GoFound          int    `json:"go_found"`
+	FilteredScope    int    `json:"filtered_scope"`
 	FilteredInfra    int    `json:"filtered_infra"`
 	Unreadable       int    `json:"unreadable"`
 }
@@ -165,7 +185,7 @@ func scanLog(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, pod
 // ServiceAccount (no Role/RoleBinding is created anywhere), the projected
 // controller-audience token volume, and the securityContext are applied exactly
 // as written.
-func deployNodeDaemonSet(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, controllerEndpoint string) {
+func deployNodeDaemonSet(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, controllerEndpoint, scopeEndpoint string) {
 	t.Helper()
 	data, err := os.ReadFile(nodeManifestPath)
 	if err != nil {
@@ -214,6 +234,11 @@ func deployNodeDaemonSet(ctx context.Context, t *testing.T, cs kubernetes.Interf
 			c.Args = []string{"node", "-proc", "/host/proc", "-interval", "15s"}
 			if controllerEndpoint != "" {
 				c.Args = append(c.Args, "-controller-endpoint", controllerEndpoint)
+			}
+			// Without a scope endpoint the node fails closed and scans nothing
+			// (ADR 0015); passing "" is how a test exercises that path.
+			if scopeEndpoint != "" {
+				c.Args = append(c.Args, "-scope-endpoint", scopeEndpoint)
 			}
 			if _, err := cs.AppsV1().DaemonSets(ns).Create(ctx, &ds, metav1.CreateOptions{}); err != nil {
 				t.Fatalf("creating DaemonSet: %v", err)

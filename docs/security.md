@@ -129,7 +129,7 @@ read, never a write.
 | Pod pprof endpoints | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets is shipped with the chart |
-| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings (and, later, profiles) for aggregation (ADR 0010) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The controller's receiver answers ack/error only, is not reachable from outside the cluster, and a shipped NetworkPolicy restricts it to the DaemonSet. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster; a party that can already sniff pod traffic could replay the short-lived token to post fabricated inventory facts for this one cluster — bounded, one-way, no monetary or read capability (ADR 0010) |
+| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings (and, later, profiles) for aggregation (ADR 0010), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only; the scope and profiling-target queries answer with in-cluster identifiers derived from your own filters, which can only narrow what the node does and never widen it. The receiver is not reachable from outside the cluster, and a shipped NetworkPolicy restricts it to the DaemonSet. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster; a party that can already sniff pod traffic could replay the short-lived token to post fabricated inventory facts for this one cluster — bounded, one-way, no monetary or read capability (ADR 0010) |
 
 ---
 
@@ -435,6 +435,11 @@ workload is named in this data; the failure counts are cluster-wide totals.
 The node role reads Go build information from executables on the node and
 applies the filter-early rule on the node, before any record is formed:
 
+- **Scanned at all — only pods that passed your filters** (ADR 0015). Before
+  anything else, a process's cgroup is resolved to its pod, and a pod outside the
+  scope the controller supplied is skipped with its executable unopened. A node
+  that has no scope — controller unreachable, or the endpoint not configured —
+  scans nothing. See §10.2.
 - **Kept — customer workload binaries.** For a Go process whose main module is
   *not* infrastructure, the scanner keeps the Go version, the main module path,
   the dependency module paths, the build settings that matter (notably whether
@@ -536,6 +541,26 @@ collection-stage filter: samples from processes whose module path or namespace
 is not allow-listed are discarded on the node, before transport to the
 controller. If this is not acceptable, use the `pprof` or `metrics-only`
 profile, where no node component exists.
+
+**How the node knows your namespaces** (ADR 0015). The node component holds no
+Kubernetes API access at all, and a process's cgroup tells it a pod UID, never a
+namespace — so it cannot evaluate your filters itself. On each pass it asks the
+controller, over the same in-cluster, node-initiated channel it uses for
+everything else, which pods on this node passed your filters, and scans only
+those. Two properties follow:
+
+- **A process outside that set has its executable never opened.** The scope is
+  checked on the cgroup first, so no module path is ever extracted for a pod you
+  excluded — not collected, as opposed to collected and discarded. Only an
+  aggregate count of skipped processes is reported.
+- **It fails closed.** A node that cannot reach the controller, or that is
+  deployed without the scope endpoint, scans nothing at all rather than falling
+  back to scanning everything. An outage costs you one scan pass, never a
+  widening of what is collected.
+
+A process belonging to no pod — the kubelet, a systemd unit, anything outside
+the pod hierarchy — is never in scope, because it is in no namespace and so no
+namespace filter of yours can permit it.
 
 ### 10.3 pprof endpoint probing
 

@@ -77,6 +77,12 @@ spec:
             # the single in-cluster target. Remove this arg to run log-only.
             - -controller-endpoint
             - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-inventory
+            # Which pods on this node passed the customer's namespace filters
+            # and opt-out annotations (ADR 0015). The node has no API access and
+            # its cgroup yields a pod UID, never a namespace, so it must ask.
+            # Without this it fails closed and scans nothing.
+            - -scope-endpoint
+            - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-scope
           env:
             # The node name for the report; the controller keys facts by pod UID
             # and container ID, so this is for observability, not attribution.

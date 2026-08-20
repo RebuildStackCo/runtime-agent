@@ -43,6 +43,12 @@ type Counters struct {
 	ProcessesScanned int `json:"processes_scanned"`
 	// GoFound is Go binaries kept after filtering — the customer workloads.
 	GoFound int `json:"go_found"`
+	// FilteredScope is processes dropped because their pod is not in the
+	// controller-provided scope: a pod outside the customer's namespace filters,
+	// a pod that opted out, or a host process belonging to no pod at all. Their
+	// executables are never read — the drop happens on the cgroup, before any
+	// build information exists (CLAUDE.md invariant 4).
+	FilteredScope int `json:"filtered_scope"`
 	// FilteredInfra is Go binaries dropped on the node by the module-path
 	// deny-list (infrastructure and this agent itself).
 	FilteredInfra int `json:"filtered_infra"`
@@ -74,11 +80,16 @@ func NewScanner(procRoot string, filter *ModuleFilter) *Scanner {
 	return &Scanner{procRoot: procRoot, filter: filter}
 }
 
-// Scan performs one full pass over the process tree and returns the kept
-// binaries and the counters. It never returns an error for an individual
-// unreadable process — those are counted, not surfaced — only for a failure to
-// read the process tree itself.
-func (s *Scanner) Scan() (Result, error) {
+// Scan performs one full pass over the process tree, restricted to the pods
+// scope admits, and returns the kept binaries and the counters. It never returns
+// an error for an individual unreadable process — those are counted, not
+// surfaced — only for a failure to read the process tree itself.
+//
+// scope is required, and the zero Scope admits nothing: a node with no eligible
+// set from the controller produces counters and no identities. The parameter is
+// deliberately not optional, so that no call site can scan the node unscoped by
+// omission.
+func (s *Scanner) Scan(scope Scope) (Result, error) {
 	entries, err := os.ReadDir(s.procRoot)
 	if err != nil {
 		return Result{}, err
@@ -90,13 +101,25 @@ func (s *Scanner) Scan() (Result, error) {
 			continue
 		}
 		res.Counters.ProcessesScanned++
-		s.scanPID(pid, &res)
+		s.scanPID(pid, scope, &res)
 	}
 	return res, nil
 }
 
-// scanPID reads one process's executable and cgroup, updating res in place.
-func (s *Scanner) scanPID(pid int, res *Result) {
+// scanPID reads one process's cgroup and, if its pod is in scope, its
+// executable, updating res in place.
+//
+// The cgroup is read first on purpose. A process outside the scope has its
+// executable left unopened and its module path never extracted: nothing about it
+// is collected, rather than collected and dropped (CLAUDE.md invariant 4). Only
+// the aggregate count moves.
+func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
+	binding := s.binding(pid)
+	if !scope.Admits(binding.PodUID) {
+		res.Counters.FilteredScope++
+		return
+	}
+
 	exePath := filepath.Join(s.procRoot, strconv.Itoa(pid), "exe")
 	info, err := buildinfo.ReadFile(exePath)
 	if err != nil {
@@ -119,7 +142,6 @@ func (s *Scanner) scanPID(pid int, res *Result) {
 		return
 	}
 
-	binding := s.binding(pid)
 	res.Counters.GoFound++
 	res.Binaries = append(res.Binaries, BinaryInfo{
 		PID:          pid,

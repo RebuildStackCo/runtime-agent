@@ -165,6 +165,64 @@ func (c *targetsClient) fetch(ctx context.Context, node string) ([]string, error
 	return out.ContainerIDs, nil
 }
 
+// scopeClient asks the controller which pods on this node passed the customer's
+// filters (ADR 0015). The node cannot answer this itself: it has no API access
+// and its cgroup gives it a pod UID, never a namespace. Like the targets query,
+// the reply can only narrow what the node does — an absent or failed reply means
+// the node scans nothing.
+type scopeClient struct {
+	endpoint  string
+	tokenPath string
+	client    *http.Client
+}
+
+// newScopeClient builds a client for endpoint, or returns nil when empty. A nil
+// client is not "scan everything": the caller treats it as a denying scope.
+func newScopeClient(endpoint, tokenPath string) *scopeClient {
+	if endpoint == "" {
+		return nil
+	}
+	return &scopeClient{
+		endpoint:  endpoint,
+		tokenPath: tokenPath,
+		client:    &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// fetch queries the controller with this node's name and returns the UIDs of the
+// pods it may scan.
+func (c *scopeClient) fetch(ctx context.Context, node string) ([]string, error) {
+	token, err := readProjectedToken(c.tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading controller token: %w", err)
+	}
+	body, err := json.Marshal(nodeintake.ScopeRequest{Node: node})
+	if err != nil {
+		return nil, fmt.Errorf("encoding scope query: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body)) // #nosec G704 -- endpoint is operator-set config, not tainted input
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.client.Do(req) // #nosec G704 -- endpoint is operator-set config, not tainted input
+	if err != nil {
+		return nil, fmt.Errorf("querying scope: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return nil, fmt.Errorf("controller rejected scope query: status %d", resp.StatusCode)
+	}
+	var out nodeintake.ScopeResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding scope: %w", err)
+	}
+	return out.PodUIDs, nil
+}
+
 // profileShipper delivers one captured eBPF CPU profile to the controller's
 // profile endpoint (ADR 0011 §5.5), over the same node-initiated, projected-
 // token transport as the inventory shipper. Only already allow-list-filtered
