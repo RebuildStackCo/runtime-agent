@@ -100,10 +100,11 @@ The agent ships, per cluster:
   configuration, carrying no configuration content. Every upload is
   attributable to the configuration that produced it, so stability checks
   can distinguish "the data changed" from "the filters changed"
-- agent self-info: version, install profile, effective RBAC summary, and
-  the active usage signal set (which kubelet signals — e.g. PSI — this
-  cluster exposes and the agent collects), so every report can state what
-  its findings do and do not rest on
+- agent self-info: version, install profile, and effective RBAC summary, so
+  every report can state what its findings do and do not rest on. The active
+  usage signal set (which kubelet signals — e.g. PSI — this cluster exposes)
+  travels in each measured payload's `observation` block rather than here, so
+  it is attached to the data it qualifies (ADR 0013)
 
 All payloads are denominated in **resource units** (core-hours, GiB-hours,
 counts, ratios). The protocol has no monetary fields: the agent knows nothing
@@ -113,15 +114,28 @@ from a versioned pricing snapshot.
 Every payload declares a `kind`, and carries its **provenance** in a `source`
 field: `structural` (read from a spec or status), `measured` (polled from an
 instrument), `journal` (derived from object history), or `sampled`
-(statistical). The field ships today on `workload_metadata`, `node_metadata`
-and `ebpf_profile`; the usage and event payloads gain it with the
-observation-completeness work, and their classes are already fixed by the
-registry, so the backend can map a kind to its provenance either way. The
+(statistical). The
 backend MUST NOT merge payloads of different provenance under one natural key:
 a declared value and a measured one are different kinds of claim, and
 collapsing them yields a confident wrong answer with no failing test to show
 for it. The registry of kinds, their natural keys, and their delivery
 discipline is [ADR 0012](adr/0012-payload-registry-and-provenance.md).
+
+**Measured payloads state what was observed, and the backend MUST use it**
+([ADR 0013](adr/0013-observation-completeness.md)). Each usage payload carries an
+`observation` block — poll cadence, cumulative counts of kubelet requests
+attempted and failed, and the signal set this cluster exposes — and each record
+carries its own completeness:
+
+- `cpu.covered_nanoseconds` — how much of the window this container was actually
+  observed for. Against `window_seconds` it bounds what the record can support.
+- `cpu.throttling_samples`, `cpu.psi_samples`, `memory.psi_samples` — how many
+  observations carried each signal. **A zero total with a zero sample count means
+  "never observed", not "zero".** A backend that reads the first as the second
+  will report a throttling-free workload on the strength of a failed scrape.
+
+The counters are cumulative since agent start; the backend takes differences
+between deliveries, exactly as it does for every other counter here.
 
 ### Delivery semantics
 

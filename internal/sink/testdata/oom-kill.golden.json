@@ -1,5 +1,6 @@
 {
   "kind": "oom_kill",
+  "source": "journal",
   "event": {
     "namespace": "shop",
     "pod": "web-7f8d9-abcde",

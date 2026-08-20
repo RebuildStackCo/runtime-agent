@@ -224,14 +224,18 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		pc := cfg.Profiling.Normalized()
 		targetsPublisher = targeting.NewPublisher(cfg.Profiling.EligibleNamespaces, cfg.Profiling.EligibleWorkloads, pc.TopN)
 	}
-	usagePoller := collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
+	// Declared before construction so the callbacks can read the poller's own
+	// observation state; they run on the poll goroutine, and Observation() is
+	// synchronized regardless.
+	var usagePoller *collector.UsagePoller
+	usagePoller = collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
 		func(sequence int64, records []*rollup.Record) {
 			logRecords("usage rollup snapshot", sequence, records)
 			if targetsPublisher != nil {
 				targetsPublisher.Publish(records)
 			}
 			if spool != nil {
-				if err := spool.WriteUsageSnapshot(sequence, records); err != nil {
+				if err := spool.WriteUsageSnapshot(sequence, records, usagePoller.Observation()); err != nil {
 					logger.Error("spooling usage snapshot", "error", err)
 				}
 			}
@@ -239,7 +243,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		func(records []*rollup.Record) {
 			logRecords("usage rollup closed", 0, records)
 			if spool != nil {
-				if err := spool.WriteClosedWindows(records); err != nil {
+				if err := spool.WriteClosedWindows(records, usagePoller.Observation()); err != nil {
 					logger.Error("spooling closed windows", "error", err)
 				}
 			}

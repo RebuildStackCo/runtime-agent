@@ -1,11 +1,19 @@
 package collector
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/utils/ptr"
 
@@ -21,13 +29,13 @@ func (r stubResolver) LookupPod(uid types.UID) (string, WorkloadRef, bool) {
 	return entry.namespace, entry.workload, ok
 }
 
-func (r stubResolver) LookupPodByName(namespace, name string) (WorkloadRef, bool) {
-	for _, entry := range r {
+func (r stubResolver) LookupPodByName(namespace, name string) (types.UID, WorkloadRef, bool) {
+	for uid, entry := range r {
 		if entry.namespace == namespace && entry.name == name {
-			return entry.workload, true
+			return uid, entry.workload, true
 		}
 	}
-	return WorkloadRef{}, false
+	return "", WorkloadRef{}, false
 }
 
 var usageTestStart = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
@@ -74,6 +82,71 @@ func onlyRecord(t *testing.T, p *UsagePoller) *rollup.Record {
 func webResolver() stubResolver {
 	return stubResolver{
 		"uid-1": {namespace: "shop", name: "web-abc", workload: WorkloadRef{Kind: "Deployment", Name: "web"}},
+	}
+}
+
+// Only the agent can know that a scrape failed; from outside the cluster a
+// failed scrape and a quiet container are identical. The counters must
+// therefore reach the payload, not just the log.
+func TestObservationCountsEveryKubeletRequestAndItsFailures(t *testing.T) {
+	cases := []struct {
+		name           string
+		summaryStatus  int
+		cadvisorStatus int
+		wantFailed     int64
+	}{
+		{name: "node unreachable", summaryStatus: 500, cadvisorStatus: 500, wantFailed: 2},
+		// The two paths fail independently: throttling can go missing while
+		// CPU keeps arriving, which is why they are counted as two requests.
+		{name: "cadvisor only", summaryStatus: 200, cadvisorStatus: 500, wantFailed: 1},
+		{name: "both fine", summaryStatus: 200, cadvisorStatus: 200, wantFailed: 0},
+	}
+
+	for _, c := range cases {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			status, body := c.summaryStatus, `{"pods":[]}`
+			if strings.HasSuffix(r.URL.Path, "metrics/cadvisor") {
+				status, body = c.cadvisorStatus, ""
+			}
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
+		}))
+		clientset, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := NewUsagePoller(clientset, func() []string { return []string{"node-1"} },
+			webResolver(), nil, nil, func(string, error) {})
+
+		p.pollOnce(context.Background(), usageTestStart)
+		server.Close()
+
+		obs := p.Observation()
+		// Two kubelet paths per node — /stats/summary and /metrics/cadvisor.
+		if obs.PollsAttempted != 2 {
+			t.Errorf("%s: polls attempted = %d, want 2", c.name, obs.PollsAttempted)
+		}
+		if obs.PollsFailed != c.wantFailed {
+			t.Errorf("%s: polls failed = %d, want %d", c.name, obs.PollsFailed, c.wantFailed)
+		}
+		if obs.PollIntervalSeconds != int64(usagePollInterval/time.Second) {
+			t.Errorf("%s: poll interval = %d, want %d", c.name, obs.PollIntervalSeconds,
+				int64(usagePollInterval/time.Second))
+		}
+	}
+}
+
+func TestObservationReportsExposedSignals(t *testing.T) {
+	p := testPoller(webResolver())
+	at := usageTestStart.Add(30 * time.Second)
+	p.ingest(summaryWith(cpuMemStats(usageTestStart, at, 15e9, 64<<20)), at)
+
+	obs := p.Observation()
+	if !slices.Equal(obs.Signals, []string{"cpu", "memory"}) {
+		t.Errorf("signals = %v, want [cpu memory] — a cluster without PSI must say so", obs.Signals)
+	}
+	if obs.PollsAttempted != 0 {
+		t.Errorf("polls attempted = %d, want 0 (ingest is not a poll)", obs.PollsAttempted)
 	}
 }
 

@@ -74,31 +74,49 @@ func (a *Accumulator) addProRata(k Key, from, to time.Time, amount int64, add fu
 // consumed over [from, to). The total is split pro rata across windows; the
 // rate sample for the distribution is attributed to the window holding the
 // interval's last instant.
+// The interval's own duration is split the same way into CoveredNanoseconds,
+// so each window records exactly how much of itself this container was
+// observed for.
 func (a *Accumulator) ObserveCPUDelta(k Key, from, to time.Time, coreNanos int64) {
 	if to.Sub(from) <= 0 || coreNanos < 0 {
 		return
 	}
 	a.addProRata(k, from, to, coreNanos, func(r *Record, v int64) { r.CPU.CoreNanoseconds += v })
+	a.addProRata(k, from, to, to.Sub(from).Nanoseconds(), func(r *Record, v int64) { r.CPU.CoveredNanoseconds += v })
 	a.record(k, to.Add(-time.Nanosecond)).CPU.observeRate(mulDiv(coreNanos, 1000, to.Sub(from).Nanoseconds()))
 }
 
 // ObserveThrottling records CFS throttling counter deltas over [from, to),
-// split pro rata across windows like every counter total.
+// split pro rata across windows like every counter total. The observation
+// itself — the fact that a scrape carried these counters at all — is counted
+// once, in the window holding the interval's last instant, exactly as a rate
+// sample is. That count is what separates "did not throttle" from "was never
+// observed" downstream.
 func (a *Accumulator) ObserveThrottling(k Key, from, to time.Time, throttledPeriods, totalPeriods int64) {
 	a.addProRata(k, from, to, throttledPeriods, func(r *Record, v int64) { r.CPU.ThrottledPeriods += v })
 	a.addProRata(k, from, to, totalPeriods, func(r *Record, v int64) { r.CPU.TotalPeriods += v })
+	if to.After(from) {
+		a.record(k, to.Add(-time.Nanosecond)).CPU.ThrottlingSamples++
+	}
 }
 
 // ObserveCPUPSI records a PSI some-CPU stall counter delta in nanoseconds
-// over [from, to).
+// over [from, to), and counts the observation so a zero stall is
+// distinguishable from an unexposed one.
 func (a *Accumulator) ObserveCPUPSI(k Key, from, to time.Time, stallNanos int64) {
 	a.addProRata(k, from, to, stallNanos, func(r *Record, v int64) { r.CPU.PSIStallNanoseconds += v })
+	if to.After(from) {
+		a.record(k, to.Add(-time.Nanosecond)).CPU.PSISamples++
+	}
 }
 
 // ObserveMemoryPSI records a PSI some-memory stall counter delta in
-// nanoseconds over [from, to).
+// nanoseconds over [from, to), counting the observation likewise.
 func (a *Accumulator) ObserveMemoryPSI(k Key, from, to time.Time, stallNanos int64) {
 	a.addProRata(k, from, to, stallNanos, func(r *Record, v int64) { r.Memory.PSIStallNanoseconds += v })
+	if to.After(from) {
+		a.record(k, to.Add(-time.Nanosecond)).Memory.PSISamples++
+	}
 }
 
 // ObserveMemory records one working-set sample in bytes, taken at the given

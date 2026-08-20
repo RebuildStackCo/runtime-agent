@@ -105,6 +105,77 @@ func TestThrottlingDeltaRules(t *testing.T) {
 	}
 }
 
+// The cAdvisor exposition labels by pod name, and a name is not an identity: a
+// StatefulSet recreates its pod under the same name with a new UID. Keying the
+// counter baseline on the name made the two pods share one baseline, so the
+// replacement's counters were compared against a dead container's — either
+// silently dropped as a "counter reset", or, when the new counters happened to
+// exceed the old baseline, attributed as one continuous run. Keyed on the UID,
+// each container is its own series and the replacement is attributed from its
+// own start, exactly as any first observation is.
+func TestThrottlingDoesNotCrossPodRecreation(t *testing.T) {
+	resolver := stubResolver{
+		"uid-old": {namespace: "shop", name: "web-abc", workload: WorkloadRef{Kind: "StatefulSet", Name: "web"}},
+	}
+	p := testPoller(resolver)
+	first := usageTestStart.Add(30 * time.Second)
+	second := first.Add(30 * time.Second)
+	newPodStart := second.Add(-10 * time.Second)
+
+	ingest := func(throttled, periods uint64, at, start, now time.Time) {
+		t.Helper()
+		samples, err := parseCadvisor(strings.NewReader(fixture(throttled, periods, at, start)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.ingestCadvisor(samples, now)
+	}
+
+	// The original pod runs and accumulates a large baseline.
+	ingest(400, 1000, first, usageTestStart, first)
+
+	// It is replaced: same namespace and name, new UID, a container that has
+	// been up for ten seconds with counters of its own.
+	delete(resolver, "uid-old")
+	resolver["uid-new"] = podIndexEntry{
+		namespace: "shop", name: "web-abc",
+		workload: WorkloadRef{Kind: "StatefulSet", Name: "web"},
+	}
+	ingest(3, 10, second, newPodStart, second)
+
+	r := onlyRecord(t, p)
+	// 400/1000 from the first container plus the replacement's own 3/10 —
+	// neither dropped as a phantom reset nor stretched into a delta against a
+	// baseline that belonged to a different container.
+	if r.CPU.ThrottledPeriods != 403 || r.CPU.TotalPeriods != 1010 {
+		t.Errorf("throttled/total = %d/%d, want 403/1010 — each container attributed from its own start",
+			r.CPU.ThrottledPeriods, r.CPU.TotalPeriods)
+	}
+	if len(p.throttle) != 2 {
+		t.Errorf("throttle state entries = %d, want 2 (one series per pod UID)", len(p.throttle))
+	}
+}
+
+// A container observed and quiet must be distinguishable from one never
+// observed at all — the whole reason the sample count exists.
+func TestThrottlingSampleCountSeparatesQuietFromUnobserved(t *testing.T) {
+	p := testPoller(webResolver())
+	at := usageTestStart.Add(30 * time.Second)
+	samples, err := parseCadvisor(strings.NewReader(fixture(0, 100, at, usageTestStart)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.ingestCadvisor(samples, at)
+
+	r := onlyRecord(t, p)
+	if r.CPU.ThrottledPeriods != 0 {
+		t.Fatalf("throttled periods = %d, want 0", r.CPU.ThrottledPeriods)
+	}
+	if r.CPU.ThrottlingSamples == 0 {
+		t.Error("throttling samples = 0 after a successful observation: a quiet container is now indistinguishable from an unobserved one")
+	}
+}
+
 func TestThrottlingUnknownPodSkipped(t *testing.T) {
 	p := testPoller(stubResolver{})
 	at := usageTestStart.Add(30 * time.Second)

@@ -34,10 +34,11 @@ const (
 // PodResolver attributes pods to their namespace and workload, reporting
 // false for pods that are unknown or excluded — exactly PodWatcher's lookup
 // methods. Name-based lookup exists for the cAdvisor exposition, which
-// labels containers by pod name, not UID.
+// labels containers by pod name, not UID; it returns the UID too, so both
+// kubelet sources key their counter state on the same pod identity.
 type PodResolver interface {
 	LookupPod(uid types.UID) (namespace string, workload WorkloadRef, ok bool)
-	LookupPodByName(namespace, name string) (workload WorkloadRef, ok bool)
+	LookupPodByName(namespace, name string) (uid types.UID, workload WorkloadRef, ok bool)
 }
 
 // UsagePoller polls every node's kubelet through the API server proxy
@@ -57,13 +58,36 @@ type UsagePoller struct {
 	// The accumulator and trackers are owned by the Run goroutine.
 	acc      *rollup.Accumulator
 	tracker  map[trackerKey]*counterState
-	throttle map[cadvisorKey]*throttleState
+	throttle map[trackerKey]*throttleState
 	sequence int64
 
-	// signals records which kubelet signals this cluster actually exposes,
-	// for the coverage report and self-info (runtime probing, ADR 0006).
-	signalMu sync.Mutex
-	signals  map[string]bool
+	// Observation state: which kubelet signals this cluster actually exposes
+	// (runtime probing, ADR 0006) and how the polling itself is going. Written
+	// by the poll goroutine, read by whoever ships or logs a payload, so it is
+	// the one part of the poller that is synchronized.
+	obsMu          sync.Mutex
+	signals        map[string]bool
+	pollsAttempted int64
+	pollsFailed    int64
+}
+
+// Observation is what the agent knows about its own collection: the polling
+// cadence, how many kubelet requests it has made and how many failed, and
+// which signals this cluster exposes. It ships with the usage payloads
+// (provenance `measured`, ADR 0012) because only the agent can know that a
+// scrape failed — from outside the cluster, a failed scrape and a quiet
+// container are indistinguishable, and the difference is unrecoverable after
+// the fact.
+//
+// The counters are cumulative since agent start, like every other counter this
+// agent reports: the backend takes differences between deliveries. They are
+// cluster-wide; per-record coverage lives in the record's own sample counts and
+// CoveredNanoseconds.
+type Observation struct {
+	PollIntervalSeconds int64    `json:"poll_interval_seconds"`
+	PollsAttempted      int64    `json:"polls_attempted"`
+	PollsFailed         int64    `json:"polls_failed"`
+	Signals             []string `json:"signals"`
 }
 
 type trackerKey struct {
@@ -108,7 +132,7 @@ func NewUsagePoller(
 		onError:    onError,
 		acc:        rollup.NewAccumulator(usageWindowLength),
 		tracker:    make(map[trackerKey]*counterState),
-		throttle:   make(map[cadvisorKey]*throttleState),
+		throttle:   make(map[trackerKey]*throttleState),
 		signals:    make(map[string]bool),
 	}
 }
@@ -138,8 +162,12 @@ func (p *UsagePoller) Run(ctx context.Context) error {
 // Signals returns the sorted names of the kubelet signals observed on this
 // cluster so far (e.g. "cpu", "memory").
 func (p *UsagePoller) Signals() []string {
-	p.signalMu.Lock()
-	defer p.signalMu.Unlock()
+	p.obsMu.Lock()
+	defer p.obsMu.Unlock()
+	return p.signalsLocked()
+}
+
+func (p *UsagePoller) signalsLocked() []string {
 	out := make([]string, 0, len(p.signals))
 	for name, active := range p.signals {
 		if active {
@@ -150,10 +178,36 @@ func (p *UsagePoller) Signals() []string {
 	return out
 }
 
+// Observation returns the current collection state to ship alongside a usage
+// payload.
+func (p *UsagePoller) Observation() Observation {
+	p.obsMu.Lock()
+	defer p.obsMu.Unlock()
+	return Observation{
+		PollIntervalSeconds: int64(usagePollInterval / time.Second),
+		PollsAttempted:      p.pollsAttempted,
+		PollsFailed:         p.pollsFailed,
+		Signals:             p.signalsLocked(),
+	}
+}
+
 func (p *UsagePoller) markSignal(name string) {
-	p.signalMu.Lock()
+	p.obsMu.Lock()
 	p.signals[name] = true
-	p.signalMu.Unlock()
+	p.obsMu.Unlock()
+}
+
+// countPoll records one kubelet request and whether it failed. Both kubelet
+// paths (/stats/summary and /metrics/cadvisor) count as requests of their own:
+// they fail independently, and which one failed is resolved per record by the
+// per-signal sample counts, not here.
+func (p *UsagePoller) countPoll(failed bool) {
+	p.obsMu.Lock()
+	p.pollsAttempted++
+	if failed {
+		p.pollsFailed++
+	}
+	p.obsMu.Unlock()
 }
 
 // pollOnce fetches and ingests every node's summary. A failing node is
@@ -164,12 +218,16 @@ func (p *UsagePoller) pollOnce(ctx context.Context, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		if summary, err := p.fetchSummary(ctx, node); err != nil {
+		summary, err := p.fetchSummary(ctx, node)
+		p.countPoll(err != nil)
+		if err != nil {
 			p.reportError(node, err)
 		} else {
 			p.ingest(summary, now)
 		}
-		if samples, err := p.fetchCadvisor(ctx, node); err != nil {
+		samples, err := p.fetchCadvisor(ctx, node)
+		p.countPoll(err != nil)
+		if err != nil {
 			p.reportError(node, err)
 		} else {
 			p.ingestCadvisor(samples, now)

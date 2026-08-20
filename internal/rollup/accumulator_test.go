@@ -228,6 +228,74 @@ func TestCPUDeltaSplitsExactlyAcrossWindows(t *testing.T) {
 	}
 }
 
+// Coverage is what makes "this record saw nothing" readable: compared against
+// the window length it says how much of the window was actually observed. It is
+// split across windows exactly as the counters are, so it stays additive under
+// merge.
+func TestCoveredNanosecondsSplitsWithTheInterval(t *testing.T) {
+	a := NewAccumulator(testWindow)
+	k := Key{Namespace: "n", WorkloadKind: "Deployment", WorkloadName: "w", Container: "c"}
+	from := time.Date(2026, 8, 6, 9, 59, 30, 0, time.UTC)
+	to := time.Date(2026, 8, 6, 10, 0, 30, 0, time.UTC)
+	a.ObserveCPUDelta(k, from, to, 60e9)
+
+	records := drain(a)
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	for _, r := range records {
+		if got := r.CPU.CoveredNanoseconds; got != int64(30*time.Second) {
+			t.Errorf("window %v covered %d ns, want %d (its half of the interval)",
+				r.WindowStart, got, int64(30*time.Second))
+		}
+	}
+
+	// A container observed for two polls of an hour-long window covers a
+	// minute of it — legibly incomplete, rather than looking like an idle hour.
+	partial := NewAccumulator(testWindow)
+	start := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
+	partial.ObserveCPUDelta(k, start, start.Add(30*time.Second), 1e9)
+	partial.ObserveCPUDelta(k, start.Add(30*time.Second), start.Add(time.Minute), 1e9)
+	only := drain(partial)[0]
+	if got := only.CPU.CoveredNanoseconds; got != int64(time.Minute) {
+		t.Errorf("covered %d ns, want %d", got, int64(time.Minute))
+	}
+	if only.WindowSeconds != 3600 {
+		t.Fatalf("window seconds = %d, want 3600", only.WindowSeconds)
+	}
+}
+
+// The zero of a counter must not be ambiguous: observed-and-quiet and
+// never-observed have to be different records.
+func TestObservationCountsSeparateQuietFromUnobserved(t *testing.T) {
+	k := Key{Namespace: "n", WorkloadKind: "Deployment", WorkloadName: "w", Container: "c"}
+	from := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
+	to := from.Add(30 * time.Second)
+
+	quiet := NewAccumulator(testWindow)
+	quiet.ObserveCPUDelta(k, from, to, 1e9)
+	quiet.ObserveThrottling(k, from, to, 0, 500)
+	quiet.ObserveCPUPSI(k, from, to, 0)
+	quiet.ObserveMemoryPSI(k, from, to, 0)
+	q := drain(quiet)[0]
+
+	unobserved := NewAccumulator(testWindow)
+	unobserved.ObserveCPUDelta(k, from, to, 1e9)
+	u := drain(unobserved)[0]
+
+	if q.CPU.ThrottledPeriods != u.CPU.ThrottledPeriods || q.CPU.PSIStallNanoseconds != u.CPU.PSIStallNanoseconds {
+		t.Fatal("test premise broken: both records should carry identical zero totals")
+	}
+	if q.CPU.ThrottlingSamples != 1 || q.CPU.PSISamples != 1 || q.Memory.PSISamples != 1 {
+		t.Errorf("observed-and-quiet record has samples %d/%d/%d, want 1/1/1",
+			q.CPU.ThrottlingSamples, q.CPU.PSISamples, q.Memory.PSISamples)
+	}
+	if u.CPU.ThrottlingSamples != 0 || u.CPU.PSISamples != 0 || u.Memory.PSISamples != 0 {
+		t.Errorf("never-observed record has samples %d/%d/%d, want 0/0/0",
+			u.CPU.ThrottlingSamples, u.CPU.PSISamples, u.Memory.PSISamples)
+	}
+}
+
 func TestWindowTotalsPreserveEveryCoreNanosecond(t *testing.T) {
 	rng := rand.New(rand.NewSource(9))
 	a := NewAccumulator(testWindow)

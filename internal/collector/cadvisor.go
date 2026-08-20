@@ -24,8 +24,10 @@ const (
 	metricStartTime        = "container_start_time_seconds"
 )
 
-// cadvisorKey identifies a container in the cAdvisor exposition, which
-// labels by name, not UID.
+// cadvisorKey identifies a container as the cAdvisor exposition labels it —
+// by pod name, not UID. It is the parse-side key only: before any counter
+// state is kept, the name is resolved to a pod UID so that throttling shares
+// the identity CPU and memory already use (trackerKey).
 type cadvisorKey struct {
 	namespace string
 	pod       string
@@ -160,7 +162,7 @@ func (p *UsagePoller) ingestCadvisor(samples map[cadvisorKey]*cadvisorSample, no
 		if !sample.hasThrottled || !sample.hasPeriods {
 			continue
 		}
-		workload, ok := p.pods.LookupPodByName(key.namespace, key.pod)
+		uid, workload, ok := p.pods.LookupPodByName(key.namespace, key.pod)
 		if !ok {
 			continue
 		}
@@ -176,10 +178,14 @@ func (p *UsagePoller) ingestCadvisor(samples map[cadvisorKey]*cadvisorSample, no
 			WorkloadName: workload.Name,
 			Container:    key.container,
 		}
-		st := p.throttle[key]
+		// Keyed on the pod UID, not the scraped name: a recreated pod reuses
+		// its name, and a name-keyed baseline would let the dead pod's counters
+		// widen the new container's first delta.
+		tk := trackerKey{pod: uid, container: key.container}
+		st := p.throttle[tk]
 		if st == nil {
 			st = &throttleState{}
-			p.throttle[key] = st
+			p.throttle[tk] = st
 		}
 		st.lastSeen = now
 

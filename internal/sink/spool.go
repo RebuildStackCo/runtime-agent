@@ -37,6 +37,14 @@ const (
 	// deterministic, true the moment it is read and independent of any
 	// sampling.
 	SourceStructural = "structural"
+	// SourceMeasured is obtained by polling an instrument — the kubelet — and
+	// is therefore subject to scrape failure. A measured payload carries its
+	// own observation state so a failed scrape is never read as a quiet
+	// container.
+	SourceMeasured = "measured"
+	// SourceJournal is derived from object metadata that records history:
+	// conditions, restart counts, terminations.
+	SourceJournal = "journal"
 	// SourceEBPF is sampled by the on-node profiler (ADR 0011).
 	SourceEBPF = "ebpf"
 )
@@ -65,19 +73,27 @@ func NewSpool(dir string, maxAge time.Duration) (*Spool, error) {
 // usagePayload is one shippable batch: every record of one wall-clock
 // window. Kind "usage_snapshot" is an open-window snapshot that supersedes
 // its predecessor; "usage_window" is the final record of a closed window.
+//
+// Observation travels with the records because these are measured facts: a
+// container that reports nothing because it was idle and one that reports
+// nothing because every scrape of its node failed produce identical records,
+// and only the agent can tell them apart (ADR 0012).
 type usagePayload struct {
-	Kind          string           `json:"kind"`
-	Sequence      int64            `json:"sequence,omitempty"`
-	WindowStart   time.Time        `json:"window_start"`
-	WindowSeconds int64            `json:"window_seconds"`
-	Records       []*rollup.Record `json:"records"`
+	Kind          string                `json:"kind"`
+	Source        string                `json:"source"`
+	Sequence      int64                 `json:"sequence,omitempty"`
+	WindowStart   time.Time             `json:"window_start"`
+	WindowSeconds int64                 `json:"window_seconds"`
+	Observation   collector.Observation `json:"observation"`
+	Records       []*rollup.Record      `json:"records"`
 }
 
 // oomPayload is one OOM kill event; events bypass windows and ship
 // immediately (ADR 0006).
 type oomPayload struct {
-	Kind  string            `json:"kind"`
-	Event collector.OOMKill `json:"event"`
+	Kind   string            `json:"kind"`
+	Source string            `json:"source"`
+	Event  collector.OOMKill `json:"event"`
 }
 
 // goInventoryPayload is the current Go inventory of the cluster — one record
@@ -87,6 +103,7 @@ type oomPayload struct {
 // upsert-by-key ingest. The sequence orders supersedes, never arrival time.
 type goInventoryPayload struct {
 	Kind     string               `json:"kind"`
+	Source   string               `json:"source"`
 	Sequence int64                `json:"sequence,omitempty"`
 	Records  []inventory.GoRecord `json:"records"`
 }
@@ -169,13 +186,15 @@ func (w windowKey) name() string {
 // atomically replacing that window's previous snapshot — the on-disk mirror
 // of the backend's supersede-by-key ingest. It also sweeps expired files,
 // riding the snapshot cadence so no extra timer exists.
-func (s *Spool) WriteUsageSnapshot(sequence int64, records []*rollup.Record) error {
+func (s *Spool) WriteUsageSnapshot(sequence int64, records []*rollup.Record, obs collector.Observation) error {
 	for k, group := range groupByWindow(records) {
 		payload := usagePayload{
 			Kind:          "usage_snapshot",
+			Source:        SourceMeasured,
 			Sequence:      sequence,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
+			Observation:   obs,
 			Records:       group,
 		}
 		if err := s.write(k.name()+".snapshot.json", payload); err != nil {
@@ -188,12 +207,14 @@ func (s *Spool) WriteUsageSnapshot(sequence int64, records []*rollup.Record) err
 // WriteClosedWindows writes final closed-window records, one file per
 // window, and removes the window's snapshot file — the closed record
 // supersedes every snapshot.
-func (s *Spool) WriteClosedWindows(records []*rollup.Record) error {
+func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs collector.Observation) error {
 	for k, group := range groupByWindow(records) {
 		payload := usagePayload{
 			Kind:          "usage_window",
+			Source:        SourceMeasured,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
+			Observation:   obs,
 			Records:       group,
 		}
 		if err := s.write(k.name()+".json", payload); err != nil {
@@ -212,7 +233,7 @@ func (s *Spool) WriteClosedWindows(records []*rollup.Record) error {
 func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 	name := fmt.Sprintf("oom-%d-%s-%s-%s-%d.json",
 		e.FinishedAt.Unix(), e.Namespace, e.Pod, e.Container, e.RestartCount)
-	return s.write(name, oomPayload{Kind: "oom_kill", Event: e})
+	return s.write(name, oomPayload{Kind: "oom_kill", Source: SourceJournal, Event: e})
 }
 
 // WriteGoInventory writes the current Go inventory as one superseding batch
@@ -223,6 +244,7 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 func (s *Spool) WriteGoInventory(sequence int64, records []inventory.GoRecord) error {
 	payload := goInventoryPayload{
 		Kind:     "go_inventory",
+		Source:   SourceStructural,
 		Sequence: sequence,
 		Records:  records,
 	}

@@ -23,13 +23,28 @@ type CPUUsage struct {
 	// CoreNanoseconds is the exact CPU time consumed inside the window,
 	// split pro rata where a counter delta spans a window boundary.
 	CoreNanoseconds int64 `json:"core_nanoseconds"`
+	// CoveredNanoseconds is how much of the window this record actually
+	// observed: the summed duration of the counter intervals attributed to it,
+	// split across windows exactly as the counters themselves are. Compared
+	// against the window length it answers "how much of this window did we
+	// see?" — a container that started mid-window, or one whose node was
+	// unreachable for part of it, covers less than the full window. It is a
+	// fact about collection, not a judgment about the data (ADR 0012).
+	CoveredNanoseconds int64 `json:"covered_nanoseconds"`
 	// ThrottledPeriods and TotalPeriods are CFS throttling counter deltas.
-	// Zero when the cluster does not expose them — the active signal set in
-	// the agent's self-info says which reading applies.
 	ThrottledPeriods int64 `json:"throttled_periods"`
 	TotalPeriods     int64 `json:"total_periods"`
-	// PSIStallNanoseconds is PSI some-CPU stall time, where exposed.
+	// ThrottlingSamples is how many observations carried CFS counters at all.
+	// Zero makes ThrottledPeriods == 0 mean "never observed" — the cluster does
+	// not expose the counters, or every scrape that would have carried them
+	// failed. Non-zero makes the same zero mean "observed, and it did not
+	// throttle". Without this the two are indistinguishable, and the backend
+	// reads a scrape failure as a healthy container.
+	ThrottlingSamples int64 `json:"throttling_samples"`
+	// PSIStallNanoseconds is PSI some-CPU stall time, where exposed;
+	// PSISamples resolves its zero the same way ThrottlingSamples does.
 	PSIStallNanoseconds int64 `json:"psi_stall_nanoseconds"`
+	PSISamples          int64 `json:"psi_samples"`
 
 	Samples  int64      `json:"samples"`
 	MinMilli int64      `json:"min_milli"`
@@ -58,8 +73,10 @@ type MemoryUsage struct {
 	MaxBytes int64 `json:"max_bytes"`
 	// SumBytes exists so the backend can derive the exact window average.
 	SumBytes int64 `json:"sum_bytes"`
-	// PSIStallNanoseconds is PSI some-memory stall time, where exposed.
+	// PSIStallNanoseconds is PSI some-memory stall time, where exposed;
+	// PSISamples resolves its zero — observed-and-quiet versus never observed.
 	PSIStallNanoseconds int64 `json:"psi_stall_nanoseconds"`
+	PSISamples          int64 `json:"psi_samples"`
 
 	Hist *Histogram `json:"hist_bytes"`
 }
@@ -109,9 +126,12 @@ func (r *Record) Merge(o *Record) error {
 	}
 
 	r.CPU.CoreNanoseconds += o.CPU.CoreNanoseconds
+	r.CPU.CoveredNanoseconds += o.CPU.CoveredNanoseconds
 	r.CPU.ThrottledPeriods += o.CPU.ThrottledPeriods
 	r.CPU.TotalPeriods += o.CPU.TotalPeriods
+	r.CPU.ThrottlingSamples += o.CPU.ThrottlingSamples
 	r.CPU.PSIStallNanoseconds += o.CPU.PSIStallNanoseconds
+	r.CPU.PSISamples += o.CPU.PSISamples
 	if o.CPU.Samples > 0 {
 		if r.CPU.Samples == 0 || o.CPU.MinMilli < r.CPU.MinMilli {
 			r.CPU.MinMilli = o.CPU.MinMilli
@@ -126,6 +146,7 @@ func (r *Record) Merge(o *Record) error {
 	}
 
 	r.Memory.PSIStallNanoseconds += o.Memory.PSIStallNanoseconds
+	r.Memory.PSISamples += o.Memory.PSISamples
 	if o.Memory.Samples > 0 {
 		if r.Memory.Samples == 0 || o.Memory.MinBytes < r.Memory.MinBytes {
 			r.Memory.MinBytes = o.Memory.MinBytes

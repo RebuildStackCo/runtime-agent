@@ -336,17 +336,25 @@ func (w *PodWatcher) LookupPod(uid types.UID) (namespace string, workload Worklo
 	return entry.namespace, entry.workload, ok
 }
 
-// LookupPodByName is LookupPod for sources that identify pods by
-// namespace and name instead of UID.
-func (w *PodWatcher) LookupPodByName(namespace, name string) (workload WorkloadRef, ok bool) {
+// LookupPodByName is LookupPod for sources that identify pods by namespace and
+// name instead of UID — the cAdvisor exposition is one. It returns the UID as
+// well as the workload, because a name is not an identity: a StatefulSet
+// recreates a pod under the same name with a new UID, and a caller keeping
+// per-container counter baselines must key them on something that changes when
+// the container does. Callers that key on the name alone silently attribute the
+// new pod's counters to the dead pod's baseline.
+func (w *PodWatcher) LookupPodByName(namespace, name string) (uid types.UID, workload WorkloadRef, ok bool) {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
-	uid, ok := w.nameIndex[namespace+"/"+name]
+	uid, ok = w.nameIndex[namespace+"/"+name]
 	if !ok {
-		return WorkloadRef{}, false
+		return "", WorkloadRef{}, false
 	}
 	entry, ok := w.index[uid]
-	return entry.workload, ok
+	if !ok {
+		return "", WorkloadRef{}, false
+	}
+	return uid, entry.workload, true
 }
 
 // LookupContainer resolves a node-role build-info fact — a pod UID and a
