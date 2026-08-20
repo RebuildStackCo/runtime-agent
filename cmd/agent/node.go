@@ -35,6 +35,7 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	enableEBPF := fs.Bool("enable-ebpf", false, "master switch for the eBPF CPU profiler (ADR 0011); when set, the node checks eBPF readiness at startup and refuses gracefully if the kernel cannot support it")
 	sysRoot := fs.String("sys", "/sys", "sysfs root used to check kernel BTF at <sys>/kernel/btf/vmlinux")
 	configPath := fs.String("config", "", "path to the agent configuration file (YAML); supplies the eBPF profiling config (ADR 0011)")
+	scopeEndpoint := fs.String("scope-endpoint", "", "controller URL to query for the pods this node may scan (ADR 0015); empty means the node scans nothing — it cannot honor namespace filters on its own")
 	targetsEndpoint := fs.String("targets-endpoint", "", "controller URL to query for profiling targets (ADR 0011); empty disables targeting")
 	profileEndpoint := fs.String("profile-endpoint", "", "controller URL to ship captured profiles to (ADR 0011); empty runs capture-only")
 	if err := fs.Parse(args); err != nil {
@@ -57,6 +58,7 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	// and container ID, not node name).
 	node := os.Getenv("NODE_NAME")
 	shipper := newReportShipper(*endpoint, *tokenPath, node)
+	scoper := newScopeClient(*scopeEndpoint, *tokenPath)
 
 	scanner := nodescan.NewScanner(*procRoot, nodescan.NewModuleFilter(nodescan.DefaultInfraModulePrefixes))
 	logger.Info("node scanner starting",
@@ -93,8 +95,31 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		}
 	}
 
+	// scanScope asks the controller which pods on this node passed the
+	// customer's namespace filters and opt-out annotations. It is fetched per
+	// pass, and it fails closed: with no endpoint configured, or a controller
+	// that cannot be reached, the node scans no process's executable at all
+	// (ADR 0015). The node cannot decide eligibility itself — its cgroup gives
+	// it a pod UID, never a namespace — so scanning without an answer would
+	// break the promise in docs/security.md §10.2. A skipped pass costs
+	// nothing: the next one re-scans (loss-harmless, ADR 0003).
+	scanScope := func() nodescan.Scope {
+		if scoper == nil {
+			logger.Warn("no scope endpoint configured; scanning nothing",
+				"hint", "set -scope-endpoint so the controller can supply the pods this node may scan")
+			return nodescan.DenyAll()
+		}
+		uids, err := scoper.fetch(ctx, node)
+		if err != nil {
+			logger.Error("fetching scan scope failed; scanning nothing this pass", "error", err)
+			return nodescan.DenyAll()
+		}
+		return nodescan.NewScope(uids)
+	}
+
 	scanOnce := func() {
-		res, err := scanner.Scan()
+		scope := scanScope()
+		res, err := scanner.Scan(scope)
 		if err != nil {
 			// A failure to read the process tree at all (not an individual
 			// unreadable binary). Log and try again next tick.
@@ -118,7 +143,9 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		// invariant 6, docs/security.md §8).
 		logger.Info("scan coverage",
 			"processes_scanned", res.Counters.ProcessesScanned,
+			"pods_in_scope", scope.Size(),
 			"go_found", res.Counters.GoFound,
+			"filtered_scope", res.Counters.FilteredScope,
 			"filtered_infra", res.Counters.FilteredInfra,
 			"unreadable", res.Counters.Unreadable,
 		)

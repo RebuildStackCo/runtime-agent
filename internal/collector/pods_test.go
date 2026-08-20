@@ -503,6 +503,47 @@ func TestPodsSnapshotCoversAdmittedPodsOnly(t *testing.T) {
 	waitForSnapshot(nil)
 }
 
+// The scan scope is the node scanner's only namespace filter: the node has no
+// API access and its cgroup yields a pod UID, never a namespace. A pod the
+// filters excluded must therefore never appear here — if it did, its processes
+// would be scanned on the node and its module paths shipped, breaking the
+// promise in docs/security.md §10.2.
+func TestAdmittedPodsOnNodeExcludesFilteredPods(t *testing.T) {
+	kept := pod("kept", nil)
+	kept.Spec.NodeName = "node-1"
+	optedOut := pod("opted-out", nil)
+	optedOut.Spec.NodeName = "node-1"
+	optedOut.Annotations = map[string]string{CollectAnnotation: "false"}
+	elsewhere := pod("elsewhere", nil)
+	elsewhere.Spec.NodeName = "node-2"
+
+	clientset := fake.NewClientset(kept, optedOut, elsewhere)
+	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = watcher.Run(ctx) }()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		got := watcher.AdmittedPodsOnNode("node-1")
+		if reflect.DeepEqual(got, []string{string(kept.UID)}) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("scope for node-1 = %v, want only %q", got, kept.UID)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	if got := watcher.AdmittedPodsOnNode("node-2"); !reflect.DeepEqual(got, []string{string(elsewhere.UID)}) {
+		t.Errorf("scope for node-2 = %v, want only %q", got, elsewhere.UID)
+	}
+	if got := watcher.AdmittedPodsOnNode("node-3"); len(got) != 0 {
+		t.Errorf("scope for an unknown node = %v, want empty", got)
+	}
+}
+
 func TestContainersOnNode(t *testing.T) {
 	owner := controllerRef("ReplicaSet", "web-7d9f")
 	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{

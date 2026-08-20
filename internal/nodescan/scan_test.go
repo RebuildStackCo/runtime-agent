@@ -82,20 +82,29 @@ func TestScannerClassifiesProcesses(t *testing.T) {
 	const containerID = "deadbeef00000000000000000000000000000000000000000000000000000000"
 	keptCgroup := "0::/kubepods/burstable/pod" + podUID + "/" + containerID
 
+	uid := func(n string) string { return "0000000" + n + "-12ab-34cd-56ef-1234567890ab" }
+	cgroupFor := func(n string) string { return "0::/kubepods/besteffort/pod" + uid(n) + "/x" }
+
 	root := stageProc(t, []procEntry{
 		{pid: 100, exe: keptBin, cgroup: keptCgroup},
-		{pid: 200, exe: infraBin, cgroup: "0::/kubepods/besteffort/pod0000/x"},
-		{pid: 300, exe: "this is not an executable at all", rawFile: true}, // unreadable
-		{pid: 400}, // no exe: kernel thread / gone -> skipped
+		{pid: 200, exe: infraBin, cgroup: cgroupFor("2")},
+		{pid: 300, exe: "this is not an executable at all", rawFile: true, // unreadable
+			cgroup: cgroupFor("3")},
+		{pid: 400, cgroup: cgroupFor("4")}, // no exe: kernel thread / gone -> skipped
+		// A pod outside the customer's filters, and a host process belonging to
+		// no pod at all: both are dropped on the cgroup, before their
+		// executables are read.
+		{pid: 500, exe: keptBin, cgroup: cgroupFor("5")},
+		{pid: 600, exe: keptBin},
 	}, []string{"meminfo", "self"})
 
 	s := NewScanner(root, NewModuleFilter(DefaultInfraModulePrefixes))
-	res, err := s.Scan()
+	res, err := s.Scan(NewScope([]string{podUID, uid("2"), uid("3"), uid("4")}))
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 
-	want := Counters{ProcessesScanned: 4, GoFound: 1, FilteredInfra: 1, Unreadable: 1}
+	want := Counters{ProcessesScanned: 6, GoFound: 1, FilteredScope: 2, FilteredInfra: 1, Unreadable: 1}
 	if res.Counters != want {
 		t.Errorf("counters = %+v, want %+v", res.Counters, want)
 	}
@@ -118,6 +127,60 @@ func TestScannerClassifiesProcesses(t *testing.T) {
 	}
 	if b.ContainerID != containerID {
 		t.Errorf("container id = %q, want %q", b.ContainerID, containerID)
+	}
+}
+
+// A node that has not obtained a scope must not scan. docs/security.md §10.2
+// promises customers that node-level samples outside their filters are dropped
+// on the node before transport, and the node cannot make that claim on its own —
+// its cgroup gives it a pod UID, never a namespace.
+func TestScannerWithoutScopeScansNothing(t *testing.T) {
+	keptBin := buildGoBinary(t, "example.com/team/payments")
+	root := stageProc(t, []procEntry{
+		{pid: 100, exe: keptBin, cgroup: "0::/kubepods/burstable/pod00000001-12ab-34cd-56ef-1234567890ab/x"},
+		{pid: 300, exe: "this is not an executable at all", rawFile: true,
+			cgroup: "0::/kubepods/besteffort/pod00000003-12ab-34cd-56ef-1234567890ab/x"},
+	}, nil)
+
+	s := NewScanner(root, NewModuleFilter(DefaultInfraModulePrefixes))
+	res, err := s.Scan(DenyAll())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if len(res.Binaries) != 0 {
+		t.Fatalf("kept binaries = %d, want 0 without a scope: %+v", len(res.Binaries), res.Binaries)
+	}
+	if res.Counters.FilteredScope != 2 || res.Counters.ProcessesScanned != 2 {
+		t.Errorf("counters = %+v, want every process counted as out of scope", res.Counters)
+	}
+	// Unreadable stayed zero even though a non-executable file was staged: an
+	// out-of-scope process has its executable left unopened, so nothing about it
+	// is collected rather than collected and dropped (CLAUDE.md invariant 4).
+	if res.Counters.Unreadable != 0 {
+		t.Errorf("unreadable = %d, want 0 — an out-of-scope executable must never be read",
+			res.Counters.Unreadable)
+	}
+}
+
+func TestScopeAdmits(t *testing.T) {
+	scope := NewScope([]string{"pod-a", "pod-b", ""})
+	if scope.Size() != 2 {
+		t.Errorf("size = %d, want 2 (the empty UID is not a pod)", scope.Size())
+	}
+	if !scope.Admits("pod-a") {
+		t.Error("an admitted pod must be admitted")
+	}
+	if scope.Admits("pod-c") {
+		t.Error("a pod outside the controller's answer must not be admitted")
+	}
+	// A host process — kubelet, a systemd unit — belongs to no pod, so no
+	// namespace filter can permit it.
+	if scope.Admits("") {
+		t.Error("a process with no pod must never be admitted")
+	}
+	if DenyAll().Admits("pod-a") {
+		t.Error("the denying scope must admit nothing")
 	}
 }
 

@@ -86,8 +86,8 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	t.Logf("controller pod: %s", controllerPod)
 
 	// The node DaemonSet, pointed at the controller Service in this namespace.
-	endpoint := fmt.Sprintf("http://runtime-agent-controller.%s.svc.cluster.local:8080/v1/node-inventory", ns)
-	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage, endpoint)
+	base := fmt.Sprintf("http://runtime-agent-controller.%s.svc.cluster.local:8080", ns)
+	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage, base+"/v1/node-inventory", base+"/v1/node-scope")
 	nodePod := waitDaemonSetPod(ctx, t, clientset, ns)
 	t.Logf("node pod: %s", nodePod)
 

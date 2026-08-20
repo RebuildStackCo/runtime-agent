@@ -410,6 +410,28 @@ func (w *PodWatcher) ContainersOnNode(node string) []ContainerOnNode {
 	return out
 }
 
+// AdmittedPodsOnNode returns the UIDs of the pods on node that passed the
+// filters, sorted. It is how the node role learns which pods it may scan: the
+// node resolves a process only as far as a pod UID through its cgroup and has no
+// API access to check a namespace itself (ADR 0009), so the controller — which
+// holds the filters — answers for it.
+//
+// The set is the admitted index itself, so a pod excluded by a namespace filter
+// or an opt-out annotation cannot appear here: excluded pods never enter the
+// index, and one that opts out mid-flight is dropped from it on the next update.
+func (w *PodWatcher) AdmittedPodsOnNode(node string) []string {
+	w.indexMu.RLock()
+	var out []string
+	for uid, entry := range w.index {
+		if entry.node == node {
+			out = append(out, string(uid))
+		}
+	}
+	w.indexMu.RUnlock()
+	sort.Strings(out)
+	return out
+}
+
 // admit runs the pod through the filter, consulting the namespace's
 // annotations from the cache (a cache miss reads as no annotations).
 // Exclusions are counted only when count is set — once per pod appearance

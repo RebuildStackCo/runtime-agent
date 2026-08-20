@@ -423,7 +423,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if targetsPublisher != nil {
 			targeter = nodeTargeter{publisher: targetsPublisher, pw: podWatcher}
 		}
-		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile, targeter)
+		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile, targeter, podWatcher)
 		if err != nil {
 			return fmt.Errorf("configuring node intake: %w", err)
 		}
@@ -458,7 +458,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 // by the cluster JWKS (fetched over the API server's in-cluster transport, no
 // TokenReview) and an HTTP server that decodes node reports and hands each to
 // onReport (which joins it into the Go inventory, ADR 0010).
-func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport), targeter nodeintake.NodeTargeter) (*nodeintake.Server, error) {
+func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport), targeter nodeintake.NodeTargeter, scoper nodeintake.NodeScoper) (*nodeintake.Server, error) {
 	addr := cfg.ListenAddress
 	if addr == "" {
 		addr = config.DefaultNodeIntakeListenAddress
@@ -485,9 +485,13 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 	if targeter != nil {
 		targetsHandler = nodeintake.NewTargetsHandler(verifier, logger, targeter)
 	}
+	// The scope endpoint is always mounted when node intake is on: without it a
+	// node cannot know which pods pass the customer's filters, and so — failing
+	// closed — scans nothing at all (ADR 0015).
+	scopeHandler := nodeintake.NewScopeHandler(verifier, logger, scoper)
 	logger.Info("node intake enabled", "addr", addr, "audience", audience,
 		"expected_subject", cfg.ExpectedSubject, "targeting", targeter != nil)
-	return nodeintake.NewServer(addr, handler, profileHandler, targetsHandler, logger), nil
+	return nodeintake.NewServer(addr, handler, profileHandler, targetsHandler, scopeHandler, logger), nil
 }
 
 // nodeTargeter answers a node's targets query: it intersects the publisher's

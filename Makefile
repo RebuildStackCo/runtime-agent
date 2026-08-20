@@ -18,8 +18,12 @@ SPOOL_READER_IMAGE ?= busybox:1.37
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
 
-test: ## Run all tests with the race detector
+test: ## Run all tests with the race detector, and type-check the e2e-tagged ones
 	go test -race ./...
+	# The e2e tests are behind a build tag, so `go test ./...` never compiles
+	# them and a changed signature can rot there unnoticed. Type-check them on
+	# every run; they still only execute against a kind cluster.
+	go vet -tags e2e ./...
 
 lint: ## Run golangci-lint
 	golangci-lint run

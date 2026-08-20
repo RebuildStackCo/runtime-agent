@@ -87,6 +87,11 @@ spec:
             - /sys
             - -controller-endpoint
             - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-inventory
+            # Which pods on this node passed the customer's namespace filters
+            # and opt-out annotations (ADR 0015); without it the scanner fails
+            # closed and scans nothing.
+            - -scope-endpoint
+            - http://runtime-agent-controller.runtime-agent.svc:8080/v1/node-scope
             # Where to ask which containers to profile, and where to ship the
             # captured, filtered profiles (ADR 0011 §3, §5.5). Same controller
             # Service, same projected-token auth, different paths.
