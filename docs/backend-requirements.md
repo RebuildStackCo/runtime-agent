@@ -156,6 +156,30 @@ carries its own completeness:
 The counters are cumulative since agent start; the backend takes differences
 between deliveries, exactly as it does for every other counter here.
 
+**Structural snapshots say when they were taken, and the Go inventory says how
+complete it is** ([ADR 0017](adr/0017-build-facts-keyed-by-digest.md)).
+`go_inventory`, `workload_metadata` and `node_metadata` each carry `captured_at`
+— the instant the snapshot was assembled, which is not a window and not the age
+of the facts inside it. `go_inventory` additionally carries a `coverage` block
+whose counters are cumulative from the `since` instant carried with them:
+
+- `nodes_reported` — how many nodes have delivered at least one scan. Read
+  against the node count in `node_metadata`, a shortfall means part of the fleet
+  is not reporting, and the inventory is incomplete for reasons no record can
+  express.
+- `facts_received` / `facts_joined` / `facts_unjoined` / `facts_undigested` —
+  what arrived and what could not be attributed. **The backend MUST NOT read a
+  missing workload as "not a Go workload"** when these say otherwise.
+
+**`go_dependencies` is write-once and keyed by image digest.** A build's
+dependency module paths never change, so the payload is immutable given its key
+and the agent sends it once per distinct build. The backend MUST upsert it by
+image digest and MUST NOT expect it on every flush or treat a redelivery (after
+an agent restart) as a change. It carries no sequence and no `captured_at` for
+the same reason. Join it to workloads through `go_inventory.records[].image_digest`.
+It contains module *paths* only, never versions — it is not a dependency-version
+inventory and MUST NOT be presented as one.
+
 ### Delivery semantics
 
 - **At-least-once.** The agent retransmits anything not acknowledged. The

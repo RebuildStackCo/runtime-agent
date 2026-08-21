@@ -2,6 +2,15 @@
   "kind": "go_inventory",
   "source": "structural",
   "sequence": 4,
+  "captured_at": "2026-08-06T10:12:00Z",
+  "coverage": {
+    "since": "2026-08-06T10:00:00Z",
+    "nodes_reported": 2,
+    "facts_received": 9,
+    "facts_joined": 7,
+    "facts_unjoined": 2,
+    "facts_undigested": 1
+  },
   "records": [
     {
       "namespace": "search",

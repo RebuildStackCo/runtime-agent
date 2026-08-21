@@ -25,6 +25,25 @@ var update = flag.Bool("update", false, "rewrite golden files")
 
 var windowStart = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 
+// capturedAt is the instant the structural snapshots below were taken. It is
+// passed into the writers rather than read from the clock, which is what keeps
+// the golden bytes stable.
+var capturedAt = time.Date(2026, 8, 6, 10, 12, 0, 0, time.UTC)
+
+// fixedCoverage is the completeness block of the Go-inventory payload: a fleet
+// where one node has not checked in and a handful of facts could not be
+// attributed — the state the block exists to make visible.
+func fixedCoverage() inventory.Coverage {
+	return inventory.Coverage{
+		Since:           windowStart,
+		NodesReported:   2,
+		FactsReceived:   9,
+		FactsJoined:     7,
+		FactsUnjoined:   2,
+		FactsUndigested: 1,
+	}
+}
+
 // fixedRecords builds a deterministic two-workload window through the real
 // accumulator, exercising every field: CPU deltas, memory samples,
 // throttling, and PSI.
@@ -166,7 +185,7 @@ func fixedInventory() []inventory.GoRecord {
 
 func TestGoldenGoInventoryPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteGoInventory(4, fixedInventory()); err != nil {
+	if err := s.WriteGoInventory(4, capturedAt, fixedCoverage(), fixedInventory()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "go-inventory.json"), "go-inventory.golden.json")
@@ -174,10 +193,10 @@ func TestGoldenGoInventoryPayload(t *testing.T) {
 
 func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteGoInventory(1, fixedInventory()); err != nil {
+	if err := s.WriteGoInventory(1, capturedAt, fixedCoverage(), fixedInventory()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteGoInventory(2, fixedInventory()); err != nil {
+	if err := s.WriteGoInventory(2, capturedAt, fixedCoverage(), fixedInventory()); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -199,6 +218,100 @@ func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	}
 	if payload.Sequence != 2 {
 		t.Fatalf("surviving inventory has sequence %d, want 2 (newest supersedes)", payload.Sequence)
+	}
+}
+
+func fixedDependencies() inventory.BuildDependencies {
+	return inventory.BuildDependencies{
+		ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		GoVersion:   "go1.26.1",
+		MainModule:  "github.com/acme/web",
+		Modules: []string{
+			"github.com/cespare/xxhash/v2",
+			"go.uber.org/automaxprocs",
+			"golang.org/x/sync",
+		},
+	}
+}
+
+func TestGoldenGoDependenciesPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteGoDependencies(fixedDependencies()); err != nil {
+		t.Fatal(err)
+	}
+	name := "go-dependencies-sha256-2222222222222222222222222222222222222222222222222222222222222222.json"
+	checkGolden(t, filepath.Join(dir, name), "go-dependencies.golden.json")
+}
+
+// A build's dependency set never changes, so writing it twice must land on the
+// same file with the same bytes: redelivery after a restart is an idempotent
+// upsert, which is what makes the controller's in-memory "already written"
+// bookkeeping loss-harmless (ADR 0017).
+func TestGoDependenciesWriteIsIdempotent(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteGoDependencies(fixedDependencies()); err != nil {
+		t.Fatal(err)
+	}
+	name := "go-dependencies-sha256-2222222222222222222222222222222222222222222222222222222222222222.json"
+	first, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteGoDependencies(fixedDependencies()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool holds %d files after two writes of one build, want 1", len(entries))
+	}
+	second, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Error("the same build produced different bytes on rewrite; the payload must be immutable given its digest")
+	}
+}
+
+// Two builds are two files: unlike the inventory snapshot, dependency sets
+// accumulate rather than supersede, because each is keyed by its own build.
+func TestGoDependenciesAccumulatePerBuild(t *testing.T) {
+	s, dir := newTestSpool(t)
+	first := fixedDependencies()
+	second := fixedDependencies()
+	second.ImageDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	for _, d := range []inventory.BuildDependencies{first, second} {
+		if err := s.WriteGoDependencies(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("spool holds %d files for two builds, want 2", len(entries))
+	}
+}
+
+// A dependency set with no digest has no key, so it cannot be filed at all —
+// writing it would produce a payload nothing can join to.
+func TestGoDependenciesRejectsMissingDigest(t *testing.T) {
+	s, dir := newTestSpool(t)
+	d := fixedDependencies()
+	d.ImageDigest = ""
+	if err := s.WriteGoDependencies(d); err == nil {
+		t.Fatal("writing a dependency set with no image digest succeeded, want an error")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("spool holds %d files after a rejected write, want 0", len(entries))
 	}
 }
 
@@ -283,7 +396,7 @@ func fixedNodeMetadata() []collector.NodeInfo {
 
 func TestGoldenWorkloadMetadataPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteWorkloadMetadata(7, fixedWorkloadMetadata()); err != nil {
+	if err := s.WriteWorkloadMetadata(7, capturedAt, fixedWorkloadMetadata()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "workload-metadata.json"), "workload-metadata.golden.json")
@@ -291,7 +404,7 @@ func TestGoldenWorkloadMetadataPayload(t *testing.T) {
 
 func TestGoldenNodeMetadataPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteNodeMetadata(7, fixedNodeMetadata()); err != nil {
+	if err := s.WriteNodeMetadata(7, capturedAt, fixedNodeMetadata()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "node-metadata.json"), "node-metadata.golden.json")
@@ -302,10 +415,10 @@ func TestGoldenNodeMetadataPayload(t *testing.T) {
 func TestMetadataSupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
 	for _, seq := range []int64{1, 2, 3} {
-		if err := s.WriteWorkloadMetadata(seq, fixedWorkloadMetadata()); err != nil {
+		if err := s.WriteWorkloadMetadata(seq, capturedAt, fixedWorkloadMetadata()); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.WriteNodeMetadata(seq, fixedNodeMetadata()); err != nil {
+		if err := s.WriteNodeMetadata(seq, capturedAt, fixedNodeMetadata()); err != nil {
 			t.Fatal(err)
 		}
 	}

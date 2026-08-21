@@ -1,0 +1,12 @@
+{
+  "kind": "go_dependencies",
+  "source": "structural",
+  "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "go_version": "go1.26.1",
+  "main_module": "github.com/acme/web",
+  "modules": [
+    "github.com/cespare/xxhash/v2",
+    "go.uber.org/automaxprocs",
+    "golang.org/x/sync"
+  ]
+}

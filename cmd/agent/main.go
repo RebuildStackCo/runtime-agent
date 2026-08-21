@@ -262,7 +262,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// rebuilt from the next node scan (ADR 0003).
 	var goStore *inventory.Store
 	if cfg.NodeIntake.Enabled {
-		goStore = inventory.NewStore()
+		goStore = inventory.NewStore(time.Now())
 	}
 	var inventoryMu sync.Mutex
 	var goInventorySeq int64
@@ -273,8 +273,18 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		inventoryMu.Lock()
 		defer inventoryMu.Unlock()
 		goInventorySeq++
-		if err := spool.WriteGoInventory(goInventorySeq, goStore.Snapshot()); err != nil {
+		if err := spool.WriteGoInventory(goInventorySeq, time.Now(), goStore.Coverage(), goStore.Snapshot()); err != nil {
 			logger.Error("spooling go inventory", "error", err)
+		}
+		// Dependency sets are keyed by image digest and immutable for it, so
+		// each is written once and marked only after the write succeeded; a
+		// failed write is retried on the next flush (ADR 0017).
+		for _, d := range goStore.PendingDependencies() {
+			if err := spool.WriteGoDependencies(d); err != nil {
+				logger.Error("spooling go dependencies", "image_digest", d.ImageDigest, "error", err)
+				continue
+			}
+			goStore.MarkDependenciesWritten(d.ImageDigest)
 		}
 	}
 
@@ -290,12 +300,15 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			return
 		}
 		metadataSeq++
+		// One capture instant for both payloads of a flush: they describe the
+		// same cluster state and are joined against each other downstream.
+		capturedAt := time.Now()
 		records := metadata.Aggregate(podWatcher.Pods())
-		if err := spool.WriteWorkloadMetadata(metadataSeq, records); err != nil {
+		if err := spool.WriteWorkloadMetadata(metadataSeq, capturedAt, records); err != nil {
 			logger.Error("spooling workload metadata", "error", err)
 		}
 		nodes := nodeWatcher.Nodes()
-		if err := spool.WriteNodeMetadata(metadataSeq, nodes); err != nil {
+		if err := spool.WriteNodeMetadata(metadataSeq, capturedAt, nodes); err != nil {
 			logger.Error("spooling node metadata", "error", err)
 		}
 		logger.Info("metadata flushed",
@@ -323,9 +336,12 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				"go_inventory_records", ic.Records,
 				"go_versions", ic.GoVersions,
 				"go_pgo_builds", ic.PGOBuilds,
+				"go_builds", ic.Builds,
 				"go_facts_received", ic.FactsReceived,
 				"go_facts_joined", ic.FactsJoined,
 				"go_facts_unjoined", ic.FactsUnjoined,
+				"go_facts_undigested", ic.FactsUndigested,
+				"go_nodes_reported", ic.NodesReported,
 			)
 		}
 		logger.Info("coverage", attrs...)

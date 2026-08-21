@@ -27,6 +27,10 @@ import (
 // agent, so the scanner keeps it. Must match test/e2e/sample/go.mod.
 const sampleModulePath = "example.com/rebuildstack-e2e/goworkload"
 
+// A module the sample really depends on (test/e2e/sample/go.mod), used to assert
+// the dependency set survives the node→controller join.
+const sampleDependency = "github.com/cespare/xxhash/v2"
+
 const nodeManifestPath = "../../deploy/node-daemonset.yaml"
 
 // TestNodeScannerFailsClosedWithoutScope deploys the node-role DaemonSet from
