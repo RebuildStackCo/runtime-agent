@@ -272,6 +272,18 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		inventoryMu.Lock()
 		defer inventoryMu.Unlock()
+		// Forget first, then publish. The inventory accumulates pushed facts, so
+		// nothing else would ever remove a record whose workload is gone — or
+		// whose pod the customer opted out of, which stops new facts arriving
+		// without removing the ones already held (ADR 0018). The live index is
+		// the same one workload metadata is built from, so the two payloads
+		// cannot disagree about which workloads exist.
+		evicted := goStore.Retain(inventory.LiveKeys(podWatcher.Pods()))
+		goStore.RetainNodes(nodeWatcher.Names())
+		if evicted.Records > 0 || evicted.Builds > 0 {
+			logger.Info("go inventory forgot departed workloads",
+				"records", evicted.Records, "builds", evicted.Builds)
+		}
 		goInventorySeq++
 		if err := spool.WriteGoInventory(goInventorySeq, time.Now(), goStore.Coverage(), goStore.Snapshot()); err != nil {
 			logger.Error("spooling go inventory", "error", err)

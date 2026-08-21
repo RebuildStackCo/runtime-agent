@@ -14,6 +14,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -94,9 +95,12 @@ type Store struct {
 	deps    map[string]BuildDependencies
 	written map[string]struct{}
 
-	// nodesReported is the set of nodes that have delivered at least one report.
-	// Compared against the node count in the node-metadata payload it is what
-	// makes a DaemonSet that never started visible downstream.
+	// nodesReported is the set of nodes still in the cluster that have delivered
+	// at least one report. Compared against the node count in the node-metadata
+	// payload it is what makes a DaemonSet that never started visible
+	// downstream — which is why departed nodes are pruned from it (ADR 0018):
+	// a count that outlives the nodes would exceed the fleet and hide the gap
+	// it exists to show.
 	nodesReported map[string]struct{}
 
 	// since is when this store started counting: the base of every cumulative
@@ -209,6 +213,115 @@ func (s *Store) PendingDependencies() []BuildDependencies {
 	return out
 }
 
+// LiveKeys is the set of record keys the controller's own filtered pod index
+// currently supports: one per container of every pod that passed the customer's
+// filters. It is the same index workload metadata is derived from, which is the
+// point — the two payloads then agree by construction rather than by
+// convention (ADR 0018).
+//
+// Init containers are included. A native sidecar is declared as one and runs
+// for the pod's whole life, so excluding them would evict its record on every
+// flush and re-add it on the next node scan.
+func LiveKeys(pods []collector.PodInfo) []Key {
+	out := make([]Key, 0, len(pods))
+	for _, p := range pods {
+		for _, c := range p.Containers {
+			out = append(out, Key{
+				Namespace:    p.Namespace,
+				WorkloadKind: p.Workload.Kind,
+				WorkloadName: p.Workload.Name,
+				Container:    c.Name,
+			})
+		}
+	}
+	return out
+}
+
+// Evicted is what one Retain pass removed, for the coverage log.
+type Evicted struct {
+	// Records is records whose workload container is gone from the cluster.
+	Records int
+	// Builds is dependency sets no surviving record references any more.
+	Builds int
+}
+
+// Retain drops every record whose key is absent from live, and then every
+// dependency set no surviving record still references.
+//
+// The store accumulates records from facts the nodes push, so without this it
+// only ever grows: a deleted workload's record would keep shipping in every
+// snapshot until the controller restarted, and — the reason this is not merely
+// stale data — so would the record of a pod the customer opted out of. Once the
+// pod leaves the scan scope (ADR 0015) no new fact arrives to correct or remove
+// it, and the opt-out that was supposed to apply at collection would apply only
+// to facts not yet collected. Retaining against the live index is what makes
+// "the exclusion applies at the collection stage" true of this payload too.
+//
+// live may legitimately be empty — a cluster where nothing passes the filters
+// has an empty inventory — so this does not guard against it. That is safe
+// because the pod index is only ever mutated by informer events, never wiped:
+// PodWatcher registers its handlers after the caches sync, and a relist replays
+// as adds and updates. An empty index therefore means an empty cluster, not an
+// unsynced one.
+//
+// A record for a pod whose node scanned it before the controller's informer saw
+// it survives at most one flush cycle: it is evicted here, and re-added by the
+// next scan once the informer has caught up.
+func (s *Store) Retain(live []Key) Evicted {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	set := make(map[Key]struct{}, len(live))
+	for _, k := range live {
+		set[k] = struct{}{}
+	}
+	var ev Evicted
+	for k := range s.records {
+		if _, ok := set[k]; !ok {
+			delete(s.records, k)
+			ev.Records++
+		}
+	}
+
+	referenced := make(map[string]struct{}, len(s.records))
+	for _, r := range s.records {
+		if r.ImageDigest != "" {
+			referenced[r.ImageDigest] = struct{}{}
+		}
+	}
+	for digest := range s.deps {
+		if _, ok := referenced[digest]; ok {
+			continue
+		}
+		// deps and written must be dropped together. Dropping only deps would
+		// leave the digest marked as already written, so if that image ever came
+		// back its dependency set would be re-ingested and never sent again —
+		// silently, with nothing failing.
+		delete(s.deps, digest)
+		delete(s.written, digest)
+		ev.Builds++
+	}
+	return ev
+}
+
+// RetainNodes drops reporting nodes that are no longer in the cluster, so
+// nodes_reported stays comparable with the node count in the node-metadata
+// payload. Without it a cluster that scaled down would report more nodes than
+// it has, and a scaled-down fleet with a broken DaemonSet would look complete.
+func (s *Store) RetainNodes(live []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := make(map[string]struct{}, len(live))
+	for _, n := range live {
+		set[n] = struct{}{}
+	}
+	for n := range s.nodesReported {
+		if _, ok := set[n]; !ok {
+			delete(s.nodesReported, n)
+		}
+	}
+}
+
 // MarkDependenciesWritten records that the set for digest reached the sink, so
 // it is not written again. The bookkeeping is in memory only, and losing it is
 // harmless: after a restart the set is written once more, and since the payload
@@ -288,12 +401,16 @@ func (s *Store) Counters() Counters {
 // resolve is dropped. Both are counts here, never identities (CLAUDE.md
 // invariant 6).
 //
-// Every counter is cumulative from Since, which is carried alongside them so a
-// consumer never has to know the base from documentation (ADR 0013's principle,
-// applied to a structural payload).
+// The fact counters are cumulative from Since, which is carried alongside them
+// so a consumer never has to know the base from documentation (ADR 0013's
+// principle, applied to a structural payload).
 type Coverage struct {
-	Since         time.Time `json:"since"`
-	NodesReported int       `json:"nodes_reported"`
+	Since time.Time `json:"since"`
+	// NodesReported is how many nodes *currently in the cluster* have reported
+	// since Since. It is not a running total: a node that has left is dropped,
+	// so this stays directly comparable with the node count in node_metadata
+	// (ADR 0018).
+	NodesReported int `json:"nodes_reported"`
 	// FactsReceived is every binary in every report; Joined is those attributed
 	// to a workload container; Unjoined is those that could not be. Undigested
 	// counts joined facts whose container had no image digest yet, so their

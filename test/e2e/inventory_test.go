@@ -20,12 +20,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	k8syaml "sigs.k8s.io/yaml"
+
+	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 )
 
 const controllerManifestPath = "../../deploy/controller.yaml"
@@ -137,10 +140,48 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 				t.Errorf("workload = %s/%s, want Deployment/goworkload", rec.WorkloadKind, rec.WorkloadName)
 			}
 			checkSampleDependencies(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
+			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
 			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("go_inventory payload never carried the sample workload (%s) before timeout", sampleModulePath)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// checkOptOutRemovesTheRecord annotates the running sample pod with the opt-out
+// annotation and asserts its record leaves the go_inventory payload.
+//
+// This is the promise of docs/security.md §11 — "the exclusion applies at the
+// collection stage" — proven against the payload rather than against the filter.
+// The inventory is assembled from facts the nodes push, so opting a pod out only
+// stops *new* facts arriving; without the retention pass of ADR 0018 the record
+// already held would keep shipping in every snapshot for as long as the
+// controller ran, and the customer's opt-out would apply to everything except
+// what had already been collected.
+func checkOptOutRemovesTheRecord(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, controllerPod string) {
+	t.Helper()
+	pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: "app=goworkload"})
+	if err != nil || len(pods.Items) == 0 {
+		t.Fatalf("listing the sample pod: %v (%d found)", err, len(pods.Items))
+	}
+	name := pods.Items[0].Name
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:"false"}}}`, collector.CollectAnnotation)
+	if _, err := cs.CoreV1().Pods(ns).Patch(ctx, name, types.StrategicMergePatchType,
+		[]byte(patch), metav1.PatchOptions{}); err != nil {
+		t.Fatalf("annotating %s/%s to opt out: %v", ns, name, err)
+	}
+	t.Logf("opted %s/%s out; waiting for its record to leave the payload", ns, name)
+
+	// Eviction happens on the controller's flush, so allow several cadences.
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		if _, _, ok := findSampleRecord(ctx, t, config, cs, ns, controllerPod); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the opted-out workload (%s) was still in the go_inventory payload after 4 minutes", sampleModulePath)
 		}
 		time.Sleep(5 * time.Second)
 	}

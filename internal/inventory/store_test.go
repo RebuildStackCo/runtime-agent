@@ -7,6 +7,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -155,6 +156,186 @@ func TestCoverageCountsReportingNodes(t *testing.T) {
 	}
 	if c.FactsReceived != 2 || c.FactsJoined != 2 || c.FactsUnjoined != 0 {
 		t.Errorf("coverage = %+v, want received 2 / joined 2 / unjoined 0", c)
+	}
+}
+
+func TestRetainForgetsDepartedWorkloads(t *testing.T) {
+	resolver := fakeResolver{
+		"pod-web/cid": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+		"pod-idx/cid": {Namespace: "search", WorkloadKind: "StatefulSet", WorkloadName: "index", Container: "app", ImageDigest: "sha256:index"},
+	}
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "n1", Binaries: []nodescan.BinaryInfo{
+		withDeps(binary("pod-web", "cid", "go1.26.1", "github.com/acme/web", false), "golang.org/x/sync"),
+		withDeps(binary("pod-idx", "cid", "go1.26.1", "github.com/acme/index", false), "golang.org/x/time"),
+	}}, resolver)
+
+	web := Key{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app"}
+
+	// The index workload is deleted from the cluster; the web one stays, and
+	// stays without any fresh node fact — a live workload must not need to be
+	// re-reported to survive a flush.
+	ev := s.Retain([]Key{web})
+	if ev.Records != 1 || ev.Builds != 1 {
+		t.Errorf("evicted = %+v, want 1 record / 1 build", ev)
+	}
+	recs := s.Snapshot()
+	if len(recs) != 1 || recs[0].Key != web {
+		t.Fatalf("records = %+v, want only %+v", recs, web)
+	}
+
+	// The departed workload's dependency set goes with it; the surviving one
+	// stays pending because it was never marked written.
+	pending := s.PendingDependencies()
+	if len(pending) != 1 || pending[0].ImageDigest != "sha256:web" {
+		t.Errorf("pending = %+v, want only the surviving build", pending)
+	}
+	if c := s.Counters(); c.Builds != 1 {
+		t.Errorf("builds = %d, want 1", c.Builds)
+	}
+}
+
+func TestRetainOnEmptyClusterEmptiesTheInventory(t *testing.T) {
+	// A cluster where nothing passes the filters has an empty inventory. This
+	// is the case an "if live is empty, skip" guard would break: it would pin
+	// the last non-empty snapshot forever.
+	resolver := fakeResolver{
+		"pod-web/cid": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "n1", Binaries: []nodescan.BinaryInfo{
+		binary("pod-web", "cid", "go1.26.1", "github.com/acme/web", false),
+	}}, resolver)
+
+	if ev := s.Retain(nil); ev.Records != 1 {
+		t.Errorf("evicted = %+v, want 1 record", ev)
+	}
+	if recs := s.Snapshot(); len(recs) != 0 {
+		t.Errorf("records = %+v, want none", recs)
+	}
+}
+
+// A workload that leaves and comes back must be shippable again. Dropping the
+// dependency set without dropping its "already written" mark would leave the
+// returning build permanently unsent — silently, with nothing failing.
+func TestRetainClearsTheWrittenMarkWithTheDependencySet(t *testing.T) {
+	resolver := fakeResolver{
+		"pod-web/cid": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+	s := NewStore(testSince)
+	report := nodescan.Report{Node: "n1", Binaries: []nodescan.BinaryInfo{
+		withDeps(binary("pod-web", "cid", "go1.26.1", "github.com/acme/web", false), "golang.org/x/sync"),
+	}}
+	s.Ingest(report, resolver)
+	s.MarkDependenciesWritten("sha256:web")
+	if pending := s.PendingDependencies(); len(pending) != 0 {
+		t.Fatalf("pending after marking = %+v, want none", pending)
+	}
+
+	s.Retain(nil)              // the workload is deleted
+	s.Ingest(report, resolver) // and comes back on the next scan
+
+	pending := s.PendingDependencies()
+	if len(pending) != 1 || pending[0].ImageDigest != "sha256:web" {
+		t.Fatalf("pending after the build returned = %+v, want it offered again", pending)
+	}
+}
+
+// Only the records' own digests keep a dependency set alive: a build no record
+// points at any more is gone even if another workload survives.
+func TestRetainKeepsDependenciesSharedByAnotherWorkload(t *testing.T) {
+	// Two workloads running the same image, so one record's departure must not
+	// take the shared dependency set with it.
+	resolver := fakeResolver{
+		"pod-a/cid": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:shared"},
+		"pod-b/cid": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "api", Container: "app", ImageDigest: "sha256:shared"},
+	}
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "n1", Binaries: []nodescan.BinaryInfo{
+		withDeps(binary("pod-a", "cid", "go1.26.1", "github.com/acme/web", false), "golang.org/x/sync"),
+		withDeps(binary("pod-b", "cid", "go1.26.1", "github.com/acme/web", false), "golang.org/x/sync"),
+	}}, resolver)
+
+	api := Key{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "api", Container: "app"}
+	ev := s.Retain([]Key{api})
+	if ev.Records != 1 {
+		t.Errorf("evicted records = %d, want 1", ev.Records)
+	}
+	if ev.Builds != 0 {
+		t.Errorf("evicted builds = %d, want 0 — the surviving workload still runs that image", ev.Builds)
+	}
+	if pending := s.PendingDependencies(); len(pending) != 1 {
+		t.Errorf("pending = %+v, want the shared build still held", pending)
+	}
+}
+
+func TestRetainNodesForgetsDepartedNodes(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "n1"}, fakeResolver{})
+	s.Ingest(nodescan.Report{Node: "n2"}, fakeResolver{})
+	s.Ingest(nodescan.Report{Node: "n3"}, fakeResolver{})
+
+	// The cluster scaled down to one node. Reporting three would exceed the
+	// fleet in node_metadata and hide a DaemonSet gap instead of showing it.
+	s.RetainNodes([]string{"n2"})
+	if c := s.Coverage(); c.NodesReported != 1 {
+		t.Errorf("nodes_reported = %d, want 1", c.NodesReported)
+	}
+}
+
+func TestLiveKeysCoversEveryContainerIncludingInit(t *testing.T) {
+	pods := []collector.PodInfo{
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Containers: []collector.Container{
+				{Name: "app"},
+				{Name: "istio-proxy"},
+				// A native sidecar is declared as an init container and runs for
+				// the pod's whole life; excluding it would evict its record on
+				// every flush.
+				{Name: "vault-agent", Init: true},
+			},
+		},
+		{
+			Namespace:  "search",
+			Workload:   collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			Containers: []collector.Container{{Name: "app"}},
+		},
+	}
+	got := LiveKeys(pods)
+	want := []Key{
+		{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app"},
+		{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "istio-proxy"},
+		{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "vault-agent"},
+		{Namespace: "search", WorkloadKind: "StatefulSet", WorkloadName: "index", Container: "app"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("live keys = %+v, want %+v", got, want)
+	}
+}
+
+// Replicas of one workload produce the same key; a record must survive as long
+// as any replica does.
+func TestRetainSurvivesWhileAnyReplicaLives(t *testing.T) {
+	resolver := fakeResolver{
+		"pod-a/cid": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "n1", Binaries: []nodescan.BinaryInfo{
+		binary("pod-a", "cid", "go1.26.1", "github.com/acme/web", false),
+	}}, resolver)
+
+	// Two replicas of the same workload: the key repeats in the live set.
+	live := LiveKeys([]collector.PodInfo{
+		{Namespace: "shop", Workload: collector.WorkloadRef{Kind: "Deployment", Name: "web"}, Containers: []collector.Container{{Name: "app"}}},
+		{Namespace: "shop", Workload: collector.WorkloadRef{Kind: "Deployment", Name: "web"}, Containers: []collector.Container{{Name: "app"}}},
+	})
+	if ev := s.Retain(live); ev.Records != 0 {
+		t.Errorf("evicted = %+v, want nothing", ev)
+	}
+	if recs := s.Snapshot(); len(recs) != 1 {
+		t.Errorf("records = %+v, want the workload kept", recs)
 	}
 }
 
