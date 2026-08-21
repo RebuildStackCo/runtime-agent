@@ -380,6 +380,11 @@ identity never appears in either payload. Every payload declares its
 provenance (`source`), so declared values can never be silently merged with
 measured or sampled ones.
 
+Both also carry `captured_at`, the instant the snapshot was assembled (ADR
+0017), as does the Go inventory of §8. It is a timestamp of the agent's own
+work, not of anything in your cluster; its purpose is that a stale snapshot can
+be recognized as stale rather than assumed current.
+
 ### What the agent says about its own collection (ADR 0013)
 
 Usage payloads carry, alongside the numbers, what the agent actually observed
@@ -441,7 +446,8 @@ applies the filter-early rule on the node, before any record is formed:
   scans nothing. See §10.2.
 - **Kept — customer workload binaries.** For a Go process whose main module is
   *not* infrastructure, the scanner keeps the Go version, the main module path,
-  the dependency module paths, the build settings that matter (notably whether
+  the dependency module paths (paths only — dependency *versions* are discarded
+  on the node and never leave it), the build settings that matter (notably whether
   `-pgo` was applied), and the pod UID and container ID parsed from the process
   cgroup. This is the same "medium sensitivity" metadata class as the rest of
   the workload metadata above — module and version strings, never source, never
@@ -461,12 +467,26 @@ applies the filter-early rule on the node, before any record is formed:
 
 The controller joins the kept facts against its workload inventory (ADR 0010) —
 pod UID → workload, container ID → container name and the image digest it
-already collects — into a **Go-inventory payload**: one record per
-(namespace, workload, container) carrying the Go version, main module path,
-image digest, and PGO flag. Replicas and nodes running the same build collapse
-to one record. A fact whose pod or container the controller cannot resolve
-(informer lag, or a filtered pod) is counted as *unjoined* and dropped — its
-pod UID, container ID, and module path never appear, only the count. This is
+already collects — into two payloads:
+
+- **`go_inventory`** — one record per (namespace, workload, container) carrying
+  the Go version, main module path, image digest, and PGO flag. Replicas and
+  nodes running the same build collapse to one record. It also carries a
+  `coverage` block: how many nodes have delivered a report at all, and how many
+  facts were received, joined, and not joined. Those are cluster-wide counts,
+  and they name nothing.
+- **`go_dependencies`** — the dependency module paths of one build, keyed by its
+  image digest (ADR 0017). One payload per distinct build, sent once, joined
+  back to workloads through the image digest in `go_inventory`. **Module paths
+  only, never versions**: the agent does not collect the version of any
+  dependency, so this is not, and cannot be used as, a vulnerability-scanning
+  feed.
+
+A fact whose pod or container the controller cannot resolve (informer lag, or a
+filtered pod) is counted as *unjoined* and dropped — its pod UID, container ID,
+and module path never appear, only the count. A fact that resolves to a
+container with no image digest yet is counted as *undigested*: its record is
+kept, its dependency set is not, because there is no build to key it to. This is
 the same "medium sensitivity" workload-metadata class as the rest of §8: module
 and version strings, never source, environment, or arguments.
 

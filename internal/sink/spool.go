@@ -101,11 +101,31 @@ type oomPayload struct {
 // is a single superseding batch: each write replaces the previous one under its
 // fixed natural key (the payload kind), the on-disk mirror of the backend's
 // upsert-by-key ingest. The sequence orders supersedes, never arrival time.
+//
+// CapturedAt dates the assembly of the snapshot, not each fact in it: the node
+// facts were collected by scans that finished at various moments before it.
+// How much of the fleet those scans covered is what Coverage answers.
 type goInventoryPayload struct {
-	Kind     string               `json:"kind"`
-	Source   string               `json:"source"`
-	Sequence int64                `json:"sequence,omitempty"`
-	Records  []inventory.GoRecord `json:"records"`
+	Kind       string               `json:"kind"`
+	Source     string               `json:"source"`
+	Sequence   int64                `json:"sequence,omitempty"`
+	CapturedAt time.Time            `json:"captured_at"`
+	Coverage   inventory.Coverage   `json:"coverage"`
+	Records    []inventory.GoRecord `json:"records"`
+}
+
+// goDependenciesPayload is the dependency module set of one build, keyed by its
+// image digest. Unlike every other structural payload it neither supersedes nor
+// carries a sequence or a capture time: a build's dependencies are a property of
+// the build, fixed the moment the image was produced, so the payload is
+// immutable given its key and a redelivery is byte-identical (ADR 0017).
+type goDependenciesPayload struct {
+	Kind        string   `json:"kind"`
+	Source      string   `json:"source"`
+	ImageDigest string   `json:"image_digest"`
+	GoVersion   string   `json:"go_version"`
+	MainModule  string   `json:"main_module"`
+	Modules     []string `json:"modules"`
 }
 
 // workloadMetadataPayload is the declared shape of every collected workload
@@ -113,12 +133,15 @@ type goInventoryPayload struct {
 // go-inventory it is a single superseding batch under a fixed natural key (the
 // payload kind): it describes current cluster state, so the newest snapshot
 // replaces its predecessor rather than accumulating. It carries no window
-// because a spec has no window; it is true as of the flush that wrote it.
+// because a spec has no window — a spec is not observed over time — but it does
+// carry the instant it was taken, so a consumer can tell how old the newest
+// snapshot is without inferring it from delivery (ADR 0017, amending ADR 0012 §3).
 type workloadMetadataPayload struct {
-	Kind     string            `json:"kind"`
-	Source   string            `json:"source"`
-	Sequence int64             `json:"sequence,omitempty"`
-	Records  []metadata.Record `json:"records"`
+	Kind       string            `json:"kind"`
+	Source     string            `json:"source"`
+	Sequence   int64             `json:"sequence,omitempty"`
+	CapturedAt time.Time         `json:"captured_at"`
+	Records    []metadata.Record `json:"records"`
 }
 
 // nodeMetadataPayload is the current node inventory: size, instance and
@@ -127,10 +150,11 @@ type workloadMetadataPayload struct {
 // payload is what turns those node names into zones and instance types.
 // Superseding batch, same reasoning as workloadMetadataPayload.
 type nodeMetadataPayload struct {
-	Kind     string               `json:"kind"`
-	Source   string               `json:"source"`
-	Sequence int64                `json:"sequence,omitempty"`
-	Nodes    []collector.NodeInfo `json:"nodes"`
+	Kind       string               `json:"kind"`
+	Source     string               `json:"source"`
+	Sequence   int64                `json:"sequence,omitempty"`
+	CapturedAt time.Time            `json:"captured_at"`
+	Nodes      []collector.NodeInfo `json:"nodes"`
 }
 
 // profilePayload is one captured eBPF CPU profile: the allow-list-filtered,
@@ -240,38 +264,82 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 // (ADR 0010). One file per cluster, atomically replaced each flush: the newest
 // inventory supersedes its predecessor, exactly as an open-window usage
 // snapshot does. records must already be in a deterministic order (the store
-// sorts them) so the payload bytes are stable — the golden contract.
-func (s *Spool) WriteGoInventory(sequence int64, records []inventory.GoRecord) error {
+// sorts them) so the payload bytes are stable — the golden contract. capturedAt
+// is passed in rather than read from the clock for the same reason.
+func (s *Spool) WriteGoInventory(sequence int64, capturedAt time.Time, cov inventory.Coverage, records []inventory.GoRecord) error {
 	payload := goInventoryPayload{
-		Kind:     "go_inventory",
-		Source:   SourceStructural,
-		Sequence: sequence,
-		Records:  records,
+		Kind:       "go_inventory",
+		Source:     SourceStructural,
+		Sequence:   sequence,
+		CapturedAt: capturedAt.UTC(),
+		Coverage:   cov,
+		Records:    records,
 	}
 	return s.write("go-inventory.json", payload)
+}
+
+// WriteGoDependencies writes one build's dependency module set. Unlike the
+// superseding go-inventory, each build gets its own file keyed by image digest:
+// the set never changes for a given digest, so the write is idempotent and the
+// controller only issues it once per build (ADR 0017). The maxAge sweep bounds
+// how many accumulate, exactly as it does for profiles.
+func (s *Spool) WriteGoDependencies(d inventory.BuildDependencies) error {
+	if d.ImageDigest == "" {
+		return fmt.Errorf("dependency set has no image digest")
+	}
+	modules := d.Modules
+	if modules == nil {
+		modules = []string{}
+	}
+	payload := goDependenciesPayload{
+		Kind:        "go_dependencies",
+		Source:      SourceStructural,
+		ImageDigest: d.ImageDigest,
+		GoVersion:   d.GoVersion,
+		MainModule:  d.MainModule,
+		Modules:     modules,
+	}
+	return s.write("go-dependencies-"+digestFileToken(d.ImageDigest)+".json", payload)
+}
+
+// digestFileToken turns an image digest into a filename-safe token. Digests are
+// "algorithm:hex", and the colon is legal on the platforms the agent runs on but
+// hostile to shell and archive tooling; anything outside the digest alphabet is
+// replaced so a malformed digest can never escape the spool directory.
+func digestFileToken(digest string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, digest)
 }
 
 // WriteWorkloadMetadata writes the current workload metadata as one superseding
 // batch. records must already be in a deterministic order (metadata.Aggregate
 // sorts them) so the payload bytes are stable — the golden contract.
-func (s *Spool) WriteWorkloadMetadata(sequence int64, records []metadata.Record) error {
+func (s *Spool) WriteWorkloadMetadata(sequence int64, capturedAt time.Time, records []metadata.Record) error {
 	payload := workloadMetadataPayload{
-		Kind:     "workload_metadata",
-		Source:   SourceStructural,
-		Sequence: sequence,
-		Records:  records,
+		Kind:       "workload_metadata",
+		Source:     SourceStructural,
+		Sequence:   sequence,
+		CapturedAt: capturedAt.UTC(),
+		Records:    records,
 	}
 	return s.write("workload-metadata.json", payload)
 }
 
 // WriteNodeMetadata writes the current node inventory as one superseding batch.
 // nodes must already be sorted by name (NodeWatcher.Nodes does it).
-func (s *Spool) WriteNodeMetadata(sequence int64, nodes []collector.NodeInfo) error {
+func (s *Spool) WriteNodeMetadata(sequence int64, capturedAt time.Time, nodes []collector.NodeInfo) error {
 	payload := nodeMetadataPayload{
-		Kind:     "node_metadata",
-		Source:   SourceStructural,
-		Sequence: sequence,
-		Nodes:    nodes,
+		Kind:       "node_metadata",
+		Source:     SourceStructural,
+		Sequence:   sequence,
+		CapturedAt: capturedAt.UTC(),
+		Nodes:      nodes,
 	}
 	return s.write("node-metadata.json", payload)
 }

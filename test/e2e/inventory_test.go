@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,15 @@ func spoolReaderImage() string {
 	return "busybox:1.37"
 }
 
-const spoolPath = "/var/spool/runtime-agent/go-inventory.json"
+const spoolDir = "/var/spool/runtime-agent"
+const spoolPath = spoolDir + "/go-inventory.json"
+
+// dependencySpoolPath mirrors the sink's filename rule for a dependency payload:
+// one file per image digest, with the digest's colon replaced so the name is
+// filesystem- and tooling-safe (internal/sink.digestFileToken).
+func dependencySpoolPath(digest string) string {
+	return spoolDir + "/go-dependencies-" + strings.ReplaceAll(digest, ":", "-") + ".json"
+}
 
 // TestGoInventoryEndToEnd exercises the whole node→controller inventory path in
 // a real cluster (ADR 0010): a known Go workload runs, the node DaemonSet scans
@@ -96,7 +105,19 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	// controller's flush cadence), so allow generous time.
 	deadline := time.Now().Add(6 * time.Minute)
 	for {
-		if rec, ok := findSampleRecord(ctx, t, config, clientset, ns, controllerPod); ok {
+		if rec, cov, ok := findSampleRecord(ctx, t, config, clientset, ns, controllerPod); ok {
+			// The payload says how complete it is: the node that scanned this
+			// workload reported, and its facts joined. Without this block an
+			// empty inventory and a fleet that never checked in look identical.
+			if cov.NodesReported < 1 {
+				t.Errorf("coverage.nodes_reported = %d, want >= 1", cov.NodesReported)
+			}
+			if cov.FactsJoined < 1 {
+				t.Errorf("coverage.facts_joined = %d, want >= 1", cov.FactsJoined)
+			}
+			if cov.Since.IsZero() {
+				t.Error("coverage.since is zero; the base of the counters must travel with them")
+			}
 			if !strings.HasPrefix(rec.GoVersion, "go1.") {
 				t.Errorf("go_version = %q, want a go1.x version", rec.GoVersion)
 			}
@@ -115,6 +136,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			if rec.WorkloadKind != "Deployment" || rec.WorkloadName != "goworkload" {
 				t.Errorf("workload = %s/%s, want Deployment/goworkload", rec.WorkloadKind, rec.WorkloadName)
 			}
+			checkSampleDependencies(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			return
 		}
 		if time.Now().After(deadline) {
@@ -136,43 +158,108 @@ type goInventoryRecord struct {
 	PGO          bool   `json:"pgo"`
 }
 
+// inventoryCoverage mirrors the completeness block of the go_inventory payload.
+type inventoryCoverage struct {
+	Since         time.Time `json:"since"`
+	NodesReported int       `json:"nodes_reported"`
+	FactsReceived int64     `json:"facts_received"`
+	FactsJoined   int64     `json:"facts_joined"`
+}
+
 // findSampleRecord reads the controller's spool file via the sidecar and returns
-// the record for the sample module, if the payload exists yet.
-func findSampleRecord(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) (goInventoryRecord, bool) {
+// the record for the sample module and the payload's coverage block, if the
+// payload exists yet.
+func findSampleRecord(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) (goInventoryRecord, inventoryCoverage, bool) {
 	t.Helper()
-	raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod)
+	raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, spoolPath)
 	if !ok {
-		return goInventoryRecord{}, false
+		return goInventoryRecord{}, inventoryCoverage{}, false
 	}
 	var payload struct {
-		Kind    string              `json:"kind"`
-		Records []goInventoryRecord `json:"records"`
+		Kind     string              `json:"kind"`
+		Coverage inventoryCoverage   `json:"coverage"`
+		Records  []goInventoryRecord `json:"records"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Logf("spool file not valid JSON yet (will retry): %v", err)
-		return goInventoryRecord{}, false
+		return goInventoryRecord{}, inventoryCoverage{}, false
 	}
 	if payload.Kind != "go_inventory" {
 		t.Errorf("payload kind = %q, want go_inventory", payload.Kind)
 	}
 	for _, r := range payload.Records {
 		if r.ModulePath == sampleModulePath {
-			return r, true
+			return r, payload.Coverage, true
 		}
 	}
-	return goInventoryRecord{}, false
+	return goInventoryRecord{}, inventoryCoverage{}, false
 }
 
-// readSpoolFile cats the go_inventory file from the controller pod's spool via
-// the shell sidecar. A non-zero exit (file not written yet) returns ok=false so
-// the caller retries.
-func readSpoolFile(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) (string, bool) {
+// checkSampleDependencies asserts that the dependency payload for the sample
+// build reached the spool and carries the module the sample really imports. It
+// is written on the same flush as the inventory snapshot but after it, so a read
+// can land between the two writes: poll briefly rather than fail on the race.
+func checkSampleDependencies(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
+	t.Helper()
+	if digest == "" {
+		return // already reported as an empty image_digest
+	}
+	path := dependencySpoolPath(digest)
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, path)
+		if ok {
+			var payload struct {
+				Kind        string   `json:"kind"`
+				ImageDigest string   `json:"image_digest"`
+				MainModule  string   `json:"main_module"`
+				Modules     []string `json:"modules"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("dependency payload not valid JSON: %v", err)
+			}
+			if payload.Kind != "go_dependencies" {
+				t.Errorf("payload kind = %q, want go_dependencies", payload.Kind)
+			}
+			if payload.ImageDigest != digest {
+				t.Errorf("image_digest = %q, want %q — the payload must key to the build it describes",
+					payload.ImageDigest, digest)
+			}
+			if payload.MainModule != sampleModulePath {
+				t.Errorf("main_module = %q, want %q", payload.MainModule, sampleModulePath)
+			}
+			// The sample really imports this module (test/e2e/sample/go.mod), so
+			// its absence means the dependency set was lost in the join — the
+			// defect this payload exists to close.
+			if !slices.Contains(payload.Modules, sampleDependency) {
+				t.Errorf("modules = %v, want it to contain %q", payload.Modules, sampleDependency)
+			}
+			// Paths only: a version would make this a vulnerability-scanning
+			// feed, which the agent does not collect (docs/security.md §8).
+			for _, m := range payload.Modules {
+				if strings.Contains(m, " ") || strings.Contains(m, "@") {
+					t.Errorf("module %q carries more than a path; only module paths are collected", m)
+				}
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dependency payload for %s never appeared at %s", digest, path)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// readSpoolFile cats a payload file from the controller pod's spool via the
+// shell sidecar. A non-zero exit (file not written yet) returns ok=false so the
+// caller retries.
+func readSpoolFile(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, path string) (string, bool) {
 	t.Helper()
 	req := cs.CoreV1().RESTClient().Post().
 		Resource("pods").Name(pod).Namespace(ns).SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: "spool-reader",
-			Command:   []string{"cat", spoolPath},
+			Command:   []string{"cat", path},
 			Stdout:    true,
 			Stderr:    true,
 		}, scheme.ParameterCodec)

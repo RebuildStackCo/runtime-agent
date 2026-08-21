@@ -2,6 +2,7 @@
   "kind": "workload_metadata",
   "source": "structural",
   "sequence": 7,
+  "captured_at": "2026-08-06T10:12:00Z",
   "records": [
     {
       "namespace": "shop",
