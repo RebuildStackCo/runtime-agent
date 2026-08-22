@@ -6,6 +6,6 @@
   "image_digest": "sha256:deadbeef",
   "capture_start": "2023-11-14T22:13:20Z",
   "capture_end": "2023-11-14T22:14:20Z",
-  "source": "ebpf",
+  "source": "sampled",
   "pprof": "RklYRUQtUFBST0YtQllURVMAAQID"
 }

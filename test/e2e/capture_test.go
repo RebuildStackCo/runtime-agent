@@ -197,7 +197,10 @@ type spoolProfilePayload struct {
 
 // readSampleProfile lists the controller spool for the sample's profile file and,
 // if present, returns its parsed pprof. The file name is
-// profile-<ns>-<workload>-<container>-<start>-<end>.json (internal/sink).
+// profile-<ns>-<workload>-<container>-<digest>-<start>-<end>.json (internal/sink);
+// the digest is what keeps two replicas' captures of one window apart (ADR 0023),
+// so the prefix match below is deliberately blind to everything after the
+// container name.
 func readSampleProfile(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) (*profile.Profile, bool) {
 	t.Helper()
 	listing, ok := execSpoolReader(ctx, t, config, cs, ns, pod, []string{"ls", "/var/spool/runtime-agent"})

@@ -3,6 +3,7 @@
 Date: 2026-08-22
 Status: Accepted
 Amends: 0003, 0009 §5, 0011 §7, 0012 §1, 0013 §4, 0021
+Amended by: 0023
 
 Amends the location of ADR 0012 §1's registry — its content and the provenance
 classes of §2 stand; corrects three statements of fact in 0009, 0011 and 0021;

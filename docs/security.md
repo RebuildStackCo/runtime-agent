@@ -480,7 +480,10 @@ workload is named in this data; the failure counts are cluster-wide totals.
   type, and has a service (non-`runtime.*`) function in its top. A profile that
   fails is dropped and counted, never sent. What does leave is keyed as a
   profile payload — pprof bytes plus (namespace, workload, container, image
-  digest, time window, `source=ebpf`).
+  digest, time window). It declares `source: sampled`: the provenance field
+  says what kind of claim the numbers are — an estimate from a fraction of the
+  window's instants — while which capture produced them is what the payload
+  kind names, `ebpf_profile` (ADR 0023).
 - These are **flame-graph / hot-function profiles, not PGO profiles.** The eBPF
   profiler's output omits data Go's PGO requires (`Function.start_line`, inline
   frames), so it is used for attribution and coverage only; PGO, if ever

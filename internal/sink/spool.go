@@ -46,8 +46,13 @@ const (
 	// SourceJournal is derived from object metadata that records history:
 	// conditions, restart counts, terminations.
 	SourceJournal = "journal"
-	// SourceEBPF is sampled by the on-node profiler (ADR 0011).
-	SourceEBPF = "ebpf"
+	// SourceSampled is statistical: a profiler observed a fraction of the
+	// instants in a window and the payload is an estimate, not a total. The
+	// class says what kind of claim the facts are, never how they were
+	// captured — which capture produced them is what the kind names
+	// (`ebpf_profile`), and a profile pulled from a /debug/pprof endpoint would
+	// be a different kind of the same class (ADR 0023).
+	SourceSampled = "sampled"
 )
 
 // Spool writes payload files into one directory. Methods may be called from
@@ -227,7 +232,9 @@ type profilePayload struct {
 
 // ProfileKey identifies a captured profile. The namespace/workload/image-digest
 // are the controller's join of the node's container ID (ADR 0011 §6, the ADR
-// 0010 pattern); the capture interval makes every capture's key unique.
+// 0010 pattern); the image digest and the capture interval together are what
+// make a capture distinguishable from the others of its workload in the same
+// window (ADR 0023).
 type ProfileKey struct {
 	Namespace    string
 	Workload     string
@@ -455,10 +462,15 @@ func (s *Spool) WriteNodeMetadata(sequence int64, capturedAt time.Time, nodes []
 }
 
 // WriteProfile writes one captured eBPF CPU profile. Unlike the superseding
-// go-inventory, each capture is its own file keyed by workload and capture
-// interval (ADR 0011 §6), so concurrent or rotated captures of the same workload
-// never overwrite one another; the maxAge sweep bounds how many accumulate. The
-// pprof bytes must already be allow-list-filtered and validated (ADR 0011 §4–5).
+// go-inventory, each capture is its own file: profiles accumulate and are
+// bounded by the maxAge sweep, never overwritten (ADR 0011 §6). The pprof bytes
+// must already be allow-list-filtered and validated (ADR 0011 §4–5).
+//
+// The filename carries the whole natural key, image digest included. Without it
+// two captures of one workload's container in one window — two replicas on the
+// same node, or two builds during a rollout — produce the same name and the
+// second silently replaces the first, since the node cuts every window on the
+// same boundaries and ships one report per container (ADR 0023).
 func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
 	payload := profilePayload{
 		Kind:         "ebpf_profile",
@@ -468,13 +480,50 @@ func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
 		ImageDigest:  key.ImageDigest,
 		CaptureStart: key.CaptureStart,
 		CaptureEnd:   key.CaptureEnd,
-		Source:       SourceEBPF,
+		Source:       SourceSampled,
 		Pprof:        pprof,
 	}
-	name := fmt.Sprintf("profile-%s-%s-%s-%d-%d.json",
-		key.Namespace, key.Workload, key.Container,
+	name := fmt.Sprintf("profile-%s-%s-%s-%s-%d-%d.json",
+		key.Namespace, key.Workload, key.Container, shortDigest(key.ImageDigest),
 		key.CaptureStart.Unix(), key.CaptureEnd.Unix())
 	return s.write(name, payload)
+}
+
+// shortDigestLen is how much of a digest the filename carries. A digest is
+// `algorithm:hex`; twelve hex characters is the conventional short form and is
+// what a human recognizes from `docker images`. Two distinct builds sharing a
+// twelve-character prefix is not a risk worth pricing — and unlike ADR 0019's
+// rule against truncating collected values, nothing is lost here: the full
+// digest is in the payload, and this is a local file name, not a fact that
+// leaves the cluster.
+const shortDigestLen = 12
+
+// noDigest names the state of a capture that cannot be tied to a build. For
+// this payload it is close to impossible — sampling a container's CPU means the
+// container was running, so the kubelet had resolved its digest — and it means
+// the controller's informer had not yet caught up, never that the container had
+// not started. It is a literal rather than an empty segment so a directory
+// listing shows the state instead of a gap that reads like a bug.
+const noDigest = "nodigest"
+
+// shortDigest reduces an image digest to a filename-safe short form. Only hex
+// after the algorithm separator survives, so nothing a registry could put in a
+// digest string can introduce a path separator.
+func shortDigest(digest string) string {
+	hex := digest[strings.LastIndex(digest, ":")+1:]
+	var short strings.Builder
+	for _, r := range hex {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			short.WriteRune(r)
+		}
+		if short.Len() == shortDigestLen {
+			break
+		}
+	}
+	if short.Len() == 0 {
+		return noDigest
+	}
+	return short.String()
 }
 
 // write marshals the payload and lands it atomically: temp file in the same
