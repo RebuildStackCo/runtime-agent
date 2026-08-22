@@ -643,7 +643,88 @@ func TestGoldenProfilePayload(t *testing.T) {
 	if err := s.WriteProfile(key, pprofBytes); err != nil {
 		t.Fatal(err)
 	}
-	checkGolden(t, filepath.Join(dir, "profile-acme-api-server-1700000000-1700000060.json"), "profile.golden.json")
+	checkGolden(t, filepath.Join(dir, "profile-acme-api-server-deadbeef-1700000000-1700000060.json"), "profile.golden.json")
+}
+
+// The case the old filename could not express, and the one that actually
+// happens: the node cuts every window on the same boundaries and ships one
+// report per container, so two replicas of a workload on one node — or two
+// builds mid-rollout — arrive with identical namespace, workload, container and
+// capture interval. Only the digest separates them (ADR 0023).
+func TestProfilesOfOneWindowAreKeyedByDigest(t *testing.T) {
+	s, dir := newTestSpool(t)
+	key := func(digest string) ProfileKey {
+		return ProfileKey{
+			Namespace: "n", Workload: "w", Container: "c",
+			ImageDigest:  digest,
+			CaptureStart: time.Unix(100, 0).UTC(),
+			CaptureEnd:   time.Unix(160, 0).UTC(),
+		}
+	}
+	if err := s.WriteProfile(key("sha256:1111111111111111"), []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteProfile(key("sha256:2222222222222222"), []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := filepath.Glob(filepath.Join(dir, "profile-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("got %d profile files, want 2 — one build's capture replaced the other's", len(files))
+	}
+}
+
+// A capture the controller could not tie to a build still has to land, and it
+// must not collide with one that could. It cannot be dropped: the samples are
+// real and the missing digest is the controller's informer lagging, not the
+// container failing to start.
+func TestProfileWithoutADigestIsNamedForThatState(t *testing.T) {
+	s, dir := newTestSpool(t)
+	key := func(digest string) ProfileKey {
+		return ProfileKey{
+			Namespace: "n", Workload: "w", Container: "c",
+			ImageDigest:  digest,
+			CaptureStart: time.Unix(100, 0).UTC(),
+			CaptureEnd:   time.Unix(160, 0).UTC(),
+		}
+	}
+	if err := s.WriteProfile(key(""), []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteProfile(key("sha256:abcdef123456789"), []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := filepath.Glob(filepath.Join(dir, "profile-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("got %d profile files, want 2", len(files))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "profile-n-w-c-nodigest-100-160.json")); err != nil {
+		t.Errorf("the undigested capture is not named for that state: %v", err)
+	}
+}
+
+// A digest reaches the filesystem as a name, so nothing a registry could put in
+// one may become a path.
+func TestShortDigestYieldsOneSafeSegment(t *testing.T) {
+	cases := []struct{ digest, want string }{
+		{"sha256:deadbeef", "deadbeef"},
+		{"sha256:0123456789abcdef0123456789abcdef", "0123456789ab"},
+		{"", noDigest},
+		{"sha512:../../etc/passwd", "ecad"}, // only hex survives; no separator can
+		{"sha256:ZZZZ", noDigest},
+	}
+	for _, c := range cases {
+		if got := shortDigest(c.digest); got != c.want {
+			t.Errorf("shortDigest(%q) = %q, want %q", c.digest, got, c.want)
+		}
+	}
 }
 
 // TestProfilesDoNotSupersede is the counterpart to the inventory supersede test:

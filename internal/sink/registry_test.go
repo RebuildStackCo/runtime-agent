@@ -94,7 +94,7 @@ func TestRegistrySourcesAreKnownProvenanceClasses(t *testing.T) {
 		SourceStructural: true,
 		SourceMeasured:   true,
 		SourceJournal:    true,
-		SourceEBPF:       true,
+		SourceSampled:    true,
 	}
 	for _, entry := range Registry() {
 		if !known[entry.Source] {

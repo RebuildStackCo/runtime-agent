@@ -125,23 +125,14 @@ var registry = []PayloadKind{
 		ADR:        "0012, 0019",
 	},
 	{
-		// Open discrepancy, recorded rather than smoothed over (ADR 0022): the
-		// bytes declare "ebpf" while ADR 0012 §2 fixes the four provenance
-		// classes as structural / measured / journal / sampled and its registry
-		// names this one `sampled`. "ebpf" is a capture method, not a class of
-		// claim — when profiles pulled from a /debug/pprof endpoint ship, they
-		// would have to declare "pprof", and the field would stop discriminating
-		// provenance at all, which is the job ADR 0012 created it for.
-		//
-		// The registry records what actually ships, so the row says "ebpf" and
-		// the test holds it there visibly. Changing the value is a protocol
-		// change with its own decision; it is named in ADR 0022 as open, not
-		// fixed here.
+		// The whole key is in the spool filename, digest included: two replicas
+		// of one workload on one node cut the same window, so without the digest
+		// the second capture replaced the first (ADR 0023).
 		Kind:       "ebpf_profile",
-		Source:     SourceEBPF,
+		Source:     SourceSampled,
 		NaturalKey: "(namespace, workload, container, image digest, capture start–end)",
 		Delivery:   DeliveryAccumulates,
-		ADR:        "0011",
+		ADR:        "0011, 0023",
 	},
 }
 
