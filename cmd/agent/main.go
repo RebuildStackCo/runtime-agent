@@ -204,6 +204,22 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		)
 		restartJournal.Observe(r)
 	})
+	// Disruptions share the journal's windows but not its arithmetic: a pod is
+	// preempted or evicted once, so the accumulator holds records rather than
+	// counters (ADR 0021).
+	disruptionJournal := journal.NewDisruptions(collector.UsageWindowLength)
+	podWatcher.OnPodDisruption(func(d collector.PodDisruption) {
+		logger.Warn("pod disrupted",
+			"namespace", d.Namespace,
+			"pod", d.Pod,
+			"workload_kind", d.Workload.Kind,
+			"workload_name", d.Workload.Name,
+			"node", d.Node,
+			"reason", d.Reason,
+			"disrupted_at", d.DisruptedAt,
+		)
+		disruptionJournal.Observe(d)
+	})
 	podWatcher.SetFilter(filter)
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
 		logger.Info("node observed",
@@ -369,6 +385,23 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		logger.Info("container restarts flushed", "sequence", restartSeq, "records", len(records))
 	}
 
+	var disruptionSeq int64
+	flushDisruptions := func() {
+		if spool == nil {
+			return
+		}
+		disruptionSeq++
+		records := append(disruptionJournal.CloseBefore(time.Now()), disruptionJournal.Snapshots()...)
+		if len(records) == 0 {
+			return // a cluster where nothing was preempted or evicted writes nothing
+		}
+		if err := spool.WritePodDisruptions(disruptionSeq, records); err != nil {
+			logger.Error("spooling pod disruptions", "error", err)
+			return
+		}
+		logger.Info("pod disruptions flushed", "sequence", disruptionSeq, "records", len(records))
+	}
+
 	// Excluded pods are reported as aggregate counts only, never by name
 	// (docs/security.md §8). Inventory counters are aggregate too: no identity
 	// of an unjoined fact appears, only a count (CLAUDE.md invariant 6).
@@ -415,6 +448,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				flushMetadata()
 				flushInventory()
 				flushRestarts()
+				flushDisruptions()
 			}
 		}
 	}()
@@ -515,10 +549,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	}
 	wg.Wait()
 	logCoverage()
-	// A final flush lands any inventory joined since the last periodic write.
-	// The coverage goroutine has returned (ctx is canceled), so this is the
-	// only writer; flushInventory serializes regardless.
+	// A final flush lands whatever arrived since the last periodic write: an
+	// inventory fact joined, a container restarted, a pod preempted. Without it
+	// a graceful shutdown silently drops up to one coverage interval of the
+	// journals, which is exactly the minute a rolling upgrade or a node drain
+	// tends to be interesting in. The coverage goroutine has returned (ctx is
+	// canceled), so this is the only writer; the accumulators serialize
+	// regardless.
 	flushInventory()
+	flushRestarts()
+	flushDisruptions()
 	return errors.Join(errs...)
 }
 

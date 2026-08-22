@@ -1,0 +1,35 @@
+{
+  "kind": "pod_disruptions",
+  "source": "journal",
+  "sequence": 5,
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "records": [
+    {
+      "namespace": "search",
+      "pod": "index-0",
+      "workload": {
+        "kind": "StatefulSet",
+        "name": "index"
+      },
+      "node": "node-2",
+      "reason": "TerminationByKubelet",
+      "disrupted_at": "2026-08-06T10:09:00Z",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600
+    },
+    {
+      "namespace": "shop",
+      "pod": "web-7f8d9-abcde",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "node": "node-1",
+      "reason": "PreemptionByScheduler",
+      "disrupted_at": "2026-08-06T10:22:00Z",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600
+    }
+  ]
+}

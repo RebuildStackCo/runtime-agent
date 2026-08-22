@@ -89,7 +89,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 
 | Resource | Verbs | Why |
 |---|---|---|
-| `pods` | get/list/watch | Map containers to workloads; read `requests`/`limits` from spec; detect OOM kills and count restarts from `status.containerStatuses[]` (`restartCount`, and the reason and exit code of `lastState.terminated`); read `containerPorts` to locate pprof endpoints |
+| `pods` | get/list/watch | Map containers to workloads; read `requests`/`limits` from spec; detect OOM kills and count restarts from `status.containerStatuses[]` (`restartCount`, and the reason and exit code of `lastState.terminated`); read the `PodScheduled` and `DisruptionTarget` conditions to report why a replica is not running and when the cluster took one away; read `containerPorts` to locate pprof endpoints |
 | `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod |
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
@@ -348,10 +348,15 @@ classes with different sensitivity and different default policies:
   transported, because these fields frequently contain inline credentials.
   From `status` it reads the container image digest
   (`status.containerStatuses[].imageID`, kept as the content digest only), the
-  restart counter (`restartCount`), and the *reason* and *exit code* of a
-  terminated container state — nothing else. Termination **messages** are not
-  read: unlike a reason, which the kubelet picks from its own vocabulary, a
-  message is free text and routinely names nodes, taints and other workloads.
+  restart counter (`restartCount`), the *reason* and *exit code* of a
+  terminated container state, and the *reason* and *transition time* of exactly
+  two conditions — `PodScheduled` and `DisruptionTarget` — plus `status.reason`
+  when it says `Evicted`. Nothing else. **Messages are never read**, neither a
+  termination's nor a condition's: unlike a reason, which Kubernetes picks from
+  its own vocabulary, a message is free text and routinely names nodes, taints,
+  and other teams' workloads. A scheduler message such as "0/12 nodes are
+  available: 3 node(s) had untolerated taint {dedicated: payments-gpu}" never
+  leaves the cluster; the reason `Unschedulable` does.
 - From node objects, the agent keeps only size (`allocatable`/`capacity`), the
   instance-type and capacity-type labels, the topology labels
   (`topology.kubernetes.io/zone` and `/region`, with their deprecated
@@ -379,6 +384,12 @@ accumulating history:
 - **`node_metadata`** — per node: name, size, instance type, capacity type,
   zone, region, kernel version, CPU architecture.
 
+`workload_metadata`'s `pod` block also counts the replicas that are *not* on a
+node, by the reason the scheduler gave (`Unschedulable`, `SchedulingGated`,
+`SchedulerError`, or `other`). The count of unplaced replicas was always visible
+as the gap between `replicas` and the `nodes` breakdown; this says why, without
+naming any pod (ADR 0021).
+
 Both are limited to what passes your filters — a pod excluded by a namespace
 filter or an opt-out annotation is absent from the snapshot entirely, and its
 identity never appears in either payload. Every payload declares its
@@ -402,6 +413,13 @@ container's history. Both are `journal` provenance, and both name the **pod**:
   window: how many times the container restarted, a breakdown of those restarts
   by termination reason, how many restarts had no reason visible, and the most
   recent exit code.
+- **`pod_disruptions`** — per hour-aligned window, one record per pod the
+  *cluster* removed rather than the workload itself: preempted to make room for
+  higher priority, evicted by a node under pressure, drained by a taint, or
+  removed through the eviction API. Each record carries the namespace, pod,
+  workload, the node it was taken from, the reason, and the instant Kubernetes
+  recorded. A pod that failed on its own — its container exited non-zero — is
+  not in here.
 
 **Why the pod is named here and nowhere else.** Every other payload counts
 replicas instead of listing them, because a workload-level number answers the
@@ -420,7 +438,8 @@ The reason breakdown uses a fixed set of names (`OOMKilled`, `Error`,
 `Completed`, `ContainerCannotRun`, `ContainerStatusUnknown`, `DeadlineExceeded`,
 `StartError`, `Evicted`); anything else your container runtime reports is
 counted under `other` rather than passed through, so the payload's shape stays
-bounded. Termination *messages* are never read (see field minimization above).
+bounded. Disruption reasons are bounded the same way. Termination and condition
+*messages* are never read (see field minimization above).
 
 ### What the agent says about its own collection (ADR 0013)
 

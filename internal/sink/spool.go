@@ -158,6 +158,25 @@ type containerRestartsPayload struct {
 	Records       []journal.RestartRecord `json:"records"`
 }
 
+// podDisruptionsPayload is every pod the cluster removed within one window:
+// preempted to make room, evicted under node pressure, drained, or deleted
+// through the eviction API (ADR 0021). One file per window holding many
+// records, like the restart journal.
+//
+// Windows here are a delivery boundary rather than an aggregation: a pod is
+// disrupted once, so each record stands alone and carries the instant
+// Kubernetes recorded. Grouping them keeps the spool's file count bounded by
+// time rather than by how bad an incident is — a node evicting forty pods must
+// not write forty files.
+type podDisruptionsPayload struct {
+	Kind          string                     `json:"kind"`
+	Source        string                     `json:"source"`
+	Sequence      int64                      `json:"sequence,omitempty"`
+	WindowStart   time.Time                  `json:"window_start"`
+	WindowSeconds int64                      `json:"window_seconds"`
+	Records       []journal.DisruptionRecord `json:"records"`
+}
+
 // workloadMetadataPayload is the declared shape of every collected workload
 // container — requests, limits, QoS, ports — and where its replicas run. Like
 // go-inventory it is a single superseding batch under a fixed natural key (the
@@ -305,6 +324,36 @@ func (s *Spool) WriteContainerRestarts(sequence int64, records []journal.Restart
 			Records:       group,
 		}
 		if err := s.write(fmt.Sprintf("restarts-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WritePodDisruptions writes the disruption records of each window they belong
+// to, one file per window, atomically replacing that window's previous file.
+// records must already be in a deterministic order (the accumulator sorts them)
+// so the payload bytes are stable — the golden contract.
+//
+// A window with no disruptions writes nothing. A cluster where nothing was
+// preempted or evicted has nothing to say, and an empty payload would claim
+// otherwise for every quiet hour of every cluster.
+func (s *Spool) WritePodDisruptions(sequence int64, records []journal.DisruptionRecord) error {
+	grouped := make(map[windowKey][]journal.DisruptionRecord)
+	for _, r := range records {
+		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
+		grouped[k] = append(grouped[k], r)
+	}
+	for k, group := range grouped {
+		payload := podDisruptionsPayload{
+			Kind:          "pod_disruptions",
+			Source:        SourceJournal,
+			Sequence:      sequence,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Records:       group,
+		}
+		if err := s.write(fmt.Sprintf("disruptions-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
 			return err
 		}
 	}

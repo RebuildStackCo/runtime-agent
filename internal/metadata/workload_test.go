@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"testing"
 
@@ -130,6 +131,32 @@ func TestAggregateUnscheduledPodCountsAsReplicaWithoutNode(t *testing.T) {
 	}
 	if rec.ImageDigest != "" {
 		t.Errorf("image digest = %q, want empty before the container starts", rec.ImageDigest)
+	}
+}
+
+// The shortfall above says a replica is not running; this says why. A gated pod
+// and an unschedulable one are both "no node", and only the reason separates a
+// deliberate hold from a capacity problem (ADR 0021).
+func TestAggregateCountsUnscheduledPodsByReason(t *testing.T) {
+	unschedulable := pod("acme", "api-1", "", "Pending", "", collector.Resources{})
+	unschedulable.Unscheduled = "Unschedulable"
+	gated := pod("acme", "api-2", "", "Pending", "", collector.Resources{})
+	gated.Unscheduled = "SchedulingGated"
+	running := pod("acme", "api-3", "node-1", "Running", "", collector.Resources{})
+
+	got := Aggregate([]collector.PodInfo{unschedulable, gated, running})
+
+	rec := got[0]
+	if rec.Pod.Replicas != 3 {
+		t.Fatalf("replicas = %d, want 3", rec.Pod.Replicas)
+	}
+	want := map[string]int{"Unschedulable": 1, "SchedulingGated": 1}
+	if !maps.Equal(rec.Pod.Unscheduled, want) {
+		t.Errorf("unscheduled = %v, want %v", rec.Pod.Unscheduled, want)
+	}
+	// A scheduled replica contributes to neither the count nor the reasons.
+	if len(rec.Pod.Nodes) != 1 {
+		t.Errorf("nodes = %v, want just the scheduled replica's node", rec.Pod.Nodes)
 	}
 }
 
