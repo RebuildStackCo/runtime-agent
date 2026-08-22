@@ -449,7 +449,6 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				flushInventory()
 				flushRestarts()
 				flushDisruptions()
-				flushDisruptions()
 			}
 		}
 	}()
@@ -550,10 +549,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	}
 	wg.Wait()
 	logCoverage()
-	// A final flush lands any inventory joined since the last periodic write.
-	// The coverage goroutine has returned (ctx is canceled), so this is the
-	// only writer; flushInventory serializes regardless.
+	// A final flush lands whatever arrived since the last periodic write: an
+	// inventory fact joined, a container restarted, a pod preempted. Without it
+	// a graceful shutdown silently drops up to one coverage interval of the
+	// journals, which is exactly the minute a rolling upgrade or a node drain
+	// tends to be interesting in. The coverage goroutine has returned (ctx is
+	// canceled), so this is the only writer; the accumulators serialize
+	// regardless.
 	flushInventory()
+	flushRestarts()
+	flushDisruptions()
 	return errors.Join(errs...)
 }
 
