@@ -163,13 +163,24 @@ complete it is** ([ADR 0017](adr/0017-build-facts-keyed-by-digest.md)).
 of the facts inside it. `go_inventory` additionally carries a `coverage` block
 whose counters are cumulative from the `since` instant carried with them:
 
-- `nodes_reported` — how many nodes have delivered at least one scan. Read
-  against the node count in `node_metadata`, a shortfall means part of the fleet
-  is not reporting, and the inventory is incomplete for reasons no record can
-  express.
+- `nodes_reported` — how many nodes *currently in the cluster* have delivered at
+  least one scan; a node that has left is not counted. Read against the node
+  count in `node_metadata`, a shortfall means part of the fleet is not
+  reporting, and the inventory is incomplete for reasons no record can express.
 - `facts_received` / `facts_joined` / `facts_unjoined` / `facts_undigested` —
   what arrived and what could not be attributed. **The backend MUST NOT read a
   missing workload as "not a Go workload"** when these say otherwise.
+
+**A `go_inventory` record exists only while its workload does**
+([ADR 0018](adr/0018-inventory-records-live-only-while-their-workload-does.md)).
+The agent drops records whose workload container has left its filtered pod index
+— deleted, or opted out by annotation — so a record's disappearance between two
+snapshots means "no longer collected", not "not observed this time". The backend
+MUST treat a superseding snapshot as the complete current truth and MUST NOT
+carry forward records absent from it. A short-lived workload (a CronJob's pods)
+may legitimately appear in one snapshot and not the next; accumulating "has ever
+been a Go workload" across snapshots is the backend's job, and `sequence` and
+`captured_at` are what it orders them by.
 
 **`go_dependencies` is write-once and keyed by image digest.** A build's
 dependency module paths never change, so the payload is immutable given its key

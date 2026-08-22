@@ -471,10 +471,13 @@ already collects — into two payloads:
 
 - **`go_inventory`** — one record per (namespace, workload, container) carrying
   the Go version, main module path, image digest, and PGO flag. Replicas and
-  nodes running the same build collapse to one record. It also carries a
-  `coverage` block: how many nodes have delivered a report at all, and how many
-  facts were received, joined, and not joined. Those are cluster-wide counts,
-  and they name nothing.
+  nodes running the same build collapse to one record. A record exists only
+  while its workload does: on every flush the inventory drops whatever the
+  agent's filtered pod index no longer holds, so a deleted or opted-out
+  workload leaves the payload rather than lingering as a last known state
+  (ADR 0018). It also carries a `coverage` block: how many of the cluster's
+  nodes have delivered a report, and how many facts were received, joined, and
+  not joined. Those are cluster-wide counts, and they name nothing.
 - **`go_dependencies`** — the dependency module paths of one build, keyed by its
   image digest (ADR 0017). One payload per distinct build, sent once, joined
   back to workloads through the image digest in `go_inventory`. **Module paths
@@ -635,7 +638,14 @@ metadata:
     rebuildstack.co/collect: "false"
 ```
 
-The exclusion applies at the collection stage.
+The exclusion applies at the collection stage, and it applies to what was
+already collected. The pod leaves the agent's index immediately, it stops being
+named in the scan scope the controller gives nodes (§10.2), and the next
+snapshot of each payload no longer carries it — including the Go inventory,
+which is assembled from facts nodes push and therefore has to be told to forget
+rather than simply stop learning (ADR 0018). Nothing about an opted-out pod
+survives in a later payload; a workload that stops being collected disappears
+from the next snapshot, it does not linger as a last known state.
 
 ---
 
