@@ -38,12 +38,23 @@ type NodeTargeter interface {
 // acts on — a deliberate, config-bounded exception to the one-way reply
 // discipline of ADR 0010 §1 (ADR 0011 §3). It does not break invariant 1: the
 // reply is container identifiers derived from the cluster's own rollups and
-// PodWatcher, never configuration or a command; the external backend is
-// untouched; and the operator's ConfigMap — the eligible set the publisher
-// filters to — bounds what may be named. Eligibility is enforced on the
-// controller (here and again at the ship-time join, ADR 0011 §5.5), because the
-// node has no API to check it. The worst a rogue controller can do is reorder
-// already-permitted targets.
+// PodWatcher, never configuration or a command, and the external backend is
+// untouched.
+//
+// Where the bound actually sits is worth stating precisely, because ADR 0011 §3
+// states it differently and ADR 0022 §5 records the gap. **Eligibility is
+// enforced here, on the controller** — the publisher filters to the operator's
+// eligible set before this handler ever runs. The node cannot re-check it: the
+// reply is container IDs, and a node with no API access (ADR 0009) cannot
+// resolve one to a namespace. What the node does enforce is every ceiling —
+// top-N, capture duration, interval, overhead — and the symbol allow-list that
+// decides what may leave it at all (ADR 0011 §4).
+//
+// So a well-behaved controller can only name eligible workloads, and a
+// compromised one is bounded by the ceilings and the allow-list rather than by
+// the eligible set. Closing that gap means growing the reply to carry the
+// workload identity the node would need; it is a decision of its own, named
+// open in ADR 0022 §5 rather than patched here.
 type TargetsHandler struct {
 	verifier TokenVerifier
 	targeter NodeTargeter

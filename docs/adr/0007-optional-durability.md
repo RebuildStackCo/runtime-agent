@@ -2,8 +2,12 @@
 
 Date: 2026-08-09
 
-Status: Accepted (amends 0006's delivery consequences; refines 0003's volume
-assumption — the spool format and no-database rules of 0003 stand unchanged)
+Status: Accepted
+Amends: 0003, 0006
+Amended by: 0008
+
+Amends 0006's delivery consequences; refines 0003's volume assumption — the
+spool format and no-database rules of 0003 stand unchanged.
 
 ## Context
 

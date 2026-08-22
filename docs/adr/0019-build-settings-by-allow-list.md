@@ -2,6 +2,7 @@
 
 Date: 2026-08-22
 Status: Accepted
+Amends: 0017, 0018
 
 Extends [ADR 0017](0017-build-facts-keyed-by-digest.md): the payload it
 introduced as `go_dependencies` is renamed `go_build` and gains a `settings`

@@ -2,11 +2,15 @@
 
 Date: 2026-08-11
 
-Status: Accepted (extends the node role of 0009 and the node→controller channel
-of 0010; scopes a narrow, config-bounded exception to 0010 §1's "one level down"
-reply discipline for a new targeting endpoint, leaving the inventory channel
-unchanged; the agent↔backend one-way boundary of 0001 is untouched. Records the
-outcome of the PGO spike: eBPF profiles feed flame graphs and coverage, not PGO.)
+Status: Accepted
+Amends: 0009, 0010
+Amended by: 0022
+
+Extends the node role of 0009 and the node→controller channel of 0010; scopes a
+narrow, config-bounded exception to 0010 §1's "one level down" reply discipline
+for a new targeting endpoint, leaving the inventory channel unchanged; the
+agent↔backend one-way boundary of 0001 is untouched. Records the outcome of the
+PGO spike: eBPF profiles feed flame graphs and coverage, not PGO.
 
 ## Context
 

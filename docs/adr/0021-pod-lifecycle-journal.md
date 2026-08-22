@@ -2,6 +2,8 @@
 
 Date: 2026-08-22
 Status: Accepted
+Amends: 0012 §1
+Amended by: 0022
 
 Amends [ADR 0012](0012-payload-registry-and-provenance.md): the payload registry
 gains `pod_disruptions`, and `workload_metadata` gains one field. ADR 0012's

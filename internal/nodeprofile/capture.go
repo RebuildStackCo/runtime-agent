@@ -14,10 +14,11 @@ import (
 // (ebpfgate.ReasonProgramLoadFailed), never a fatal error (ADR 0011 §2).
 var ErrUnsupported = errors.New("nodeprofile: eBPF profiler unavailable")
 
-// Config holds the capture parameters. In this slice the profiler runs
-// system-wide; the eligible set and ceilings (which workloads, capture
-// duration, frequency, overhead) arrive from the node ConfigMap in a later
-// slice (ADR 0011 §3).
+// Config holds the capture parameters. The profiler samples system-wide and
+// this type carries only the sampling rate: which containers a window's samples
+// are kept for, and every ceiling around that (top-N, duration, interval,
+// overhead), are applied by the pipeline that drains the session, not here
+// (ADR 0011 §3).
 type Config struct {
 	SamplesPerSecond int
 	ReporterInterval time.Duration // also the progress-log cadence

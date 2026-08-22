@@ -10,7 +10,7 @@ import (
 )
 
 // The receiver paths. Nodes POST their inventory reports to reportPath and their
-// captured profiles to profilePath (ADR 0010, ADR 0011 §5.5).
+// captured profiles to profilePath (ADR 0010, ADR 0011 §6).
 const (
 	reportPath  = "/v1/node-inventory"
 	profilePath = "/v1/node-profile"

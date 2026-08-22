@@ -22,6 +22,13 @@ boundaries, public contracts — are recorded as ADRs in [`adr/`](adr/README.md)
 **before or together with** the code that implements them. Reversing one
 means writing a superseding ADR, not editing history.
 
+An ADR's body is immutable; its header is not. An ADR that changes part of an
+earlier one declares `Amends: NNNN`, and the earlier one gains the mirror
+`Amended by: NNNN` — so a reader who opens the old file sees that the ground
+moved. `go test ./docs/adr` fails if the graph is one-sided, and prints the line
+to add. The rule and its reasoning are in
+[ADR 0022](adr/0022-registry-in-code-and-declared-amendments.md).
+
 ## Definition of Done
 
 A PR is mergeable when:
@@ -43,6 +50,12 @@ A PR is mergeable when:
   is a protocol change and must be justified as one — this is the enforcement
   mechanism for the Stage A invariant: the local sink writes exactly what the
   backend sink will transmit.
+- **The payload registry is checked against those bytes.**
+  `internal/sink/registry.go` is the one list of what the agent ships — kind,
+  natural key, delivery discipline, provenance — and tests compare it to the
+  goldens in both directions: a kind that ships without a row fails, and a row
+  describing nothing that ships fails. The list lived in a document for nine
+  slices and drifted in three rows with nothing failing (ADR 0022).
 - **Property tests for rollup math.** Rollup merging must be associative and
   commutative, and merging N partial rollups must equal computing one rollup
   over the union. These properties are tested with generated inputs, not

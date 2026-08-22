@@ -43,10 +43,11 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	}
 
 	// The node reads the same config file as the controller, for the eBPF
-	// profiling knobs (ADR 0011): the eligible workload set, the symbol
-	// allow-list, and the capture cadence/overhead. -enable-ebpf remains the
-	// master switch; this config is additive. The pipeline that consumes it
-	// arrives in a later slice — here it is loaded, normalized, and logged.
+	// profiling knobs (ADR 0011): the symbol allow-list and the capture
+	// cadence/overhead it enforces itself, and the eligible set, which is
+	// enforced on the controller because a node cannot resolve a container to a
+	// namespace (see targetsClient, and ADR 0022 §5). -enable-ebpf remains the
+	// master switch; this config is additive.
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -74,8 +75,7 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	// When the gate passes, the profiler runs alongside the scanner in its own
 	// goroutine. A refusal — at the gate or later at eBPF program load —
 	// degrades to scanner-only, never an escalation to privileged. ebpfMetrics
-	// is the in-process counter; a report consumer surfaces it when the
-	// targeting slice ships.
+	// is the in-process counter, surfaced in the node's own log.
 	ebpfMetrics := newEBPFGateMetrics()
 	if *enableEBPF {
 		logger.Info("ebpf profiling config",
