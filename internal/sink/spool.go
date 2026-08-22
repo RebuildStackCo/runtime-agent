@@ -114,18 +114,23 @@ type goInventoryPayload struct {
 	Records    []inventory.GoRecord `json:"records"`
 }
 
-// goDependenciesPayload is the dependency module set of one build, keyed by its
-// image digest. Unlike every other structural payload it neither supersedes nor
-// carries a sequence or a capture time: a build's dependencies are a property of
-// the build, fixed the moment the image was produced, so the payload is
-// immutable given its key and a redelivery is byte-identical (ADR 0017).
-type goDependenciesPayload struct {
-	Kind        string   `json:"kind"`
-	Source      string   `json:"source"`
-	ImageDigest string   `json:"image_digest"`
-	GoVersion   string   `json:"go_version"`
-	MainModule  string   `json:"main_module"`
-	Modules     []string `json:"modules"`
+// goBuildPayload is what one build is made of and how it was built, keyed by its
+// image digest: the toolchain, the dependency module set, and the allow-listed
+// build settings. Unlike every other structural payload it neither supersedes
+// nor carries a sequence or a capture time — these are properties of the build,
+// fixed the moment the image was produced, so the payload is immutable given its
+// key and a redelivery is byte-identical (ADR 0017).
+//
+// Settings may be absent: the toolchain records vcs.* only when it can, which in
+// container builds is the exception rather than the rule (ADR 0019).
+type goBuildPayload struct {
+	Kind        string            `json:"kind"`
+	Source      string            `json:"source"`
+	ImageDigest string            `json:"image_digest"`
+	GoVersion   string            `json:"go_version"`
+	MainModule  string            `json:"main_module"`
+	Modules     []string          `json:"modules"`
+	Settings    map[string]string `json:"settings,omitempty"`
 }
 
 // workloadMetadataPayload is the declared shape of every collected workload
@@ -278,28 +283,29 @@ func (s *Spool) WriteGoInventory(sequence int64, capturedAt time.Time, cov inven
 	return s.write("go-inventory.json", payload)
 }
 
-// WriteGoDependencies writes one build's dependency module set. Unlike the
-// superseding go-inventory, each build gets its own file keyed by image digest:
-// the set never changes for a given digest, so the write is idempotent and the
-// controller only issues it once per build (ADR 0017). The maxAge sweep bounds
-// how many accumulate, exactly as it does for profiles.
-func (s *Spool) WriteGoDependencies(d inventory.BuildDependencies) error {
-	if d.ImageDigest == "" {
-		return fmt.Errorf("dependency set has no image digest")
+// WriteGoBuild writes one build's facts. Unlike the superseding go-inventory,
+// each build gets its own file keyed by image digest: the facts never change for
+// a given digest, so the write is idempotent and the controller only issues it
+// once per build (ADR 0017). The maxAge sweep bounds how many accumulate,
+// exactly as it does for profiles.
+func (s *Spool) WriteGoBuild(b inventory.BuildFacts) error {
+	if b.ImageDigest == "" {
+		return fmt.Errorf("build facts have no image digest")
 	}
-	modules := d.Modules
+	modules := b.Modules
 	if modules == nil {
 		modules = []string{}
 	}
-	payload := goDependenciesPayload{
-		Kind:        "go_dependencies",
+	payload := goBuildPayload{
+		Kind:        "go_build",
 		Source:      SourceStructural,
-		ImageDigest: d.ImageDigest,
-		GoVersion:   d.GoVersion,
-		MainModule:  d.MainModule,
+		ImageDigest: b.ImageDigest,
+		GoVersion:   b.GoVersion,
+		MainModule:  b.MainModule,
 		Modules:     modules,
+		Settings:    b.Settings,
 	}
-	return s.write("go-dependencies-"+digestFileToken(d.ImageDigest)+".json", payload)
+	return s.write("go-build-"+digestFileToken(b.ImageDigest)+".json", payload)
 }
 
 // digestFileToken turns an image digest into a filename-safe token. Digests are

@@ -288,15 +288,15 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if err := spool.WriteGoInventory(goInventorySeq, time.Now(), goStore.Coverage(), goStore.Snapshot()); err != nil {
 			logger.Error("spooling go inventory", "error", err)
 		}
-		// Dependency sets are keyed by image digest and immutable for it, so
-		// each is written once and marked only after the write succeeded; a
-		// failed write is retried on the next flush (ADR 0017).
-		for _, d := range goStore.PendingDependencies() {
-			if err := spool.WriteGoDependencies(d); err != nil {
-				logger.Error("spooling go dependencies", "image_digest", d.ImageDigest, "error", err)
+		// Build facts are keyed by image digest and immutable for it, so each is
+		// written once and marked only after the write succeeded; a failed write
+		// is retried on the next flush (ADR 0017).
+		for _, b := range goStore.PendingBuilds() {
+			if err := spool.WriteGoBuild(b); err != nil {
+				logger.Error("spooling go build", "image_digest", b.ImageDigest, "error", err)
 				continue
 			}
-			goStore.MarkDependenciesWritten(d.ImageDigest)
+			goStore.MarkBuildWritten(b.ImageDigest)
 		}
 	}
 

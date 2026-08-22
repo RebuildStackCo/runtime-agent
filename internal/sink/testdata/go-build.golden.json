@@ -1,5 +1,5 @@
 {
-  "kind": "go_dependencies",
+  "kind": "go_build",
   "source": "structural",
   "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
   "go_version": "go1.26.1",
@@ -8,5 +8,14 @@
     "github.com/cespare/xxhash/v2",
     "go.uber.org/automaxprocs",
     "golang.org/x/sync"
-  ]
+  ],
+  "settings": {
+    "CGO_ENABLED": "0",
+    "GOAMD64": "v1",
+    "GOARCH": "amd64",
+    "vcs": "git",
+    "vcs.modified": "false",
+    "vcs.revision": "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485",
+    "vcs.time": "2026-08-21T20:13:54Z"
+  }
 }

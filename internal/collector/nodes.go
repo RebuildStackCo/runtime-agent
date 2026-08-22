@@ -14,9 +14,10 @@ import (
 
 // NodeInfo is the collected view of one node: its size (allocatable and
 // capacity, normalized to millicores and bytes), the labels the cost model
-// needs — instance type, capacity type, and topology (zone and region) — and
-// the kernel version, which determines whether the node can run the eBPF
-// profile (CAP_BPF needs kernel 5.8+). Nothing else is read from node objects
+// needs — instance type, capacity type, and topology (zone and region) — the
+// kernel version, which determines whether the node can run the eBPF profile
+// (CAP_BPF needs kernel 5.8+), and the CPU architecture, which is what a
+// build's GOARCH is compared against. Nothing else is read from node objects
 // (see docs/security.md §4).
 //
 // Zone and region are the join keys for anything the backend attributes to a
@@ -24,12 +25,17 @@ import (
 // cloud bill a workload belongs to. They are labels the cluster already
 // publishes; the agent copies them and draws no conclusion from them.
 type NodeInfo struct {
-	Name                   string `json:"name"`
-	InstanceType           string `json:"instance_type,omitempty"`
-	CapacityType           string `json:"capacity_type,omitempty"` // "spot", "on-demand", or "" when undeterminable
-	Zone                   string `json:"zone,omitempty"`
-	Region                 string `json:"region,omitempty"`
-	KernelVersion          string `json:"kernel_version,omitempty"`
+	Name          string `json:"name"`
+	InstanceType  string `json:"instance_type,omitempty"`
+	CapacityType  string `json:"capacity_type,omitempty"` // "spot", "on-demand", or "" when undeterminable
+	Zone          string `json:"zone,omitempty"`
+	Region        string `json:"region,omitempty"`
+	KernelVersion string `json:"kernel_version,omitempty"`
+	// Architecture is the node's CPU architecture as the kubelet reports it
+	// ("amd64", "arm64"). It is what makes a build's GOARCH and microarchitecture
+	// level answerable rather than merely recorded: a question about a binary's
+	// target needs the machine it landed on (ADR 0019).
+	Architecture           string `json:"architecture,omitempty"`
 	AllocatableCPUMilli    int64  `json:"allocatable_cpu_milli"`
 	AllocatableMemoryBytes int64  `json:"allocatable_memory_bytes"`
 	CapacityCPUMilli       int64  `json:"capacity_cpu_milli"`
@@ -160,6 +166,7 @@ func describeNode(node *corev1.Node) NodeInfo {
 		Zone:                   topologyLabel(node.Labels, corev1.LabelTopologyZone, corev1.LabelFailureDomainBetaZone),
 		Region:                 topologyLabel(node.Labels, corev1.LabelTopologyRegion, corev1.LabelFailureDomainBetaRegion),
 		KernelVersion:          node.Status.NodeInfo.KernelVersion,
+		Architecture:           node.Status.NodeInfo.Architecture,
 		AllocatableCPUMilli:    node.Status.Allocatable.Cpu().MilliValue(),
 		AllocatableMemoryBytes: node.Status.Allocatable.Memory().Value(),
 		CapacityCPUMilli:       node.Status.Capacity.Cpu().MilliValue(),

@@ -58,3 +58,4 @@ stays in place.
 - [0016. Prometheus is not a data source — not as an option, not for backfill](0016-no-prometheus-as-a-source.md)
 - [0017. Immutable build facts ship once under the image digest; snapshots say when they were taken](0017-build-facts-keyed-by-digest.md)
 - [0018. The Go inventory forgets: a record lives only while its workload does](0018-inventory-records-live-only-while-their-workload-does.md)
+- [0019. Build settings ship by allow-list, and the payload that carries them is named for the build](0019-build-settings-by-allow-list.md)
