@@ -91,7 +91,6 @@ func TestSecurityDocPayloadTableMirrorsTheRegistry(t *testing.T) {
 var (
 	headingRe = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`)
 	anchorRe  = regexp.MustCompile(`\]\(#([a-z0-9-]+)\)`)
-	docLinkRe = regexp.MustCompile(`\]\((adr/[0-9a-z-]+\.md)\)`)
 	slugDrop  = regexp.MustCompile(`[^a-z0-9 -]`)
 )
 
@@ -123,11 +122,27 @@ func TestSecurityDocAnchorsResolve(t *testing.T) {
 
 // The diet of this document moved reasoning into the ADRs and left links behind.
 // A link to a decision record that does not exist would put the reasoning
-// nowhere at all.
-func TestSecurityDocADRLinksExist(t *testing.T) {
-	for _, m := range docLinkRe.FindAllStringSubmatch(securityDoc(t), -1) {
-		if _, err := os.Stat(m[1]); err != nil { // #nosec G703 -- the regex admits only adr/<slug>.md
-			t.Errorf("security.md links %s, which does not exist", m[1])
+// nowhere at all — and the repository README, which is the front door, carries
+// the same kind of link.
+func TestADRLinksExist(t *testing.T) {
+	for _, doc := range []struct{ name, prefix string }{
+		{"security.md", ""},
+		{"../README.md", "docs/"},
+	} {
+		raw, err := os.ReadFile(doc.name) // #nosec G304 -- test-controlled path
+		if err != nil {
+			t.Fatalf("reading %s: %v", doc.name, err)
+		}
+		re := regexp.MustCompile(`\]\(` + doc.prefix + `(adr/[0-9a-z-]+\.md)\)`)
+		found := false
+		for _, m := range re.FindAllStringSubmatch(string(raw), -1) {
+			found = true
+			if _, err := os.Stat(m[1]); err != nil { // #nosec G703 -- the regex admits only adr/<slug>.md
+				t.Errorf("%s links %s%s, which does not exist", doc.name, doc.prefix, m[1])
+			}
+		}
+		if !found {
+			t.Errorf("%s links no decision record; the reasoning has to be reachable from it", doc.name)
 		}
 	}
 }
