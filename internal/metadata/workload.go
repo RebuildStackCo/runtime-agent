@@ -69,6 +69,18 @@ type PodScope struct {
 	// fewer than Replicas; that shortfall is itself the pending-scheduling
 	// signal, not a gap in collection.
 	Nodes map[string]int `json:"nodes,omitempty"`
+	// Unscheduled counts the replicas not yet on a node, by the reason the
+	// scheduler gave. It explains the Nodes shortfall above rather than
+	// restating it: the shortfall was always visible, the cause was not
+	// (ADR 0021).
+	//
+	// The reasons are not interchangeable. "Unschedulable" means nothing in the
+	// cluster fits the pod, which is a capacity fact. "SchedulingGated" means
+	// the pod is deliberately held by a gate and is not waiting on capacity at
+	// all — counting it as pressure would invent a shortage. "SchedulerError"
+	// is the scheduler failing on the pod's own spec. The agent reports which,
+	// and draws no conclusion (ADR 0004).
+	Unscheduled map[string]int `json:"unscheduled,omitempty"`
 }
 
 // Record is the declared shape of one workload container plus the placement of
@@ -121,9 +133,10 @@ func Aggregate(pods []collector.PodInfo) []Record {
 					Resources: c.Resources,
 					Ports:     c.Ports,
 					Pod: PodScope{
-						QOSClass: pod.QOSClass,
-						Phases:   make(map[string]int),
-						Nodes:    make(map[string]int),
+						QOSClass:    pod.QOSClass,
+						Phases:      make(map[string]int),
+						Nodes:       make(map[string]int),
+						Unscheduled: make(map[string]int),
 					},
 				}
 				byKey[key] = rec
@@ -134,6 +147,9 @@ func Aggregate(pods []collector.PodInfo) []Record {
 			}
 			if pod.Node != "" {
 				rec.Pod.Nodes[pod.Node]++
+			}
+			if pod.Unscheduled != "" {
+				rec.Pod.Unscheduled[pod.Unscheduled]++
 			}
 		}
 	}

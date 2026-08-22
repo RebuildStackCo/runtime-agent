@@ -192,6 +192,45 @@ reconciled away — `restarts` is the container's true total, and the OOM events
 carry the per-kill detail (memory limit, exit code, restart count at the time)
 that a window aggregate cannot.
 
+**`pod_disruptions` is what the cluster took away, not what failed**
+([ADR 0021](adr/0021-pod-lifecycle-journal.md)). One record per pod per
+hour-aligned window: preempted, evicted under node pressure, drained by a taint,
+or removed through the eviction API. A pod whose own container exited non-zero
+is **not** here — that is `container_restarts` and `oom_kill`. The backend MUST
+NOT read an absence of disruption records as a healthy cluster; it means no pod
+was taken away, which is the normal state.
+
+- `disrupted_at` is Kubernetes' own timestamp, not the observation instant, so a
+  disruption that happened before the agent started still lands in the window
+  where it occurred. Records may therefore arrive for a window already
+  delivered; the payload supersedes by (window start, window length), so the
+  backend MUST upsert and MUST NOT append.
+- Records are keyed by (namespace, pod) within a window and are idempotent: the
+  same pod reported again after an agent restart rewrites its record rather than
+  duplicating it.
+- `node` is the node the pod was taken from. For a node-pressure eviction it
+  names the node that was under pressure — joined against `node_metadata` it is
+  what turns "a pod was evicted" into "this instance type ran out".
+- `reason` is drawn from a fixed set (`TerminationByKubelet`,
+  `PreemptionByScheduler`, `DeletionByTaintManager`, `DeletionByPodGC`,
+  `EvictionByEvictionAPI`, `Evicted`) plus `other`. The backend MUST tolerate
+  `other` and MUST NOT assume the set never grows.
+
+**`workload_metadata.pod.unscheduled` explains the replica shortfall, it does
+not restate it.** The gap between `replicas` and the sum of `nodes` has always
+shown how many replicas are unplaced; `unscheduled` counts those by the
+scheduler's reason. **The backend MUST NOT treat these as two independent
+counts** — they describe the same pods, and summing or cross-checking them as
+separate signals will produce nonsense during the moments when a pod is between
+states.
+
+The reasons are not interchangeable and MUST NOT be merged: `Unschedulable`
+means nothing in the cluster fits the pod and is a capacity fact;
+`SchedulingGated` means the pod is deliberately held by a scheduling gate and is
+**not** waiting on capacity; `SchedulerError` is the scheduler failing on the
+pod's own spec. Rendering a gated pod as a capacity shortage invents a shortage
+that does not exist.
+
 **Structural snapshots say when they were taken, and the Go inventory says how
 complete it is** ([ADR 0017](adr/0017-build-facts-keyed-by-digest.md)).
 `go_inventory`, `workload_metadata` and `node_metadata` each carry `captured_at`

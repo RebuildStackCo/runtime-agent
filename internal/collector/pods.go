@@ -68,24 +68,29 @@ type Container struct {
 
 // PodInfo is the collected view of one pod.
 type PodInfo struct {
-	Namespace  string
-	Name       string
-	Node       string
-	Phase      string
-	QOSClass   string
-	Workload   WorkloadRef
-	Containers []Container
+	Namespace string
+	Name      string
+	Node      string
+	Phase     string
+	// Unscheduled is why the pod is not on a node yet, "" once it is scheduled.
+	// It is the reason behind the shortfall the replica breakdown already shows
+	// (ADR 0012 §5): the count was always visible, the cause was not.
+	Unscheduled string
+	QOSClass    string
+	Workload    WorkloadRef
+	Containers  []Container
 }
 
 // PodWatcher lists all pods in all namespaces and then keeps watching for
 // new ones. Every observed pod is reported through the OnPod callback,
 // resolved to the workload that manages it.
 type PodWatcher struct {
-	clientset kubernetes.Interface
-	onPod     func(PodInfo)
-	onOOM     func(OOMKill)
-	onRestart func(ContainerRestart)
-	filter    *PodFilter
+	clientset    kubernetes.Interface
+	onPod        func(PodInfo)
+	onOOM        func(OOMKill)
+	onRestart    func(ContainerRestart)
+	onDisruption func(PodDisruption)
+	filter       *PodFilter
 
 	rsLister  appslisters.ReplicaSetLister
 	jobLister batchlisters.JobLister
@@ -96,6 +101,9 @@ type PodWatcher struct {
 	// restartCounts is the last restart counter seen per container, the
 	// baseline every reported advance is measured against.
 	restartCounts map[string]int32
+	// reportedDisruptions deduplicates disrupted pods across the many status
+	// updates one receives between being condemned and disappearing.
+	reportedDisruptions map[string]struct{}
 	// reportedSig deduplicates pod reports across the many status updates a
 	// pod receives: the collected view is re-sent only when its image-digest
 	// signature changes (digests appear on the update that follows container
@@ -141,14 +149,15 @@ type containerIdentity struct {
 // informer goroutine and must not block.
 func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatcher {
 	return &PodWatcher{
-		clientset:     clientset,
-		onPod:         onPod,
-		filter:        NewPodFilter(nil, nil),
-		reportedOOMs:  make(map[string]struct{}),
-		restartCounts: make(map[string]int32),
-		reportedSig:   make(map[types.UID]string),
-		index:         make(map[types.UID]podIndexEntry),
-		nameIndex:     make(map[string]types.UID),
+		clientset:           clientset,
+		onPod:               onPod,
+		filter:              NewPodFilter(nil, nil),
+		reportedOOMs:        make(map[string]struct{}),
+		restartCounts:       make(map[string]int32),
+		reportedDisruptions: make(map[string]struct{}),
+		reportedSig:         make(map[types.UID]string),
+		index:               make(map[types.UID]podIndexEntry),
+		nameIndex:           make(map[string]types.UID),
 	}
 }
 
@@ -198,6 +207,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
 				w.reportRestarts(pod)
+				w.reportDisruptions(pod)
 			}
 		},
 		// Status updates carry facts absent from the initial add — OOM
@@ -217,6 +227,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
 				w.reportRestarts(pod)
+				w.reportDisruptions(pod)
 			} else {
 				w.dropPod(pod.UID)
 			}
@@ -229,6 +240,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 				w.dropPod(pod.UID)
 				w.forgetOOMKills(pod)
 				w.forgetRestarts(pod)
+				w.forgetDisruptions(pod)
 			}
 		},
 	})
@@ -463,12 +475,13 @@ func (w *PodWatcher) admit(pod *corev1.Pod, count bool) bool {
 // describe reduces a pod to the collected view.
 func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 	info := PodInfo{
-		Namespace: pod.Namespace,
-		Name:      pod.Name,
-		Node:      pod.Spec.NodeName,
-		Phase:     string(pod.Status.Phase),
-		QOSClass:  string(pod.Status.QOSClass),
-		Workload:  w.resolveWorkload(pod),
+		Namespace:   pod.Namespace,
+		Name:        pod.Name,
+		Node:        pod.Spec.NodeName,
+		Phase:       string(pod.Status.Phase),
+		QOSClass:    string(pod.Status.QOSClass),
+		Workload:    w.resolveWorkload(pod),
+		Unscheduled: unscheduledReason(pod),
 	}
 	digests := containerDigests(pod)
 	for _, c := range pod.Spec.InitContainers {

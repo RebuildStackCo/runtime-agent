@@ -258,6 +258,66 @@ func TestContainerRestartsSupersedeWithinTheirWindow(t *testing.T) {
 	}
 }
 
+// fixedDisruptions is a deterministic disruption window: one pod preempted to
+// make room and one evicted by a node under pressure — the two ways a cluster
+// takes a workload away for capacity reasons.
+func fixedDisruptions() []journal.DisruptionRecord {
+	return []journal.DisruptionRecord{
+		{
+			Namespace:     "search",
+			Pod:           "index-0",
+			Workload:      collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			Node:          "node-2",
+			Reason:        "TerminationByKubelet",
+			DisruptedAt:   windowStart.Add(9 * time.Minute),
+			WindowStart:   windowStart,
+			WindowSeconds: 3600,
+		},
+		{
+			Namespace:     "shop",
+			Pod:           "web-7f8d9-abcde",
+			Workload:      collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Node:          "node-1",
+			Reason:        "PreemptionByScheduler",
+			DisruptedAt:   windowStart.Add(22 * time.Minute),
+			WindowStart:   windowStart,
+			WindowSeconds: 3600,
+		},
+	}
+}
+
+func TestGoldenPodDisruptionsPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WritePodDisruptions(5, fixedDisruptions()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("disruptions-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "pod-disruptions.golden.json")
+}
+
+// A node evicting many pods at once must not write one file per pod: the
+// payload's file count is bounded by time, not by how bad the incident is
+// (ADR 0021).
+func TestPodDisruptionsAreOneFilePerWindow(t *testing.T) {
+	s, dir := newTestSpool(t)
+	records := fixedDisruptions()
+	for i := range 8 {
+		extra := records[0]
+		extra.Pod = fmt.Sprintf("index-%d", i+1)
+		records = append(records, extra)
+	}
+	if err := s.WritePodDisruptions(1, records); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool holds %d files for ten disruptions in one window, want 1", len(entries))
+	}
+}
+
 // fixedInventory is a deterministic two-workload Go inventory, already sorted by
 // key as the store would return it.
 func fixedInventory() []inventory.GoRecord {
@@ -459,10 +519,14 @@ func fixedWorkloadMetadata() []metadata.Record {
 			// No limits declared: nil must stay absent from the payload, never
 			// flatten to zero.
 			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](1000)},
+			// The new build's replica is Pending with no node — and the reason
+			// is in the payload, so the shortfall between Replicas and Nodes is
+			// explained rather than merely visible (ADR 0021).
 			Pod: metadata.PodScope{
-				QOSClass: "Burstable",
-				Replicas: 1,
-				Phases:   map[string]int{"Pending": 1},
+				QOSClass:    "Burstable",
+				Replicas:    1,
+				Phases:      map[string]int{"Pending": 1},
+				Unscheduled: map[string]int{"Unschedulable": 1},
 			},
 		},
 		{
