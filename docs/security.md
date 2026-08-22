@@ -180,17 +180,22 @@ The controller runs as a single-replica StatefulSet with a small local
 volume — an `emptyDir` by default; `persistence.enabled: true` swaps in a
 PersistentVolume (`volumeClaimTemplates`, ~2Gi) for installations that want
 unacknowledged data to survive pod rescheduling (ADR 0007). The volume
-holds exactly two things:
+holds exactly one thing:
 
-1. **Collector bookkeeping** — watermarks of closed/acknowledged hours,
-   the workload registry with metadata content hashes, profiling rotation
-   state. No collected data, only accounting.
-2. **The spool of unshipped payload batches** — rollups, metadata,
-   coverage reports, and allow-listed profiles, held until delivery is
-   acknowledged and deleted immediately after (with a maximum-age cap, so
-   an extended outage cannot fill the volume). Only data that has already
-   passed the filters — i.e. data approved to leave the cluster — is ever
-   written to the volume.
+- **The spool of unshipped payload batches** — rollups, metadata,
+  coverage reports, and allow-listed profiles, held until delivery is
+  acknowledged and deleted immediately after (with a maximum-age cap, so
+  an extended outage cannot fill the volume). Only data that has already
+  passed the filters — i.e. data approved to leave the cluster — is ever
+  written to the volume.
+
+Collector bookkeeping — counter baselines, open windows, profiling rotation
+state — is held **in memory only**. ADR 0003 originally placed a checkpoint
+file alongside the spool; ADR 0022 records that it was never built and is not
+going to be. Minute-cadence snapshot delivery bounds what a restart can lose to
+the flush interval, and counter baselines are re-established from the next
+observation. Nothing about your cluster is accounted for on disk outside the
+spool.
 
 **Credentials** — the in-cluster-generated private key and client
 certificate — live in the agent's pre-created identity Secret (ADR 0008),

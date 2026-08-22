@@ -2,6 +2,7 @@
 
 Date: 2026-08-20
 Status: Accepted
+Amends: 0006
 
 Supersedes the framing of Prometheus in [ADR 0006](0006-usage-collection-kubelet-rollups.md)
 §Context, which rejected it for the usage path while leaving it standing as "a

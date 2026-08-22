@@ -109,10 +109,16 @@ func readProjectedToken(path string) (string, error) {
 }
 
 // targetsClient asks the controller which workloads to profile (ADR 0011 §3).
-// Unlike the shippers, this reply carries data — the config-bounded top-N list;
-// the node intersects it with its own pods and re-checks it against the eligible
-// set before acting, so a controller can only prioritize within what the node's
-// config already permits.
+// Unlike the shippers, this reply carries data the node acts on: the top-N list,
+// as container IDs.
+//
+// What the node applies to it is the intersection with its own processes and
+// every ceiling in its ConfigMap — top-N, capture duration, interval, overhead,
+// and the symbol allow-list that governs egress. It does not re-check the
+// eligible set: a container ID cannot be resolved to a namespace without API
+// access (ADR 0009), so eligibility is enforced on the controller. ADR 0011 §3
+// describes this differently; ADR 0022 §5 records the discrepancy and leaves the
+// fix to its own decision.
 type targetsClient struct {
 	endpoint  string
 	tokenPath string
@@ -224,7 +230,7 @@ func (c *scopeClient) fetch(ctx context.Context, node string) ([]string, error) 
 }
 
 // profileShipper delivers one captured eBPF CPU profile to the controller's
-// profile endpoint (ADR 0011 §5.5), over the same node-initiated, projected-
+// profile endpoint (ADR 0011 §6), over the same node-initiated, projected-
 // token transport as the inventory shipper. Only already allow-list-filtered
 // pprof bytes are ever sent (ADR 0011 §4); the node attaches only what it can see
 // locally (pod UID / container ID), and the controller does the workload join.

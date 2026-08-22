@@ -17,7 +17,7 @@ import (
 const profileMaxBodyBytes = 16 << 20 // 16 MiB
 
 // ProfileReport is one captured eBPF CPU profile shipped from a node to the
-// controller (ADR 0011 §5.5). The node knows only what it can see locally: the
+// controller (ADR 0011 §6). The node knows only what it can see locally: the
 // process identity (pod UID and container ID parsed from the cgroup, ADR 0009),
 // the capture window, and the already-symbolized, allow-list-filtered pprof
 // bytes (ADR 0011 §4). The controller joins the pod UID / container ID to a

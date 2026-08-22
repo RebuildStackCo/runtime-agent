@@ -2,6 +2,8 @@
 
 Date: 2026-08-21
 Status: Accepted
+Amends: 0012 §1, §3
+Amended by: 0018, 0019
 
 Amends [ADR 0012](0012-payload-registry-and-provenance.md): §1's registry gains a
 kind, and §3's "it is true as of the flush that wrote it" becomes a field

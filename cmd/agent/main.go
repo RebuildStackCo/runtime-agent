@@ -485,7 +485,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		// PodWatcher — exactly as it joins inventory facts — and spools the
 		// profile. An unjoinable profile (informer lag, or a pod outside the
 		// controller's filters) is counted and dropped, never guessed (ADR 0010
-		// §5, ADR 0011 §5.5).
+		// §5, ADR 0011 §6).
 		var profilesReceived, profilesUnjoined atomic.Uint64
 		onProfile := func(id nodeauth.Identity, report nodeintake.ProfileReport) {
 			ns, workload, container, digest, ok := podWatcher.LookupContainer(types.UID(report.PodUID), report.ContainerID)

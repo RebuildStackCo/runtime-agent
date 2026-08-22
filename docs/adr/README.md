@@ -20,6 +20,8 @@ Files are named `NNNN-short-title.md` and follow a three-section template:
 
 Date: YYYY-MM-DD
 Status: Accepted | Superseded by NNNN
+Amends: NNNN, NNNN §5          # optional — decisions this one changes
+Amended by: NNNN               # optional — later decisions that changed this one
 
 ## Context
 
@@ -34,9 +36,25 @@ What we chose, stated in one place, unambiguously.
 What becomes easier, what becomes harder, what we gave up.
 ```
 
-ADRs are immutable once accepted. A change of mind produces a new ADR that
-supersedes the old one; the old file gets `Status: Superseded by NNNN` and
-stays in place.
+**The body is immutable once accepted; the header is maintained.** Context,
+Decision and Consequences record what was decided when it was decided and are
+never edited. A change of mind produces a new ADR: a whole replacement gives the
+old file `Status: Superseded by NNNN`, a partial change declares `Amends:` in the
+new file and adds `Amended by:` to the old one.
+
+The distinction is that the two reference lines carry information that did not
+exist when the file was written, and that its author could not have written. A
+reader who opens an old ADR must be able to see, in that file, that the ground
+has moved — which is precisely what nine slices of one-directional references
+failed to give them (ADR 0022).
+
+`Status:` is a closed vocabulary: `Accepted` or `Superseded by NNNN`, nothing
+else. Partial amendment goes in `Amends:`, never in prose appended to the status.
+
+`docs/adr/adr_test.go` enforces all of it — the graph must be symmetric, point
+backwards, name only ADRs that exist, and every ADR must appear in the index
+below. Forgetting the mirror line fails `make test`, and the failure prints the
+line to paste.
 
 ## Index
 
@@ -61,3 +79,4 @@ stays in place.
 - [0019. Build settings ship by allow-list, and the payload that carries them is named for the build](0019-build-settings-by-allow-list.md)
 - [0020. The restart journal: windowed aggregates, exact counts, sampled reasons](0020-container-restart-journal.md)
 - [0021. Pod lifecycle: the scheduler's reason goes where the shortfall already is, the cluster's removals become a journal](0021-pod-lifecycle-journal.md)
+- [0022. The payload registry lives in code, and an amendment cannot stay silent](0022-registry-in-code-and-declared-amendments.md)

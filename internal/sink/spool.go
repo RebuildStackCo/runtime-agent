@@ -226,7 +226,7 @@ type profilePayload struct {
 }
 
 // ProfileKey identifies a captured profile. The namespace/workload/image-digest
-// are the controller's join of the node's container ID (ADR 0011 §5.5, the ADR
+// are the controller's join of the node's container ID (ADR 0011 §6, the ADR
 // 0010 pattern); the capture interval makes every capture's key unique.
 type ProfileKey struct {
 	Namespace    string
