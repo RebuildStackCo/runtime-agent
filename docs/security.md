@@ -351,10 +351,11 @@ classes with different sensitivity and different default policies:
 - From node objects, the agent keeps only size (`allocatable`/`capacity`), the
   instance-type and capacity-type labels, the topology labels
   (`topology.kubernetes.io/zone` and `/region`, with their deprecated
-  `failure-domain.beta.kubernetes.io/` equivalents), and
-  `status.nodeInfo.kernelVersion` (a version string, used to report
-  eBPF-profile readiness). No other node labels, annotations, addresses, or
-  `status` fields are read. Zone and region are how resource usage is
+  `failure-domain.beta.kubernetes.io/` equivalents), and two fields of
+  `status.nodeInfo`: `kernelVersion` (a version string, used to report
+  eBPF-profile readiness) and `architecture` (`amd64`/`arm64`, what a build's
+  target architecture is compared against, ADR 0019). No other node labels,
+  annotations, addresses, or `status` fields are read. Zone and region are how resource usage is
   attributed to a failure domain and to the corresponding lines of your cloud
   bill; they are labels your cluster already publishes.
 
