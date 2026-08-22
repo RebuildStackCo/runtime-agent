@@ -89,7 +89,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 
 | Resource | Verbs | Why |
 |---|---|---|
-| `pods` | get/list/watch | Map containers to workloads; read `requests`/`limits` from spec; detect OOM kills via `status.containerStatuses[].lastState.terminated.reason == "OOMKilled"`; read `containerPorts` to locate pprof endpoints |
+| `pods` | get/list/watch | Map containers to workloads; read `requests`/`limits` from spec; detect OOM kills and count restarts from `status.containerStatuses[]` (`restartCount`, and the reason and exit code of `lastState.terminated`); read `containerPorts` to locate pprof endpoints |
 | `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod |
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
@@ -336,6 +336,7 @@ classes with different sensitivity and different default policies:
 |---|---|---|---|
 | Resource metrics | CPU usage, working set, throttling ratios, requests/limits, node allocatable | Low (numbers) | Collected for everything visible, minus the infrastructure deny-list and your filters |
 | Workload metadata | Workload names, namespaces, image digests, Go version, module path, node zone and instance type | Medium | Same as metrics |
+| Object history (journal) | Pod names, container names, restart counts, termination reasons and exit codes | Medium | Same as metrics. This is the one class that names individual **pods** — see below |
 | Profiles (stack traces) | Function names, call graphs | **High** — function names reveal the structure of your code | **Explicit allow-list only.** A stack trace never leaves the cluster unless its module path is on the allow-list you configured |
 
 ### Field minimization
@@ -346,15 +347,19 @@ classes with different sensitivity and different default policies:
   discards `env`, `args`, and `command` before anything is stored or
   transported, because these fields frequently contain inline credentials.
   From `status` it reads the container image digest
-  (`status.containerStatuses[].imageID`, kept as the content digest only) and
-  OOM-kill terminations — nothing else.
+  (`status.containerStatuses[].imageID`, kept as the content digest only), the
+  restart counter (`restartCount`), and the *reason* and *exit code* of a
+  terminated container state — nothing else. Termination **messages** are not
+  read: unlike a reason, which the kubelet picks from its own vocabulary, a
+  message is free text and routinely names nodes, taints and other workloads.
 - From node objects, the agent keeps only size (`allocatable`/`capacity`), the
   instance-type and capacity-type labels, the topology labels
   (`topology.kubernetes.io/zone` and `/region`, with their deprecated
-  `failure-domain.beta.kubernetes.io/` equivalents), and
-  `status.nodeInfo.kernelVersion` (a version string, used to report
-  eBPF-profile readiness). No other node labels, annotations, addresses, or
-  `status` fields are read. Zone and region are how resource usage is
+  `failure-domain.beta.kubernetes.io/` equivalents), and two fields of
+  `status.nodeInfo`: `kernelVersion` (a version string, used to report
+  eBPF-profile readiness) and `architecture` (`amd64`/`arm64`, what a build's
+  target architecture is compared against, ADR 0019). No other node labels,
+  annotations, addresses, or `status` fields are read. Zone and region are how resource usage is
   attributed to a failure domain and to the corresponding lines of your cloud
   bill; they are labels your cluster already publishes.
 
@@ -384,6 +389,38 @@ Both also carry `captured_at`, the instant the snapshot was assembled (ADR
 0017), as does the Go inventory of §8. It is a timestamp of the agent's own
 work, not of anything in your cluster; its purpose is that a stale snapshot can
 be recognized as stale rather than assumed current.
+
+### Object history, and the one place pods are named (ADR 0020)
+
+Two payloads report what the cluster's own object status records about a
+container's history. Both are `journal` provenance, and both name the **pod**:
+
+- **`oom_kill`** — one event per observed out-of-memory kill: namespace, pod,
+  container, workload, when it finished, the exit code, the restart count at the
+  time, and the memory limit the container declared.
+- **`container_restarts`** — per (namespace, pod, container) and hour-aligned
+  window: how many times the container restarted, a breakdown of those restarts
+  by termination reason, how many restarts had no reason visible, and the most
+  recent exit code.
+
+**Why the pod is named here and nowhere else.** Every other payload counts
+replicas instead of listing them, because a workload-level number answers the
+question. A crash loop is different: "one of your twelve replicas restarts every
+thirty seconds" is not actionable without knowing which one. The pod name is the
+smallest identifier that makes the record useful, and it is a name your cluster
+generated, never workload content.
+
+If you would rather it did not leave, the controls are the ones in
+[§11](#11-your-controls): a namespace filter, a label selector, or the
+`rebuildstack.co/collect: "false"` annotation. An excluded pod produces no
+journal record at all — the exclusion applies before any of this is formed, and
+also removes what was already collected.
+
+The reason breakdown uses a fixed set of names (`OOMKilled`, `Error`,
+`Completed`, `ContainerCannotRun`, `ContainerStatusUnknown`, `DeadlineExceeded`,
+`StartError`, `Evicted`); anything else your container runtime reports is
+counted under `other` rather than passed through, so the payload's shape stays
+bounded. Termination *messages* are never read (see field minimization above).
 
 ### What the agent says about its own collection (ADR 0013)
 

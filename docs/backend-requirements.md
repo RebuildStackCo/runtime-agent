@@ -156,6 +156,42 @@ carries its own completeness:
 The counters are cumulative since agent start; the backend takes differences
 between deliveries, exactly as it does for every other counter here.
 
+**`container_restarts` counts exactly and explains partially**
+([ADR 0020](adr/0020-container-restart-journal.md)). Each record covers one
+(namespace, pod, container) within one hour-aligned window, and its three
+restart fields are not interchangeable:
+
+- `restarts` is exact. It comes from the restart counter's advance, so it counts
+  restarts the agent never saw individually.
+- `reasons` is a sample of that total. A container status carries only its most
+  recent termination, so restarts that happened between two status updates are
+  counted without a reason.
+- `reasons_unobserved` is the difference. **`sum(reasons) + reasons_unobserved ==
+  restarts` holds for every record**, and a backend that renders the breakdown
+  as if it were the whole must not: a container restarting faster than the
+  informer delivers updates would appear to restart less than it does.
+
+The reason keys are a fixed set (`OOMKilled`, `Error`, `Completed`,
+`ContainerCannotRun`, `ContainerStatusUnknown`, `DeadlineExceeded`,
+`StartError`, `Evicted`) plus `other` for anything the container runtime reports
+outside it. The backend MUST tolerate `other` and MUST NOT assume the set never
+grows.
+
+The payload supersedes by (window start, window length): each flush rewrites the
+open window's payload with the window's running totals, and the last write
+before the window ends is final. The backend MUST upsert by that key and MUST
+NOT add successive deliveries together — they are cumulative within the window,
+not increments. Windows before the agent started watching a container are
+absent by design: a restart Kubernetes does not timestamp cannot be placed in
+one.
+
+`oom_kill` and `container_restarts` describe the same events from two angles and
+**do overlap**: an OOM-killed container appears as an `oom_kill` event and
+within the window's `reasons["OOMKilled"]`. This is not double counting to be
+reconciled away — `restarts` is the container's true total, and the OOM events
+carry the per-kill detail (memory limit, exit code, restart count at the time)
+that a window aggregate cannot.
+
 **Structural snapshots say when they were taken, and the Go inventory says how
 complete it is** ([ADR 0017](adr/0017-build-facts-keyed-by-digest.md)).
 `go_inventory`, `workload_metadata` and `node_metadata` each carry `captured_at`

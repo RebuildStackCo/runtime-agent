@@ -310,7 +310,7 @@ func TestUsageFlushEmitsClosedThenSnapshots(t *testing.T) {
 	}
 
 	// Past the window end the record closes and leaves the open set.
-	p.flush(usageTestStart.Add(usageWindowLength + time.Minute))
+	p.flush(usageTestStart.Add(UsageWindowLength + time.Minute))
 	if closedCount != 1 {
 		t.Fatalf("closed %d records, want 1", closedCount)
 	}

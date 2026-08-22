@@ -36,6 +36,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
+	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
@@ -186,6 +187,23 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			}
 		}
 	})
+	// The restart journal aggregates per container per window rather than
+	// emitting one payload per restart: a crash loop must not put the spool's
+	// file count under its own control (ADR 0020).
+	restartJournal := journal.NewRestarts(collector.UsageWindowLength)
+	podWatcher.OnContainerRestart(func(r collector.ContainerRestart) {
+		logger.Info("container restarted",
+			"namespace", r.Namespace,
+			"pod", r.Pod,
+			"container", r.Container,
+			"workload_kind", r.Workload.Kind,
+			"workload_name", r.Workload.Name,
+			"restarts", r.Restarts,
+			"reason", r.Reason,
+			"exit_code", r.ExitCode,
+		)
+		restartJournal.Observe(r)
+	})
 	podWatcher.SetFilter(filter)
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
 		logger.Info("node observed",
@@ -330,6 +348,27 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		)
 	}
 
+	// Restart windows ride the same cadence: the open window is re-written each
+	// flush (it supersedes under its own key) and a window that has ended is
+	// written one last time and dropped from memory. Same goroutine as the
+	// metadata flush, so the sequence needs no synchronization.
+	var restartSeq int64
+	flushRestarts := func() {
+		if spool == nil {
+			return
+		}
+		restartSeq++
+		records := append(restartJournal.CloseBefore(time.Now()), restartJournal.Snapshots()...)
+		if len(records) == 0 {
+			return // a cluster where nothing restarted writes nothing
+		}
+		if err := spool.WriteContainerRestarts(restartSeq, records); err != nil {
+			logger.Error("spooling container restarts", "error", err)
+			return
+		}
+		logger.Info("container restarts flushed", "sequence", restartSeq, "records", len(records))
+	}
+
 	// Excluded pods are reported as aggregate counts only, never by name
 	// (docs/security.md §8). Inventory counters are aggregate too: no identity
 	// of an unjoined fact appears, only a count (CLAUDE.md invariant 6).
@@ -375,6 +414,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				logCoverage()
 				flushMetadata()
 				flushInventory()
+				flushRestarts()
 			}
 		}
 	}()

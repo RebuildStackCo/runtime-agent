@@ -84,6 +84,7 @@ type PodWatcher struct {
 	clientset kubernetes.Interface
 	onPod     func(PodInfo)
 	onOOM     func(OOMKill)
+	onRestart func(ContainerRestart)
 	filter    *PodFilter
 
 	rsLister  appslisters.ReplicaSetLister
@@ -92,6 +93,9 @@ type PodWatcher struct {
 
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
+	// restartCounts is the last restart counter seen per container, the
+	// baseline every reported advance is measured against.
+	restartCounts map[string]int32
 	// reportedSig deduplicates pod reports across the many status updates a
 	// pod receives: the collected view is re-sent only when its image-digest
 	// signature changes (digests appear on the update that follows container
@@ -137,13 +141,14 @@ type containerIdentity struct {
 // informer goroutine and must not block.
 func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatcher {
 	return &PodWatcher{
-		clientset:    clientset,
-		onPod:        onPod,
-		filter:       NewPodFilter(nil, nil),
-		reportedOOMs: make(map[string]struct{}),
-		reportedSig:  make(map[types.UID]string),
-		index:        make(map[types.UID]podIndexEntry),
-		nameIndex:    make(map[string]types.UID),
+		clientset:     clientset,
+		onPod:         onPod,
+		filter:        NewPodFilter(nil, nil),
+		reportedOOMs:  make(map[string]struct{}),
+		restartCounts: make(map[string]int32),
+		reportedSig:   make(map[types.UID]string),
+		index:         make(map[types.UID]podIndexEntry),
+		nameIndex:     make(map[string]types.UID),
 	}
 }
 
@@ -192,6 +197,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 				w.indexPod(pod, info)
 				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
+				w.reportRestarts(pod)
 			}
 		},
 		// Status updates carry facts absent from the initial add — OOM
@@ -210,6 +216,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 				w.indexPod(pod, info)
 				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
+				w.reportRestarts(pod)
 			} else {
 				w.dropPod(pod.UID)
 			}
@@ -221,6 +228,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 			if pod, ok := obj.(*corev1.Pod); ok {
 				w.dropPod(pod.UID)
 				w.forgetOOMKills(pod)
+				w.forgetRestarts(pod)
 			}
 		},
 	})

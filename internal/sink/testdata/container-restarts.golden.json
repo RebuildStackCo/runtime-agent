@@ -1,0 +1,44 @@
+{
+  "kind": "container_restarts",
+  "source": "journal",
+  "sequence": 3,
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "records": [
+    {
+      "namespace": "search",
+      "pod": "index-0",
+      "container": "app",
+      "workload": {
+        "kind": "StatefulSet",
+        "name": "index"
+      },
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "restarts": 2,
+      "reasons": {
+        "OOMKilled": 2
+      },
+      "reasons_unobserved": 0,
+      "last_exit_code": 137
+    },
+    {
+      "namespace": "shop",
+      "pod": "web-7f8d9-abcde",
+      "container": "app",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "restarts": 12,
+      "reasons": {
+        "Error": 3,
+        "other": 1
+      },
+      "reasons_unobserved": 8,
+      "last_exit_code": 1
+    }
+  ]
+}
