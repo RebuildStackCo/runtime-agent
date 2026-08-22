@@ -17,6 +17,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
+	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -131,6 +132,30 @@ type goBuildPayload struct {
 	MainModule  string            `json:"main_module"`
 	Modules     []string          `json:"modules"`
 	Settings    map[string]string `json:"settings,omitempty"`
+}
+
+// containerRestartsPayload is every collected container's restart history
+// within one window: one file per window holding many records, exactly as a
+// usage snapshot is (ADR 0020).
+//
+// Grouping by window rather than filing one payload per restart is the decision
+// the shape encodes. A per-event payload would put the spool's file count under
+// the control of a crash loop — a hundred containers in CrashLoopBackOff would
+// write thousands of files an hour into a spool bounded only by age — while the
+// question a restart answers ("how often, and why") is a property of the window,
+// not of the individual restart.
+//
+// It supersedes within its window: each flush replaces the window's file, and
+// the last write before the window closes is its final value. Unlike usage
+// there is no separate closed-window kind, because a restart count only grows
+// and the final write needs no different shape.
+type containerRestartsPayload struct {
+	Kind          string                  `json:"kind"`
+	Source        string                  `json:"source"`
+	Sequence      int64                   `json:"sequence,omitempty"`
+	WindowStart   time.Time               `json:"window_start"`
+	WindowSeconds int64                   `json:"window_seconds"`
+	Records       []journal.RestartRecord `json:"records"`
 }
 
 // workloadMetadataPayload is the declared shape of every collected workload
@@ -251,6 +276,36 @@ func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs collector.Obser
 		}
 		if err := os.Remove(filepath.Join(s.dir, k.name()+".snapshot.json")); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("removing superseded snapshot: %w", err)
+		}
+	}
+	return nil
+}
+
+// WriteContainerRestarts writes the restart records of each window they belong
+// to, one file per window, atomically replacing that window's previous file.
+// records must already be in a deterministic order (the accumulator sorts them)
+// so the payload bytes are stable — the golden contract.
+//
+// A window with no restarts writes nothing: the accumulator only holds records
+// for containers that actually restarted, and an empty payload would say
+// "observed and none" for every window of every quiet cluster.
+func (s *Spool) WriteContainerRestarts(sequence int64, records []journal.RestartRecord) error {
+	grouped := make(map[windowKey][]journal.RestartRecord)
+	for _, r := range records {
+		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
+		grouped[k] = append(grouped[k], r)
+	}
+	for k, group := range grouped {
+		payload := containerRestartsPayload{
+			Kind:          "container_restarts",
+			Source:        SourceJournal,
+			Sequence:      sequence,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Records:       group,
+		}
+		if err := s.write(fmt.Sprintf("restarts-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+			return err
 		}
 	}
 	return nil

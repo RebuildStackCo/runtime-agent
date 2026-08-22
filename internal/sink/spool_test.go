@@ -14,6 +14,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
+	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -160,6 +161,101 @@ func TestGoldenOOMPayload(t *testing.T) {
 	}
 	name := fmt.Sprintf("oom-%d-shop-web-7f8d9-abcde-app-3.json", event.FinishedAt.Unix())
 	checkGolden(t, filepath.Join(dir, name), "oom-kill.golden.json")
+}
+
+// fixedRestarts is a deterministic restart window: one container whose reasons
+// were all seen, and one restarting faster than the informer could keep up, so
+// its breakdown deliberately sums to less than its total.
+func fixedRestarts() []journal.RestartRecord {
+	return []journal.RestartRecord{
+		{
+			Key:           journal.Key{Namespace: "search", Pod: "index-0", Container: "app"},
+			Workload:      collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			WindowStart:   windowStart,
+			WindowSeconds: 3600,
+			Restarts:      2,
+			Reasons:       map[string]int64{"OOMKilled": 2},
+			LastExitCode:  ptr.To(int32(137)),
+		},
+		{
+			Key:               journal.Key{Namespace: "shop", Pod: "web-7f8d9-abcde", Container: "app"},
+			Workload:          collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			WindowStart:       windowStart,
+			WindowSeconds:     3600,
+			Restarts:          12,
+			Reasons:           map[string]int64{"Error": 3, "other": 1},
+			ReasonsUnobserved: 8,
+			LastExitCode:      ptr.To(int32(1)),
+		},
+	}
+}
+
+func TestGoldenContainerRestartsPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteContainerRestarts(3, fixedRestarts()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("restarts-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "container-restarts.golden.json")
+}
+
+// One file per window, not per restart: the crash loop must not decide how many
+// files the spool holds (ADR 0020).
+func TestContainerRestartsAreOneFilePerWindow(t *testing.T) {
+	s, dir := newTestSpool(t)
+	records := fixedRestarts()
+	next := records[0]
+	next.WindowStart = windowStart.Add(time.Hour)
+	records = append(records, next)
+	if err := s.WriteContainerRestarts(1, records); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("spool holds %d files for three records across two windows, want 2", len(entries))
+	}
+}
+
+// A window's file supersedes: the newest write for a window replaces the
+// previous one rather than accumulating, so the last write before the window
+// closes is its final value.
+func TestContainerRestartsSupersedeWithinTheirWindow(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteContainerRestarts(1, fixedRestarts()); err != nil {
+		t.Fatal(err)
+	}
+	grown := fixedRestarts()
+	grown[0].Restarts = 9
+	if err := s.WriteContainerRestarts(2, grown); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool holds %d files after two writes of one window, want 1", len(entries))
+	}
+	var payload struct {
+		Sequence int64 `json:"sequence"`
+		Records  []struct {
+			Restarts int64 `json:"restarts"`
+		} `json:"records"`
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("restarts-%d-3600.json", windowStart.Unix()))) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Sequence != 2 || payload.Records[0].Restarts != 9 {
+		t.Errorf("surviving payload = sequence %d, first record %d restarts; want 2 and 9",
+			payload.Sequence, payload.Records[0].Restarts)
+	}
 }
 
 // fixedInventory is a deterministic two-workload Go inventory, already sorted by

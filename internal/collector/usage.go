@@ -22,7 +22,12 @@ import (
 const (
 	usagePollInterval     = 30 * time.Second
 	usageSnapshotInterval = time.Minute
-	usageWindowLength     = time.Hour
+
+	// UsageWindowLength is exported because it is not only the usage cadence:
+	// the journal aligns its own windows to it so a restart count is read next
+	// to the CPU and memory of the same hour (ADR 0020). Two constants that
+	// merely happened to match would drift.
+	UsageWindowLength = time.Hour
 
 	// staleTrackerAfter is when per-container counter state for containers
 	// no longer reported by any kubelet is forgotten. Long enough to ride
@@ -130,7 +135,7 @@ func NewUsagePoller(
 		onSnapshot: onSnapshot,
 		onClosed:   onClosed,
 		onError:    onError,
-		acc:        rollup.NewAccumulator(usageWindowLength),
+		acc:        rollup.NewAccumulator(UsageWindowLength),
 		tracker:    make(map[trackerKey]*counterState),
 		throttle:   make(map[trackerKey]*throttleState),
 		signals:    make(map[string]bool),
