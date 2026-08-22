@@ -6,15 +6,28 @@ versus by the agent's own configuration. It is written for security review and
 aims to be complete rather than flattering: known limitations are listed in
 [§10](#10-known-limitations-and-honest-disclosures).
 
-Status: living document, maintained alongside the code from day one. Items
-marked **TBD** are being verified and will be resolved before GA.
+Two conventions, because the agent is not finished and this document describes
+the designed system:
+
+- **[planned]** marks a claim that is not built. It tells a reviewer the
+  sentence is intent, not a property. **TBD** marks something still being
+  verified before GA.
+- This document states *what* is true; *why* is recorded once in the decision
+  records under [`adr/`](adr/README.md) and linked from the claim. A fact kept
+  in two places eventually disagrees with itself, which is what happened here
+  (ADR 0024).
 
 ---
 
 ## 1. Design principles
 
-1. **Read-only.** The agent holds no write verbs on any Kubernetes resource and
-   cannot modify workloads, nodes, or configuration. It observes and reports.
+1. **Read-only, with one named exception.** The agent holds no write verb on any
+   Kubernetes resource except `get`/`update` on its own pre-created identity
+   Secret, scoped by `resourceNames` to that single object — the product's only
+   write grant, disclosed in the RBAC table of [§4](#4-kubernetes-api-access-rbac)
+   and decided in [ADR 0008](adr/0008-identity-in-secret.md). It cannot modify
+   workloads, nodes, or configuration. **[planned]** — no manifest emits that
+   Role today.
 2. **One-way data flow.** The agent pushes data out; there is no command or
    control channel from the backend to the agent. The backend cannot instruct
    the agent to do anything. All behavior is defined by the in-cluster
@@ -25,8 +38,9 @@ marked **TBD** are being verified and will be resolved before GA.
    and discarded," which is better than "collected and not sent." For each
    filter, this document states the stage at which it applies.
 5. **Single egress point.** Only the controller communicates outside the
-   cluster, to one fixed domain, over mTLS. Node-level components never talk
-   to the internet.
+   cluster, to one fixed domain, over mTLS **[planned]**. Node-level components
+   never talk to the internet — that part holds today: the node role opens no
+   socket except the one to the controller.
 
 ---
 
@@ -35,12 +49,16 @@ marked **TBD** are being verified and will be resolved before GA.
 One binary, two roles:
 
 ```
-runtime-agent controller   # StatefulSet, 1 replica — talks to k8s API and
-                           #   pod pprof endpoints; sole egress point
-runtime-agent node         # DaemonSet (optional)   — eBPF profiling and Go binary
+runtime-agent controller   # 1 replica — talks to k8s API and pod pprof
+                           #   endpoints; sole egress point
+runtime-agent node         # DaemonSet (optional) — eBPF profiling and Go binary
                            #   detection on the node; talks only to the controller
 ```
 
+- The controller is single-replica by design: it is the one writer of the
+  identity Secret and the one holder of the cluster's backend identity. It runs
+  as a Deployment today; ADR 0008 assumes a StatefulSet, and which of the two
+  the chart ships is reconciled when the identity work lands (ADR 0022 §5).
 - The node role sends data to the controller over the cluster network only.
 - The controller exposes an in-cluster-only HTTP receiver for those node
   reports (ADR 0010): it accepts data pushes from the node DaemonSet and
@@ -48,7 +66,8 @@ runtime-agent node         # DaemonSet (optional)   — eBPF profiling and Go bi
   returns nothing the node acts on — the one-way rule ([§1](#1-design-principles),
   principle 2) applied one level down.
 - The controller aggregates, filters, and ships data to
-  `<backend endpoint, fixed domain>` over mTLS.
+  `<backend endpoint, fixed domain>` over mTLS **[planned]**. Today it
+  aggregates and filters, and writes the result to its local spool.
 - Configuration is read exclusively from the Helm-rendered ConfigMap. The
   effective configuration is therefore always inspectable inside your cluster
   and diffable in your GitOps history.
@@ -63,7 +82,7 @@ your goals; profiles can be upgraded later.
 | Profile | Components | Node privileges | What you get |
 |---|---|---|---|
 | `metrics-only` | controller | none | Cost and efficiency findings from usage metrics (kubelet counters via the API server, ADR 0006) and workload metadata |
-| `pprof` | controller | none | Above + CPU/heap profiles pulled from services that already expose `/debug/pprof` |
+| `pprof` **[planned]** | controller | none | Above + CPU/heap profiles pulled from services that already expose `/debug/pprof`. No pprof puller exists yet; nothing in the agent opens a `/debug/pprof` endpoint today |
 | `ebpf` | controller + node DaemonSet | see [§7](#7-node-privileges) | Above + CPU profiles for services without pprof endpoints |
 
 The node DaemonSet has two functions with very different privilege needs, kept
@@ -79,7 +98,8 @@ lower-privilege of the two and is what the current node role runs.
 All rules are `get`, `list`, `watch` — with **one write exception,
 disclosed in the table below**: `get`/`update` on the agent's own
 pre-created identity Secret, scoped by `resourceNames` in a namespaced Role
-(ADR 0008). With `persistence.enabled: true` that grant is not emitted at
+(ADR 0008) — **[planned]**, and the only row of this table that is. With
+`persistence.enabled: true` that grant is not emitted at
 all, and the chart is entirely write-free. Nothing else anywhere carries
 `create`, `update`, `patch`, `delete`, or `deletecollection`.
 
@@ -94,7 +114,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
-| its own identity Secret | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret. Not emitted when `persistence.enabled: true` |
+| its own identity Secret **[planned]** | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret. Not emitted when `persistence.enabled: true` |
 
 **Authenticating node reports adds no RBAC.** When the node DaemonSet is
 installed (ADR 0010), the controller authenticates each node's projected
@@ -125,128 +145,79 @@ read, never a write.
 
 | Access | Direction | Why | Notes |
 |---|---|---|---|
-| Pod pprof endpoints | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only |
+| Pod pprof endpoints **[planned]** | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only. Not built: the agent opens no connection to a pod today |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
-| Backend egress | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets is shipped with the chart |
-| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings (and, later, profiles) for aggregation (ADR 0010), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only; the scope and profiling-target queries answer with in-cluster identifiers derived from your own filters, which can only narrow what the node does and never widen it. The receiver is not reachable from outside the cluster, and a shipped NetworkPolicy restricts it to the DaemonSet. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster; a party that can already sniff pod traffic could replay the short-lived token to post fabricated inventory facts for this one cluster — bounded, one-way, no monetary or read capability (ADR 0010) |
+| Backend egress **[planned]** | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system, and it does not exist yet: the controller writes payloads to its local spool and ships nothing. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets ships with the chart **[planned]** — no chart exists yet either (`deploy/` holds raw manifests) |
+| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings and captured profiles for aggregation (ADR 0010, ADR 0011), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only. The **scope** query answers from the controller's already-filtered pod index, so it can only narrow what the node scans — it cannot name a pod your filters exclude. The **profiling-target** query is the one reply the node acts on; see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011) for what bounds it. The receiver is not reachable from outside the cluster; a NetworkPolicy restricting it to the DaemonSet ships with the chart **[planned]**. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster; a party that can already sniff pod traffic could replay the short-lived token to post fabricated inventory facts for this one cluster — bounded, one-way, no read or control capability (ADR 0010) |
 
 ---
 
-## 6. Agent identity and credential lifecycle
+## 6. Agent identity and credential lifecycle **[planned]**
 
-The controller authenticates to the backend with a per-cluster client
-certificate (mTLS). The private key is generated inside your cluster and never
-leaves it. Provisioning follows a two-tier scheme, so no long-lived shared
-secret is ever distributed across clusters:
+**None of this section is built.** The agent holds no backend credential today
+and opens no connection outside the cluster; it collects into its local spool
+and stops there. What follows is the designed model, decided in
+[ADR 0005](adr/0005-two-tier-identity.md) and
+[ADR 0008](adr/0008-identity-in-secret.md), which carry the reasoning.
 
-```
-Org API key           — long-lived, revocable; lives in your automation
-                        (Terraform / CI / secret manager). NEVER enters a cluster.
-  └─ issues per-cluster enrollment tokens
-Enrollment token      — short TTL, bound to one pre-created cluster record;
-                        the only credential that enters the cluster.
-  └─ exchanged for a client certificate
-Client certificate    — key pair generated by the agent in-cluster; the issued
-                        certificate carries the cluster identity.
-```
-
-Blast radius: a leaked enrollment token exposes one cluster for the duration
-of its TTL; a leaked org API key is revoked in one action without affecting
-any running agent, because agents run on certificates, not on the key.
-
-### Enrollment flow
-
-1. A cluster record is created in the backend (UI, CLI, or Terraform),
-   authorized by the org API key. This returns an enrollment token with a
-   short TTL, reusable within that TTL (tolerates restarts during rollout).
-2. The token is delivered via Helm: either inline (`enrollment.token`) or as
-   a reference to a pre-created Secret (`enrollment.existingSecret`). The
-   latter is the intended path for GitOps / External Secrets setups, so
-   tokens never appear in git.
-3. On first start the controller generates a key pair locally and submits a
-   CSR to the backend enrollment endpoint, authenticated by the token. The
-   request includes a cluster fingerprint (the UID of the `kube-system`
-   namespace) so the backend detects a token accidentally applied to a
-   different cluster instead of silently mixing data.
-4. The backend signs the certificate with the cluster identity embedded. All
-   further communication is mTLS; the enrollment token is not used again.
-
-Enrollment is an outbound request initiated by the agent — it does not create
-a control channel (principle 2 in [§1](#1-design-principles)).
+- **Two tiers, so no long-lived secret is shared across clusters.** An **org API
+  key** lives in your automation and never enters a cluster; it issues
+  short-TTL, per-cluster **enrollment tokens**, and a token is exchanged once
+  for a **client certificate**. A leaked token exposes one cluster for its TTL;
+  a leaked org key is revoked in one action without touching a running agent,
+  because agents run on certificates.
+- **The private key is generated in-cluster and never leaves it.** On first
+  start the controller generates a key pair and submits a CSR authenticated by
+  the enrollment token, including a cluster fingerprint (the UID of
+  `kube-system`) so a token applied to the wrong cluster is detected rather than
+  silently mixing data. Enrollment is an outbound request the agent initiates —
+  it creates no control channel (principle 2 in [§1](#1-design-principles)).
+- **The key lives in a pre-created, name-scoped Secret** — the product's one
+  write grant ([§4](#4-kubernetes-api-access-rbac)) — so identity survives
+  rescheduling without a volume. Honest consequence: the key is then in etcd and
+  in any backup containing Secrets. Whoever reads it can impersonate this
+  cluster's telemetry stream — data poisoning of one cluster, nothing more,
+  since the protocol is one-way and carries no read or control capability —
+  recovered by revoke plus re-enroll, with data history continuous.
+- **Certificates renew over the existing mTLS session**; the backend can revoke
+  any cluster's at any time. With no valid certificate and no valid token the
+  agent degrades to local-only: it keeps collecting and spooling, ships nothing,
+  logs the condition, and neither crash-loops nor retry-storms.
+- **The backend's private CA is pinned**, not the system trust store, so a
+  TLS-intercepting proxy cannot impersonate the backend. Such a proxy also
+  cannot pass the mTLS session through: with egress interception, the backend
+  domain needs a bypass rule. This is an install prerequisite, not a detail.
 
 ### Storage
 
-The controller runs as a single-replica StatefulSet with a small local
-volume — an `emptyDir` by default; `persistence.enabled: true` swaps in a
-PersistentVolume (`volumeClaimTemplates`, ~2Gi) for installations that want
-unacknowledged data to survive pod rescheduling (ADR 0007). The volume
-holds exactly one thing:
+The controller keeps a small local volume — an `emptyDir` by default;
+`persistence.enabled: true` swaps in a PersistentVolume (~2Gi) for installations
+that want unacknowledged data to survive rescheduling
+([ADR 0007](adr/0007-optional-durability.md)). The volume holds exactly one
+thing:
 
-- **The spool of unshipped payload batches** — rollups, metadata,
-  coverage reports, and allow-listed profiles, held until delivery is
-  acknowledged and deleted immediately after (with a maximum-age cap, so
-  an extended outage cannot fill the volume). Only data that has already
-  passed the filters — i.e. data approved to leave the cluster — is ever
-  written to the volume.
+- **The spool of unshipped payload batches** — rollups, metadata and
+  allow-listed profiles, held until delivery is acknowledged and deleted
+  immediately after, with a maximum-age cap so an extended outage cannot fill
+  the volume. Only data that has already passed the filters — data approved to
+  leave the cluster — is ever written there.
 
-Collector bookkeeping — counter baselines, open windows, profiling rotation
-state — is held **in memory only**. ADR 0003 originally placed a checkpoint
-file alongside the spool; ADR 0022 records that it was never built and is not
-going to be. Minute-cadence snapshot delivery bounds what a restart can lose to
-the flush interval, and counter baselines are re-established from the next
-observation. Nothing about your cluster is accounted for on disk outside the
-spool.
+Everything else the collector keeps — counter baselines, open windows,
+profiling rotation state — is held **in memory only**. ADR 0003 placed a
+checkpoint file next to the spool; [ADR 0022](adr/0022-registry-in-code-and-declared-amendments.md)
+records that it was never built and will not be. Nothing about your cluster is
+accounted for on disk outside the spool.
 
-**Credentials** — the in-cluster-generated private key and client
-certificate — live in the agent's pre-created identity Secret (ADR 0008),
-so identity survives rescheduling and node loss without any volume. This
-is the one write grant in the product (see the RBAC table above). Honest
-consequences: the key exists in etcd and in any backup that includes
-Secrets; whoever reads it can impersonate this cluster's telemetry stream —
-data poisoning of this one cluster, nothing more (the protocol is one-way
-and carries no read or control capability), recovered by revoke +
-re-enroll. With `persistence.enabled: true` credentials move to the PVC
-instead and the Secret grant disappears.
-
-- The volume exists for continuity, not as a source of truth. Everything on
-  it is reconstructible (history lives in the backend, enrollment can be
-  repeated), so it requires no backups.
-- Configuration is never cached on the volume. The agent reads its filters
-  from the ConfigMap on every start; if the configuration is unavailable,
-  the agent does not collect. A stale filter configuration cannot resurrect
-  from disk by construction.
-- Encryption at rest is delegated to your storage layer: point
-  `controller.persistence.storageClass` at an encrypted StorageClass.
-- With the default `emptyDir`, a pod rescheduled to another node keeps its
-  identity (it lives in the Secret, ADR 0008) and loses only the
-  unacknowledged spool: bounded by the minute snapshot cadence in normal
-  operation, and by the outage span if the backend was unreachable
-  (ADR 0007) — coverage reporting makes the gap visible. Re-enrollment is
-  needed only if the identity Secret itself is deleted or the certificate
-  is revoked.
-
-### Rotation, revocation, recovery
-
-- Certificates are short-lived; the agent renews them itself over the
-  existing mTLS channel before expiry. No external trigger is involved.
-- The backend can revoke any cluster's certificate at any time. Org API keys
-  are revocable independently of running agents.
-- If key material is lost (the identity Secret — or, in persistence mode,
-  the PersistentVolume — is deleted), a new
-  enrollment token is issued for the **same** cluster record ("re-enroll");
-  the previous certificate is revoked and the cluster's data history stays
-  continuous.
-- With an expired or revoked certificate and no valid enrollment token, the
-  agent degrades to local-only operation (keeps collecting into its rollups
-  and ring buffer) and logs the condition — it does not crash-loop and does
-  not retry-storm the backend.
-
-### Server trust
-
-The agent pins the backend's private CA rather than the system trust store,
-so a TLS-intercepting corporate proxy cannot impersonate the backend. Note
-that such a proxy also cannot pass the mTLS session through: in environments
-with egress interception, the backend domain needs a bypass rule.
+- The volume is for continuity, not truth: everything on it is reconstructible,
+  so it needs no backups.
+- **Configuration is never cached on it.** Filters are read from the ConfigMap
+  at every start; if the configuration is unavailable the agent does not
+  collect. A stale filter set cannot resurrect from disk.
+- Encryption at rest is your storage layer's: point the PVC at an encrypted
+  StorageClass.
+- With the default `emptyDir`, a rescheduled pod loses only the unacknowledged
+  spool — bounded by the flush cadence in normal operation, and by the outage
+  span if the backend was unreachable (ADR 0007).
 
 ---
 
@@ -322,13 +293,27 @@ running binary, and only symbolized, allow-list-filtered profiles (see
 [§8](#8-data-collected-and-data-leaving-the-cluster)) leave the node — and only
 towards the in-cluster controller.
 
-**What decides who gets profiled.** The node asks the controller which of the
-node's *already-permitted* workloads rank highest by consumption, but the
-eligible set and every ceiling (which namespaces/modules may be profiled at all,
-the capture duration, the frequency, and the overhead cap) live only in the
-node's ConfigMap. The controller's answer can prioritize within that permission
-but can never widen it — no reply turns profiling on for a workload your
-configuration did not already allow (ADR 0011 §3).
+**What decides who gets profiled.** Profiling is off unless you enable it and
+name eligible namespaces; the eligible set is empty by default, so nothing is
+profiled until you opt a namespace in. On its own interval the node asks the
+controller which of the eligible workloads rank highest by consumption, and the
+reply is a list of container IDs on that node — the one node↔controller reply
+the node acts on (ADR 0011 §3).
+
+Where each bound is enforced, precisely: **the eligible set on the controller**,
+because the node cannot re-check it — the reply is container IDs, and a
+component with no Kubernetes API access cannot resolve one to a namespace.
+**Every ceiling on the node**, from its own ConfigMap: workloads per window,
+capture duration, interval, overhead cap, and the symbol allow-list below that
+governs what may leave at all.
+
+So a correct controller can only name workloads you made eligible, and a
+compromised one is bounded by the ceilings and the allow-list rather than by the
+eligible set: it cannot exceed your overhead cap and cannot ship a frame your
+allow-list does not admit. ADR 0011 §3 places the eligible set on the node
+instead; that is not what the code does, and the gap is recorded in
+[ADR 0022 §5](adr/0022-registry-in-code-and-declared-amendments.md) pending its
+own decision.
 
 ---
 
@@ -343,6 +328,33 @@ classes with different sensitivity and different default policies:
 | Workload metadata | Workload names, namespaces, image digests, Go version, module path, node zone and instance type | Medium | Same as metrics |
 | Object history (journal) | Pod names, container names, restart counts, termination reasons and exit codes | Medium | Same as metrics. This is the one class that names individual **pods** — see below |
 | Profiles (stack traces) | Function names, call graphs | **High** — function names reveal the structure of your code | **Explicit allow-list only.** A stack trace never leaves the cluster unless its module path is on the allow-list you configured |
+
+### Every payload the agent produces
+
+This is the complete list — there is no other channel and no other shape. It is
+generated from the same registry the code writes payloads through
+(`internal/sink/registry.go`), and a test fails if a kind ships without
+appearing here (ADR 0022).
+
+| Payload | What it carries | Names pods? |
+|---|---|---|
+| `usage_snapshot` | The still-open hour's resource rollup: per (namespace, workload, container) histograms of CPU and memory, throttling and PSI counters, plus how much of the window was observed. Shipped once a minute, each replacing the last | no |
+| `usage_window` | The same shape, final, when the hour closes | no |
+| `oom_kill` | One out-of-memory kill: namespace, pod, container, workload, when it finished, exit code, restart count, and the memory limit in force | **yes** |
+| `container_restarts` | Per (namespace, pod, container) and hour: restart count, breakdown by termination reason, how many restarts had no reason visible, last exit code | **yes** |
+| `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
+| `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason | no |
+| `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
+| `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
+| `go_build` | Per image digest, written once: Go version, main module, dependency module **paths**, allow-listed build settings | no |
+| `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
+
+Each declares its provenance in a `source` field — `structural` (read from a
+spec), `measured` (polled from the kubelet), `journal` (from object history), or
+`sampled` (a profiler's estimate) — so the backend can never merge
+epistemically different data under one key
+([ADR 0012](adr/0012-payload-registry-and-provenance.md)). The rest of this
+section describes each in detail.
 
 ### Field minimization
 
@@ -375,69 +387,50 @@ classes with different sensitivity and different default policies:
 
 ### Workload and node metadata (ADR 0012)
 
-The declared shape of your workloads leaves the cluster as two payloads, both
-of them snapshots of current state that replace their predecessor rather than
-accumulating history:
+Both are snapshots of current state that replace their predecessor rather than
+accumulating history, and neither names a pod: replicas are counted, not listed.
+A pod with several containers appears as one `workload_metadata` record per
+container, each repeating the same `pod` block — the block is pod-scoped and is
+nested so that summing it across a pod's containers is visibly meaningless
+([ADR 0014](adr/0014-scoped-facts-are-nested.md)).
 
-- **`workload_metadata`** — per (namespace, workload, container, image digest):
-  the image reference, declared requests and limits, and declared container
-  ports, plus a `pod` block with the QoS class, how many replicas currently
-  carry that build, and the counts of those replicas per pod phase and per node
-  name. A pod with several containers appears as one record per container, each
-  repeating the same `pod` block. It contains no pod names: replicas are
-  counted, not listed.
-- **`node_metadata`** — per node: name, size, instance type, capacity type,
-  zone, region, kernel version, CPU architecture.
-
-`workload_metadata`'s `pod` block also counts the replicas that are *not* on a
-node, by the reason the scheduler gave (`Unschedulable`, `SchedulingGated`,
-`SchedulerError`, or `other`). The count of unplaced replicas was always visible
-as the gap between `replicas` and the `nodes` breakdown; this says why, without
-naming any pod (ADR 0021).
+That `pod` block also counts the replicas that are *not* on a node, by the
+reason the scheduler gave (`Unschedulable`, `SchedulingGated`, `SchedulerError`,
+or `other`). The shortfall was always visible as the gap between `replicas` and
+the `nodes` breakdown; this says why, still without naming a pod
+([ADR 0021](adr/0021-pod-lifecycle-journal.md)).
 
 Both are limited to what passes your filters — a pod excluded by a namespace
 filter or an opt-out annotation is absent from the snapshot entirely, and its
-identity never appears in either payload. Every payload declares its
-provenance (`source`), so declared values can never be silently merged with
-measured or sampled ones.
+identity never appears in either payload.
 
-Both also carry `captured_at`, the instant the snapshot was assembled (ADR
-0017), as does the Go inventory of §8. It is a timestamp of the agent's own
-work, not of anything in your cluster; its purpose is that a stale snapshot can
-be recognized as stale rather than assumed current.
+Both also carry `captured_at`, the instant the snapshot was assembled, as does
+the Go inventory below. It timestamps the agent's own work, not anything in your
+cluster, so that a stale snapshot can be recognized rather than assumed current
+([ADR 0017](adr/0017-build-facts-keyed-by-digest.md)).
 
 ### Object history, and the one place pods are named (ADR 0020)
 
-Two payloads report what the cluster's own object status records about a
-container's history. Both are `journal` provenance, and both name the **pod**:
-
-- **`oom_kill`** — one event per observed out-of-memory kill: namespace, pod,
-  container, workload, when it finished, the exit code, the restart count at the
-  time, and the memory limit the container declared.
-- **`container_restarts`** — per (namespace, pod, container) and hour-aligned
-  window: how many times the container restarted, a breakdown of those restarts
-  by termination reason, how many restarts had no reason visible, and the most
-  recent exit code.
-- **`pod_disruptions`** — per hour-aligned window, one record per pod the
-  *cluster* removed rather than the workload itself: preempted to make room for
-  higher priority, evicted by a node under pressure, drained by a taint, or
-  removed through the eviction API. Each record carries the namespace, pod,
-  workload, the node it was taken from, the reason, and the instant Kubernetes
-  recorded. A pod that failed on its own — its container exited non-zero — is
-  not in here.
+`oom_kill`, `container_restarts` and `pod_disruptions` report what the cluster's
+own object status records about a container's history — see the table above for
+what each carries. All three are `journal` provenance, and all three name the
+**pod**. The line between the last two is that `pod_disruptions` is what the
+*cluster* did to a pod (preempted, evicted under pressure, drained, removed via
+the eviction API); a pod that failed on its own, its container exiting non-zero,
+belongs to the restart journal instead.
 
 **Why the pod is named here and nowhere else.** Every other payload counts
 replicas instead of listing them, because a workload-level number answers the
 question. A crash loop is different: "one of your twelve replicas restarts every
 thirty seconds" is not actionable without knowing which one. The pod name is the
 smallest identifier that makes the record useful, and it is a name your cluster
-generated, never workload content.
+generated, never workload content ([ADR 0020](adr/0020-container-restart-journal.md) §2).
 
 If you would rather it did not leave, the controls are the ones in
-[§11](#11-your-controls): a namespace filter, a label selector, or the
-`rebuildstack.co/collect: "false"` annotation. An excluded pod produces no
-journal record at all — the exclusion applies before any of this is formed, and
-also removes what was already collected.
+[§11](#11-your-controls-and-what-the-agent-says-about-itself): a namespace
+filter or the `rebuildstack.co/collect: "false"` annotation. An excluded pod
+produces no journal record at all — the exclusion applies before any of this is
+formed, and also removes what was already collected.
 
 The reason breakdown uses a fixed set of names (`OOMKilled`, `Error`,
 `Completed`, `ContainerCannotRun`, `ContainerStatusUnknown`, `DeadlineExceeded`,
@@ -458,11 +451,11 @@ describes no workload and identifies nothing in your cluster:
 - per record: how much of the window that container was observed for, and how
   many observations carried each signal.
 
-The purpose is honesty about gaps. Without it, a container that was never
+The purpose is honesty about gaps: without it, a container that was never
 throttled and a container whose node could not be scraped produce identical
-records, and an analysis outside the cluster cannot tell them apart — the
-distinction is unrecoverable once the moment has passed. No pod, node, or
-workload is named in this data; the failure counts are cluster-wide totals.
+records, and the distinction is unrecoverable once the moment has passed
+([ADR 0013](adr/0013-observation-completeness.md)). No pod, node, or workload is
+named in this data; the failure counts are cluster-wide totals.
 
 ### Profile filtering (applies on the node, before egress — ADR 0011)
 
@@ -539,81 +532,72 @@ applies the filter-early rule on the node, before any record is formed:
   strings — and the **value of `-pgo`**, which is a path on the build machine.
   Whether PGO was applied survives as a boolean; where the profile lived does
   not. A value longer than 128 characters is dropped whole rather than
-  truncated, since every allowed setting holds a short bounded token.
-
-  `vcs.revision` is a commit identifier from your repository. It reveals no
-  source and is meaningless without access to that repository, and it is
-  frequently absent: the Go toolchain records it only when the build had a VCS
-  working tree, which containerized builds often do not. Its absence is normal
-  and is not treated as a gap.
+  truncated. `vcs.revision` is a commit identifier from your repository: it
+  carries no source, is meaningless without access to that repository, and is
+  frequently absent, which is normal rather than a gap. Why an allow-list and
+  not a deny-list is [ADR 0019](adr/0019-build-settings-by-allow-list.md).
 - **Dropped — infrastructure.** A main module on the built-in deny-list
   (`k8s.io/`, `sigs.k8s.io/`, the container runtime, the CNI, `go.etcd.io/`,
   `github.com/coredns/`, `github.com/prometheus/`, `github.com/grafana/`, … and
   this agent's own `github.com/RebuildStackCo/`) is dropped on the node. Its
   identity — module path, pod UID, container ID — is never recorded, only
   counted.
-- **Counted, never identified.** Four aggregate counters describe everything
-  not kept: processes scanned, Go binaries found, filtered as infrastructure,
-  and unreadable (a real executable with no recoverable Go build info — a
-  non-Go program, or a Go binary whose build info was removed). No identity of
-  a filtered or unreadable process leaves as anything but a number
-  (invariant 6).
+- **Counted, never identified.** Five aggregate counters describe everything
+  not kept: processes scanned, Go binaries found, skipped as out of scope,
+  filtered as infrastructure, and unreadable (a real executable with no
+  recoverable Go build info — a non-Go program, or a Go binary whose build info
+  was removed). No identity of a filtered or unreadable process leaves as
+  anything but a number (invariant 6).
 
 The controller joins the kept facts against its workload inventory (ADR 0010) —
-pod UID → workload, container ID → container name and the image digest it
-already collects — into two payloads:
+pod UID → workload, container ID → container name and image digest — into
+`go_inventory` and `go_build`, described in the table above. Four properties of
+that join matter for review:
 
-- **`go_inventory`** — one record per (namespace, workload, container) carrying
-  the Go version, main module path, image digest, and PGO flag. Replicas and
-  nodes running the same build collapse to one record. A record exists only
-  while its workload does: on every flush the inventory drops whatever the
-  agent's filtered pod index no longer holds, so a deleted or opted-out
-  workload leaves the payload rather than lingering as a last known state
-  (ADR 0018). It also carries a `coverage` block: how many of the cluster's
+- **`go_build` carries module paths only, never versions.** The agent does not
+  collect the version of any dependency, so this is not, and cannot be used as,
+  a vulnerability-scanning feed ([ADR 0017](adr/0017-build-facts-keyed-by-digest.md) §2).
+- **An inventory record exists only while its workload does.** On every flush
+  the inventory drops whatever the filtered pod index no longer holds, so a
+  deleted or opted-out workload leaves the payload rather than lingering as a
+  last known state ([ADR 0018](adr/0018-inventory-records-live-only-while-their-workload-does.md)).
+- **A fact that cannot be resolved is counted, not guessed.** Informer lag or a
+  filtered pod makes a fact *unjoined*: it is dropped, and its pod UID,
+  container ID and module path never appear — only the count. A fact whose
+  container has no image digest yet is *undigested*: the inventory record is
+  kept, the build payload is not, because there is no build to key it to.
+- **The `coverage` block is cluster-wide counts and names nothing**: how many
   nodes have delivered a report, and how many facts were received, joined, and
-  not joined. Those are cluster-wide counts, and they name nothing.
-- **`go_build`** — what one build is made of and how it was built, keyed by its
-  image digest (ADR 0017, ADR 0019): the Go version, the main module, the
-  dependency module paths, and the allow-listed build settings above. One
-  payload per distinct build, sent once, joined back to workloads through the
-  image digest in `go_inventory`. **Module paths only, never versions**: the
-  agent does not collect the version of any dependency, so this is not, and
-  cannot be used as, a vulnerability-scanning feed.
-
-A fact whose pod or container the controller cannot resolve (informer lag, or a
-filtered pod) is counted as *unjoined* and dropped — its pod UID, container ID,
-and module path never appear, only the count. A fact that resolves to a
-container with no image digest yet is counted as *undigested*: its record is
-kept, its build payload is not, because there is no build to key it to. This is
-the same "medium sensitivity" workload-metadata class as the rest of §8: module
-and version strings, never source, environment, or arguments.
+  not.
 
 ### What the agent reports about your filters
 
 The rule: full information about what is collected, only aggregate
 information about what is not.
 
-- **Coverage counts per filter type** are sent (e.g. "82 workloads
-  discovered, 64 collected, 12 excluded by namespace filter, 6 by
-  annotation") so that reports can state their coverage honestly.
-- A **fingerprint (hash) of the effective filter configuration** and the
-  time it last changed accompany shipped data, so any upload can be
-  attributed to the configuration active at that moment. The fingerprint
-  reveals nothing about the configuration's content.
 - **Names of excluded objects are never transmitted** — not namespaces, not
   workloads, not deny-listed module paths. The only filter content that
   leaves the cluster is the profile module-path allow-list, which is already
   self-evident from the profiles it admits.
+- **Counts of what was excluded are.** The agent tallies pods observed and pods
+  excluded by each filter, and the Go inventory's `coverage` block and the usage
+  payloads' `observation` block carry the collection-side equivalents. Every one
+  of them is a number; none names anything.
 - Node-level totals (allocatable, aggregate node usage) are collected in
   cluster-wide mode regardless of workload filters. They are not
   attributable to individual workloads and are required to reconcile total
   cluster cost against your invoice.
+- **[planned]** A payload carrying the per-filter exclusion counts, and a
+  fingerprint of the effective filter configuration with the time it last
+  changed, so any upload is attributable to the configuration active at that
+  moment. The counters exist in the agent; no payload carries them out yet.
 
-### Transport
+### Transport **[planned]**
 
-- Controller → backend over mTLS to a single fixed domain.
-- Payload: hourly rollup histograms, workload metadata as described above, the
-  Go inventory (above), and allow-listed symbolized profiles. Nothing else.
+Nothing is transmitted today: payloads are written to the local spool and
+deleted only by its maximum-age sweep. The designed transport is
+controller → backend over mTLS to a single fixed domain, carrying the payload
+kinds enumerated above and nothing else.
 
 ---
 
@@ -621,21 +605,23 @@ information about what is not.
 
 Stated explicitly so it does not have to be asked:
 
-- No `secrets`, no `configmaps`.
+- No `secrets`, no `configmaps` — reading either is impossible, no RBAC for
+  them exists anywhere.
 - No `pods/exec`, `pods/attach`, `pods/portforward`.
-- No write verbs of any kind — the agent is physically unable to change
-  cluster state through its ServiceAccount.
+- **No write verb except one**, and it is named: `get`/`update` on the agent's
+  own identity Secret, scoped by `resourceNames`
+  ([§4](#4-kubernetes-api-access-rbac), and **[planned]** — not emitted today).
+  Nothing else in the product carries `create`, `update`, `patch`, `delete` or
+  `deletecollection`, so the agent cannot change your workloads, nodes or
+  configuration.
 - No cloud provider credentials, IAM roles, or billing API access. Node
   pricing uses a static price table plus your stated discount.
 - No external egress from nodes — only the controller crosses the boundary.
-- No access to your monitoring stack. The agent does not query Prometheus,
-  Thanos, Mimir, or any other metrics store — not as an option and not to
-  backfill history at install time (ADR 0016, [§10.1](#101-the-agent-knows-nothing-about-the-time-before-it-was-installed)).
-  It measures what it measures itself.
-- No API access from the node role at all — its ServiceAccount holds zero RBAC,
-  and the only token it mounts is audience-bound to the controller, which the
-  API server rejects ([§7](#7-node-privileges), ADR 0009/0010). The default API
-  token is never mounted, and the node role never calls the Kubernetes API.
+- No access to your monitoring stack: not Prometheus, Thanos, Mimir, or any
+  other metrics store, neither as an option nor to backfill history at install
+  time ([§10.1](#101-the-agent-knows-nothing-about-the-time-before-it-was-installed)).
+- No API access from the node role at all
+  ([§7](#7-node-privileges)) — zero RBAC, default token not mounted.
 - No dynamic configuration from the backend — the agent cannot be
   reconfigured remotely.
 
@@ -647,28 +633,23 @@ Stated explicitly so it does not have to be asked:
 
 Every measurement the agent reports it made itself, from the kubelet counters
 of ADR 0006. It does **not** read your Prometheus — not as an option, not for a
-one-time backfill (ADR 0016) — so a cluster installed today has no usage data
-for yesterday, and a finding that needs a long observation window has to wait
-for that window.
+one-time backfill — so a cluster installed today has no usage data for
+yesterday, and a finding that needs a long observation window has to wait for
+that window.
 
-This is a deliberate refusal, not an unbuilt feature. A Prometheus response
-carries no record of what shaped it: recording rules, downsampling and
-`metric_relabel_configs` all alter a series and leave no trace in the answer, so
-the agent could not tell a raw series from a five-minute average, nor a workload
-that did not exist from one a relabel rule discarded. Everything else in this
-agent's protocol declares its provenance and how completely it was observed
-([§8](#8-data-collected-and-data-leaving-the-cluster)); imported series could
-declare neither, and would end up joined with exact data under the same keys.
-There is also a tenancy asymmetry: a Prometheus endpoint typically serves all
-namespaces regardless of the caller's Kubernetes permissions, so your namespace
-filters would be enforced only inside the agent on that path, while every other
-path enforces them at collection.
+This is a deliberate refusal, not an unbuilt feature, and it is a refusal about
+*measurability*: a Prometheus series carries no record of the recording rules,
+downsampling and relabelling that shaped it, so it could declare neither its
+provenance nor its completeness while being joined, under the same keys, with
+data that declares both. Its tenancy is also weaker than every other path here —
+the endpoint typically serves all namespaces regardless of the caller's
+permissions. The full argument is
+[ADR 0016](adr/0016-no-prometheus-as-a-source.md).
 
 What does not need history still works on day one: declared requests and limits,
-QoS, topology and placement, probe configuration, and the object journal
-(conditions, restart counts, ReplicaSet revisions, Job timings) are all true at
-install time. What genuinely needs observation reports how long it has been
-observing, so its weight is visible rather than assumed.
+QoS, topology and placement, and the object journal are all true at install
+time. What genuinely needs observation reports how long it has been observing,
+so its weight is visible rather than assumed.
 
 ### 10.2 Node-level visibility cannot be namespace-scoped
 
@@ -680,47 +661,67 @@ is not allow-listed are discarded on the node, before transport to the
 controller. If this is not acceptable, use the `pprof` or `metrics-only`
 profile, where no node component exists.
 
-**How the node knows your namespaces** (ADR 0015). The node component holds no
-Kubernetes API access at all, and a process's cgroup tells it a pod UID, never a
-namespace — so it cannot evaluate your filters itself. On each pass it asks the
-controller, over the same in-cluster, node-initiated channel it uses for
-everything else, which pods on this node passed your filters, and scans only
-those. Two properties follow:
+**How the node knows your namespaces**
+([ADR 0015](adr/0015-node-scan-scope.md)). The node holds no Kubernetes API
+access, and a process's cgroup tells it a pod UID, never a namespace — so it
+cannot evaluate your filters itself. On each pass it asks the controller which
+pods on this node passed them, and scans only those. Two properties follow:
 
-- **A process outside that set has its executable never opened.** The scope is
+- **A process outside that set has its executable never opened.** Scope is
   checked on the cgroup first, so no module path is ever extracted for a pod you
   excluded — not collected, as opposed to collected and discarded. Only an
   aggregate count of skipped processes is reported.
-- **It fails closed.** A node that cannot reach the controller, or that is
-  deployed without the scope endpoint, scans nothing at all rather than falling
-  back to scanning everything. An outage costs you one scan pass, never a
-  widening of what is collected.
+- **It fails closed.** A node that cannot reach the controller, or is deployed
+  without the scope endpoint, scans nothing rather than falling back to scanning
+  everything. An outage costs one scan pass, never a widening of what is
+  collected.
 
 A process belonging to no pod — the kubelet, a systemd unit, anything outside
 the pod hierarchy — is never in scope, because it is in no namespace and so no
 namespace filter of yours can permit it.
 
-### 10.3 pprof endpoint probing
+### 10.3 pprof endpoint probing **[planned]**
 
-Locating pprof endpoints means the controller makes HTTP requests to pods,
-which network monitoring may flag as internal scanning. Probing is restricted
-to workloads that pass your filters and to ports declared in `containerPorts`.
+Not built — the agent makes no request to a pod today. When it does: locating
+pprof endpoints means the controller makes HTTP requests to pods, which network
+monitoring may flag as internal scanning. Probing will be restricted to
+workloads that pass your filters and to ports declared in `containerPorts`.
 Coordinate with your security team before enabling the `pprof` profile; the
 `metrics-only` profile performs no probing.
 
 ---
 
-## 11. Agent self-reporting
+## 11. Your controls, and what the agent says about itself
 
-- **Startup self-audit:** the agent enumerates its effective permissions via
-  `SelfSubjectRulesReview` and logs exactly what it can and cannot see. A 403
-  results in graceful degradation and a log line, never a crash-loop or retry
-  storm.
-- **Coverage report:** every run reports how many workloads were discovered,
-  how many were collected, and how many were excluded by which filter
-  (namespace filter, label selector, opt-out annotation, module path). This
-  makes the filtering behavior verifiable from output, not just from
-  configuration.
+### Your controls
+
+Three, and they are the complete list:
+
+| Control | Where | What it does |
+|---|---|---|
+| **Namespace allow / deny lists** | Helm values → ConfigMap (`filters.namespaces`) | Names, `*` wildcards permitted. An empty allow list admits every namespace; a non-empty one admits only matches. Deny applies on top and wins on conflict |
+| **Namespace opt-out annotation** | on the Namespace object | `rebuildstack.co/collect: "false"` excludes every pod in it |
+| **Pod opt-out annotation** | on the Pod object | the same annotation excludes that pod |
+
+Profiling has its own, stricter gate on top of these: it is off unless enabled,
+and its eligible namespaces are an allow-list that is **empty by default**
+([§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011)).
+
+There is **no label-selector filter.** Earlier revisions of this document listed
+one; it was never decided in an ADR and never existed in the configuration, so
+it is removed rather than left standing
+([ADR 0024](adr/0024-security-doc-states-what-adrs-state-why.md) §3).
+
+### What the agent says about itself
+
+- **Coverage counts:** the agent tallies pods observed and pods excluded by each
+  filter, so filtering behavior is verifiable from output rather than only from
+  configuration. Delivering those counts out of the cluster is
+  **[planned]** — see [§8](#8-data-collected-and-data-leaving-the-cluster).
+- **Startup self-audit [planned]:** enumerate the agent's effective permissions
+  via `SelfSubjectRulesReview` and log exactly what it can and cannot see. Not
+  built. What does hold today: a 403 degrades gracefully with a log line, never
+  a crash-loop or retry storm.
 
 ### Opt-out
 

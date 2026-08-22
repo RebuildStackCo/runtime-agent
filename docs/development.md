@@ -38,7 +38,12 @@ A PR is mergeable when:
    fixes, which need a test that fails without the fix.
 3. If the change affects what the agent collects, stores, or transmits,
    `docs/security.md` is updated in the same PR. The security document is a
-   promise to customers; code must never drift ahead of it.
+   promise to customers; code must never drift ahead of it. Update it the way
+   [ADR 0024](adr/0024-security-doc-states-what-adrs-state-why.md) sets out:
+   state what is true and link the ADR for why, rather than restating the
+   decision — and mark a claim `[planned]` until it is built. `go test ./docs`
+   holds the parts that are lists: the payload table must mirror
+   `internal/sink/registry.go` exactly, and every cross-reference must resolve.
 4. If the change implements or alters an architectural decision, the ADR
    exists (see above).
 5. Everything committed is in English: code, comments, docs, commit messages.
