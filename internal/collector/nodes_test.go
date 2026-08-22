@@ -18,7 +18,7 @@ func node(name string, labels map[string]string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
 		Status: corev1.NodeStatus{
-			NodeInfo: corev1.NodeSystemInfo{KernelVersion: "6.1.0-generic"},
+			NodeInfo: corev1.NodeSystemInfo{KernelVersion: "6.1.0-generic", Architecture: "amd64"},
 			Capacity: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("4"),
 				corev1.ResourceMemory: resource.MustParse("16Gi"),
@@ -77,6 +77,7 @@ func TestCollectsNodeSizes(t *testing.T) {
 	want := NodeInfo{
 		Name:                   "node-1",
 		KernelVersion:          "6.1.0-generic",
+		Architecture:           "amd64",
 		AllocatableCPUMilli:    3900,
 		AllocatableMemoryBytes: 14 << 30,
 		CapacityCPUMilli:       4000,
@@ -94,6 +95,21 @@ func TestCollectsKernelVersion(t *testing.T) {
 
 	if got := seen["node-1"].KernelVersion; got != "5.15.0-91-generic" {
 		t.Errorf("kernel version = %q, want 5.15.0-91-generic", got)
+	}
+}
+
+// A mixed-architecture fleet is the case the field exists for: without it a
+// binary's GOARCH has nothing to be compared against (ADR 0019).
+func TestCollectsNodeArchitecture(t *testing.T) {
+	arm := node("node-arm", nil)
+	arm.Status.NodeInfo.Architecture = "arm64"
+	seen := collectNodes(t, 2, node("node-1", nil), arm)
+
+	if got := seen["node-1"].Architecture; got != "amd64" {
+		t.Errorf("architecture = %q, want amd64", got)
+	}
+	if got := seen["node-arm"].Architecture; got != "arm64" {
+		t.Errorf("architecture = %q, want arm64", got)
 	}
 }
 

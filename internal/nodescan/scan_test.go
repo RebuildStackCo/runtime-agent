@@ -2,11 +2,13 @@ package nodescan
 
 import (
 	"debug/buildinfo"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -199,6 +201,87 @@ func TestDependencyPaths(t *testing.T) {
 	}
 	if dependencyPaths(&buildinfo.BuildInfo{}) != nil {
 		t.Error("dependencyPaths of a depless binary should be nil")
+	}
+}
+
+// The real settings block of a binary built in a container, as `go version -m`
+// prints it. Everything the toolchain records is here, including the three keys
+// that must never leave the node.
+func realWorldSettings() []debug.BuildSetting {
+	return []debug.BuildSetting{
+		{Key: "-buildmode", Value: "exe"},
+		{Key: "-compiler", Value: "gc"},
+		{Key: "-ldflags", Value: `-X main.version=a5edd4b-dirty -X main.buildHost=ci-07.internal.acme.corp`},
+		{Key: "-pgo", Value: "/home/jenkins/workspace/acme-web/default.pgo"},
+		{Key: "-trimpath", Value: "true"},
+		{Key: "CGO_ENABLED", Value: "0"},
+		{Key: "GOARCH", Value: "arm64"},
+		{Key: "GOOS", Value: "linux"},
+		{Key: "GOARM64", Value: "v8.0"},
+		{Key: "vcs", Value: "git"},
+		{Key: "vcs.revision", Value: "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485"},
+		{Key: "vcs.time", Value: "2026-08-21T20:13:54Z"},
+		{Key: "vcs.modified", Value: "true"},
+	}
+}
+
+func TestBuildSettingsKeepsOnlyTheAllowList(t *testing.T) {
+	got := buildSettings(&buildinfo.BuildInfo{Settings: realWorldSettings()})
+	want := map[string]string{
+		"CGO_ENABLED":  "0",
+		"GOARCH":       "arm64",
+		"GOARM64":      "v8.0",
+		"-trimpath":    "true",
+		"vcs":          "git",
+		"vcs.revision": "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485",
+		"vcs.time":     "2026-08-21T20:13:54Z",
+		"vcs.modified": "true",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("buildSettings = %v, want %v", got, want)
+	}
+}
+
+// The three keys above that carry operator-written strings, named individually:
+// -ldflags holds an internal build hostname here, -pgo an absolute path on the
+// build machine, and GOOS is a constant for every process the agent can see.
+// This is the test that fails if someone widens the list without meaning to.
+func TestBuildSettingsDropsOperatorWrittenFlags(t *testing.T) {
+	got := buildSettings(&buildinfo.BuildInfo{Settings: realWorldSettings()})
+	for _, key := range []string{"-ldflags", "-pgo", "-gcflags", "-asmflags", "-tags", "-buildmode", "-compiler", "GOOS"} {
+		if v, ok := got[key]; ok {
+			t.Errorf("%s survived the allow-list with value %q", key, v)
+		}
+	}
+}
+
+// An allowed key whose value is longer than any real one is dropped whole,
+// never truncated: a prefix of an unexpected string is still an unexpected
+// string, and would ship looking like a legitimate value.
+func TestBuildSettingsDropsOverlongValues(t *testing.T) {
+	long := strings.Repeat("x", maxSettingValue+1)
+	got := buildSettings(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "vcs.revision", Value: long},
+		{Key: "GOARCH", Value: "amd64"},
+	}})
+	if _, ok := got["vcs.revision"]; ok {
+		t.Error("an overlong vcs.revision was kept")
+	}
+	if got["GOARCH"] != "amd64" {
+		t.Error("dropping one setting must not drop the rest")
+	}
+}
+
+// A binary with nothing allow-listed yields nil rather than an empty map, so the
+// payload omits the field instead of carrying an empty object.
+func TestBuildSettingsOfAnUnstampedBinaryIsNil(t *testing.T) {
+	if got := buildSettings(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "-ldflags", Value: "-s -w"},
+	}}); got != nil {
+		t.Errorf("buildSettings = %v, want nil", got)
+	}
+	if got := buildSettings(&buildinfo.BuildInfo{}); got != nil {
+		t.Errorf("buildSettings of a settingless binary = %v, want nil", got)
 	}
 }
 

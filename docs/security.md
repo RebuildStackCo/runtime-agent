@@ -372,7 +372,7 @@ accumulating history:
   repeating the same `pod` block. It contains no pod names: replicas are
   counted, not listed.
 - **`node_metadata`** — per node: name, size, instance type, capacity type,
-  zone, region, kernel version.
+  zone, region, kernel version, CPU architecture.
 
 Both are limited to what passes your filters — a pod excluded by a namespace
 filter or an opt-out annotation is absent from the snapshot entirely, and its
@@ -447,11 +447,41 @@ applies the filter-early rule on the node, before any record is formed:
 - **Kept — customer workload binaries.** For a Go process whose main module is
   *not* infrastructure, the scanner keeps the Go version, the main module path,
   the dependency module paths (paths only — dependency *versions* are discarded
-  on the node and never leave it), the build settings that matter (notably whether
-  `-pgo` was applied), and the pod UID and container ID parsed from the process
-  cgroup. This is the same "medium sensitivity" metadata class as the rest of
-  the workload metadata above — module and version strings, never source, never
-  environment, never arguments.
+  on the node and never leave it), an allow-listed subset of the build settings
+  (below), and the pod UID and container ID parsed from the process cgroup. This
+  is the same "medium sensitivity" metadata class as the rest of the workload
+  metadata above — module and version strings, never source, never environment,
+  never arguments.
+- **Build settings — an allow-list, enumerated here in full** (ADR 0019). Build
+  settings are the one place where strings written by whoever ran the build
+  enter the agent, so the scanner keeps only these and discards everything else
+  on the node:
+
+  | Setting | What it is |
+  |---|---|
+  | `CGO_ENABLED` | `0` or `1` |
+  | `GOARCH` | target architecture |
+  | `GOAMD64`, `GOARM64`, `GOARM` | target microarchitecture level |
+  | `-race` | built with the race detector |
+  | `-trimpath` | build paths stripped from the binary |
+  | `vcs` | which VCS stamped the build (`git`, …) |
+  | `vcs.revision` | the commit the binary was built from |
+  | `vcs.time` | that commit's timestamp (not the build time — Go does not record it) |
+  | `vcs.modified` | whether the working tree was dirty |
+
+  Everything outside this list is discarded on the node, including
+  **`-ldflags`, `-gcflags`, `-asmflags` and `-tags`** — free-form flags that
+  routinely carry build-machine paths, internal hostnames and injected version
+  strings — and the **value of `-pgo`**, which is a path on the build machine.
+  Whether PGO was applied survives as a boolean; where the profile lived does
+  not. A value longer than 128 characters is dropped whole rather than
+  truncated, since every allowed setting holds a short bounded token.
+
+  `vcs.revision` is a commit identifier from your repository. It reveals no
+  source and is meaningless without access to that repository, and it is
+  frequently absent: the Go toolchain records it only when the build had a VCS
+  working tree, which containerized builds often do not. Its absence is normal
+  and is not treated as a gap.
 - **Dropped — infrastructure.** A main module on the built-in deny-list
   (`k8s.io/`, `sigs.k8s.io/`, the container runtime, the CNI, `go.etcd.io/`,
   `github.com/coredns/`, `github.com/prometheus/`, `github.com/grafana/`, … and
@@ -478,18 +508,19 @@ already collects — into two payloads:
   (ADR 0018). It also carries a `coverage` block: how many of the cluster's
   nodes have delivered a report, and how many facts were received, joined, and
   not joined. Those are cluster-wide counts, and they name nothing.
-- **`go_dependencies`** — the dependency module paths of one build, keyed by its
-  image digest (ADR 0017). One payload per distinct build, sent once, joined
-  back to workloads through the image digest in `go_inventory`. **Module paths
-  only, never versions**: the agent does not collect the version of any
-  dependency, so this is not, and cannot be used as, a vulnerability-scanning
-  feed.
+- **`go_build`** — what one build is made of and how it was built, keyed by its
+  image digest (ADR 0017, ADR 0019): the Go version, the main module, the
+  dependency module paths, and the allow-listed build settings above. One
+  payload per distinct build, sent once, joined back to workloads through the
+  image digest in `go_inventory`. **Module paths only, never versions**: the
+  agent does not collect the version of any dependency, so this is not, and
+  cannot be used as, a vulnerability-scanning feed.
 
 A fact whose pod or container the controller cannot resolve (informer lag, or a
 filtered pod) is counted as *unjoined* and dropped — its pod UID, container ID,
 and module path never appear, only the count. A fact that resolves to a
 container with no image digest yet is counted as *undigested*: its record is
-kept, its dependency set is not, because there is no build to key it to. This is
+kept, its build payload is not, because there is no build to key it to. This is
 the same "medium sensitivity" workload-metadata class as the rest of §8: module
 and version strings, never source, environment, or arguments.
 

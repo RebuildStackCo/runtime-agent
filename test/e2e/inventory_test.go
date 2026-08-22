@@ -47,11 +47,31 @@ func spoolReaderImage() string {
 const spoolDir = "/var/spool/runtime-agent"
 const spoolPath = spoolDir + "/go-inventory.json"
 
-// dependencySpoolPath mirrors the sink's filename rule for a dependency payload:
-// one file per image digest, with the digest's colon replaced so the name is
-// filesystem- and tooling-safe (internal/sink.digestFileToken).
-func dependencySpoolPath(digest string) string {
-	return spoolDir + "/go-dependencies-" + strings.ReplaceAll(digest, ":", "-") + ".json"
+const nodeMetadataSpoolPath = spoolDir + "/node-metadata.json"
+
+// buildSpoolPath mirrors the sink's filename rule for a build payload: one file
+// per image digest, with the digest's colon replaced so the name is filesystem-
+// and tooling-safe (internal/sink.digestFileToken).
+func buildSpoolPath(digest string) string {
+	return spoolDir + "/go-build-" + strings.ReplaceAll(digest, ":", "-") + ".json"
+}
+
+// allowedBuildSettings restates the scanner's allow-list here on purpose. The
+// unit test checks the filter; this list checks what a real cluster actually
+// shipped, and restating it means widening the list in the scanner alone cannot
+// silently widen what leaves the cluster (ADR 0019).
+var allowedBuildSettings = map[string]struct{}{
+	"CGO_ENABLED":  {},
+	"GOARCH":       {},
+	"GOAMD64":      {},
+	"GOARM64":      {},
+	"GOARM":        {},
+	"-race":        {},
+	"-trimpath":    {},
+	"vcs":          {},
+	"vcs.revision": {},
+	"vcs.time":     {},
+	"vcs.modified": {},
 }
 
 // TestGoInventoryEndToEnd exercises the whole node→controller inventory path in
@@ -139,7 +159,8 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			if rec.WorkloadKind != "Deployment" || rec.WorkloadName != "goworkload" {
 				t.Errorf("workload = %s/%s, want Deployment/goworkload", rec.WorkloadKind, rec.WorkloadName)
 			}
-			checkSampleDependencies(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
+			checkSampleBuild(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
+			checkNodeArchitecture(ctx, t, config, clientset, ns, controllerPod)
 			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
 			return
 		}
@@ -236,31 +257,33 @@ func findSampleRecord(ctx context.Context, t *testing.T, config *rest.Config, cs
 	return goInventoryRecord{}, inventoryCoverage{}, false
 }
 
-// checkSampleDependencies asserts that the dependency payload for the sample
-// build reached the spool and carries the module the sample really imports. It
-// is written on the same flush as the inventory snapshot but after it, so a read
-// can land between the two writes: poll briefly rather than fail on the race.
-func checkSampleDependencies(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
+// checkSampleBuild asserts that the build payload for the sample reached the
+// spool and carries the module the sample really imports and the settings the
+// sample was really built with. It is written on the same flush as the inventory
+// snapshot but after it, so a read can land between the two writes: poll briefly
+// rather than fail on the race.
+func checkSampleBuild(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
 	t.Helper()
 	if digest == "" {
 		return // already reported as an empty image_digest
 	}
-	path := dependencySpoolPath(digest)
+	path := buildSpoolPath(digest)
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, path)
 		if ok {
 			var payload struct {
-				Kind        string   `json:"kind"`
-				ImageDigest string   `json:"image_digest"`
-				MainModule  string   `json:"main_module"`
-				Modules     []string `json:"modules"`
+				Kind        string            `json:"kind"`
+				ImageDigest string            `json:"image_digest"`
+				MainModule  string            `json:"main_module"`
+				Modules     []string          `json:"modules"`
+				Settings    map[string]string `json:"settings"`
 			}
 			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-				t.Fatalf("dependency payload not valid JSON: %v", err)
+				t.Fatalf("build payload not valid JSON: %v", err)
 			}
-			if payload.Kind != "go_dependencies" {
-				t.Errorf("payload kind = %q, want go_dependencies", payload.Kind)
+			if payload.Kind != "go_build" {
+				t.Errorf("payload kind = %q, want go_build", payload.Kind)
 			}
 			if payload.ImageDigest != digest {
 				t.Errorf("image_digest = %q, want %q — the payload must key to the build it describes",
@@ -282,12 +305,71 @@ func checkSampleDependencies(ctx context.Context, t *testing.T, config *rest.Con
 					t.Errorf("module %q carries more than a path; only module paths are collected", m)
 				}
 			}
+			checkBuildSettings(t, payload.Settings)
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("dependency payload for %s never appeared at %s", digest, path)
+			t.Fatalf("build payload for %s never appeared at %s", digest, path)
 		}
 		time.Sleep(5 * time.Second)
+	}
+}
+
+// checkBuildSettings asserts what a real cluster shipped: nothing outside the
+// allow-list, and the two settings the sample's Dockerfile actually fixes.
+func checkBuildSettings(t *testing.T, settings map[string]string) {
+	t.Helper()
+	for key, value := range settings {
+		if _, ok := allowedBuildSettings[key]; !ok {
+			t.Errorf("build setting %q = %q left the cluster; only the allow-list may", key, value)
+		}
+	}
+	// test/e2e/sample/Dockerfile builds with CGO_ENABLED=0, and GOARCH is
+	// whatever the kind node is — the fact the node architecture is compared
+	// against.
+	if got := settings["CGO_ENABLED"]; got != "0" {
+		t.Errorf("CGO_ENABLED = %q, want 0 (the sample is built static)", got)
+	}
+	if settings["GOARCH"] == "" {
+		t.Error("GOARCH absent; the toolchain always records it")
+	}
+	// vcs.* is expected to be absent here: the sample's build context is
+	// test/e2e/sample/, which holds no .git, so the toolchain has nothing to
+	// stamp (ADR 0019). Logged rather than asserted — the point is that its
+	// absence is normal, not that it is required.
+	t.Logf("sample build settings: %v", settings)
+}
+
+// checkNodeArchitecture asserts that the node-metadata payload names every
+// node's architecture. Without it a build's GOARCH has nothing to be compared
+// against, which is the whole reason the settings above are collected.
+func checkNodeArchitecture(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, nodeMetadataSpoolPath)
+	if !ok {
+		t.Errorf("node-metadata payload never appeared at %s", nodeMetadataSpoolPath)
+		return
+	}
+	var payload struct {
+		Kind  string `json:"kind"`
+		Nodes []struct {
+			Name         string `json:"name"`
+			Architecture string `json:"architecture"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("node-metadata payload not valid JSON: %v", err)
+	}
+	if payload.Kind != "node_metadata" {
+		t.Errorf("payload kind = %q, want node_metadata", payload.Kind)
+	}
+	if len(payload.Nodes) == 0 {
+		t.Fatal("node-metadata payload carries no nodes")
+	}
+	for _, n := range payload.Nodes {
+		if n.Architecture == "" {
+			t.Errorf("node %q has no architecture", n.Name)
+		}
 	}
 }
 

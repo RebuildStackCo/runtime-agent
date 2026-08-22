@@ -221,8 +221,8 @@ func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	}
 }
 
-func fixedDependencies() inventory.BuildDependencies {
-	return inventory.BuildDependencies{
+func fixedBuild() inventory.BuildFacts {
+	return inventory.BuildFacts{
 		ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 		GoVersion:   "go1.26.1",
 		MainModule:  "github.com/acme/web",
@@ -231,33 +231,42 @@ func fixedDependencies() inventory.BuildDependencies {
 			"go.uber.org/automaxprocs",
 			"golang.org/x/sync",
 		},
+		Settings: map[string]string{
+			"CGO_ENABLED":  "0",
+			"GOAMD64":      "v1",
+			"GOARCH":       "amd64",
+			"vcs":          "git",
+			"vcs.modified": "false",
+			"vcs.revision": "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485",
+			"vcs.time":     "2026-08-21T20:13:54Z",
+		},
 	}
 }
 
-func TestGoldenGoDependenciesPayload(t *testing.T) {
+func TestGoldenGoBuildPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteGoDependencies(fixedDependencies()); err != nil {
+	if err := s.WriteGoBuild(fixedBuild()); err != nil {
 		t.Fatal(err)
 	}
-	name := "go-dependencies-sha256-2222222222222222222222222222222222222222222222222222222222222222.json"
-	checkGolden(t, filepath.Join(dir, name), "go-dependencies.golden.json")
+	name := "go-build-sha256-2222222222222222222222222222222222222222222222222222222222222222.json"
+	checkGolden(t, filepath.Join(dir, name), "go-build.golden.json")
 }
 
-// A build's dependency set never changes, so writing it twice must land on the
-// same file with the same bytes: redelivery after a restart is an idempotent
+// A build's facts never change, so writing them twice must land on the same
+// file with the same bytes: redelivery after a restart is an idempotent
 // upsert, which is what makes the controller's in-memory "already written"
 // bookkeeping loss-harmless (ADR 0017).
-func TestGoDependenciesWriteIsIdempotent(t *testing.T) {
+func TestGoBuildWriteIsIdempotent(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteGoDependencies(fixedDependencies()); err != nil {
+	if err := s.WriteGoBuild(fixedBuild()); err != nil {
 		t.Fatal(err)
 	}
-	name := "go-dependencies-sha256-2222222222222222222222222222222222222222222222222222222222222222.json"
+	name := "go-build-sha256-2222222222222222222222222222222222222222222222222222222222222222.json"
 	first, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- test-controlled path
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteGoDependencies(fixedDependencies()); err != nil {
+	if err := s.WriteGoBuild(fixedBuild()); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -276,15 +285,15 @@ func TestGoDependenciesWriteIsIdempotent(t *testing.T) {
 	}
 }
 
-// Two builds are two files: unlike the inventory snapshot, dependency sets
-// accumulate rather than supersede, because each is keyed by its own build.
-func TestGoDependenciesAccumulatePerBuild(t *testing.T) {
+// Two builds are two files: unlike the inventory snapshot, build facts
+// accumulate rather than supersede, because each set is keyed by its own build.
+func TestGoBuildsAccumulatePerBuild(t *testing.T) {
 	s, dir := newTestSpool(t)
-	first := fixedDependencies()
-	second := fixedDependencies()
+	first := fixedBuild()
+	second := fixedBuild()
 	second.ImageDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	for _, d := range []inventory.BuildDependencies{first, second} {
-		if err := s.WriteGoDependencies(d); err != nil {
+	for _, d := range []inventory.BuildFacts{first, second} {
+		if err := s.WriteGoBuild(d); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -297,14 +306,14 @@ func TestGoDependenciesAccumulatePerBuild(t *testing.T) {
 	}
 }
 
-// A dependency set with no digest has no key, so it cannot be filed at all —
-// writing it would produce a payload nothing can join to.
-func TestGoDependenciesRejectsMissingDigest(t *testing.T) {
+// Build facts with no digest have no key, so they cannot be filed at all —
+// writing them would produce a payload nothing can join to.
+func TestGoBuildRejectsMissingDigest(t *testing.T) {
 	s, dir := newTestSpool(t)
-	d := fixedDependencies()
+	d := fixedBuild()
 	d.ImageDigest = ""
-	if err := s.WriteGoDependencies(d); err == nil {
-		t.Fatal("writing a dependency set with no image digest succeeded, want an error")
+	if err := s.WriteGoBuild(d); err == nil {
+		t.Fatal("writing build facts with no image digest succeeded, want an error")
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -377,17 +386,22 @@ func fixedWorkloadMetadata() []metadata.Record {
 	}
 }
 
+// fixedNodeMetadata is a mixed-architecture fleet on purpose: the architecture
+// field exists so a build's GOARCH has something to be compared against, and a
+// golden where every node is the same architecture would not show that.
 func fixedNodeMetadata() []collector.NodeInfo {
 	return []collector.NodeInfo{
 		{
 			Name: "node-1", InstanceType: "m6i.large", CapacityType: "on-demand",
 			Zone: "eu-west-1a", Region: "eu-west-1", KernelVersion: "6.1.0-generic",
+			Architecture:        "amd64",
 			AllocatableCPUMilli: 1930, AllocatableMemoryBytes: 7 << 30,
 			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
 		},
 		{
-			Name: "node-2", InstanceType: "m6i.large", CapacityType: "spot",
+			Name: "node-2", InstanceType: "m7g.large", CapacityType: "spot",
 			Zone: "eu-west-1b", Region: "eu-west-1", KernelVersion: "6.1.0-generic",
+			Architecture:        "arm64",
 			AllocatableCPUMilli: 1930, AllocatableMemoryBytes: 7 << 30,
 			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
 		},

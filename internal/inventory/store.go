@@ -7,6 +7,7 @@
 package inventory
 
 import (
+	"maps"
 	"slices"
 	"sort"
 	"sync"
@@ -41,23 +42,28 @@ type GoRecord struct {
 	PGO bool `json:"pgo"`
 }
 
-// BuildDependencies is the dependency module set of one build, keyed by the
-// image digest that identifies that build. It is deliberately not a field on
+// BuildFacts is everything immutable the agent knows about one build, keyed by
+// the image digest that identifies it: the toolchain, the dependency module set,
+// and the allow-listed build settings. It is deliberately not a field on
 // GoRecord: a record merges across every replica and node running the build, and
 // the same image usually backs several workloads, so hanging hundreds of module
 // paths off each record would duplicate them across the inventory snapshot on
-// every flush. Keyed by digest instead, the set is written once and joined back
-// through GoRecord.ImageDigest (ADR 0017).
+// every flush. Keyed by digest instead, the facts are written once and joined
+// back through GoRecord.ImageDigest (ADR 0017, ADR 0019).
 //
 // Module paths only, never versions: a path says what a build is made of, a
 // path with a version is a vulnerability-scanning input, which this agent does
 // not collect (docs/security.md §8).
-type BuildDependencies struct {
+type BuildFacts struct {
 	ImageDigest string `json:"image_digest"`
 	GoVersion   string `json:"go_version"`
 	MainModule  string `json:"main_module"`
 	// Modules is sorted, so the payload bytes are deterministic.
 	Modules []string `json:"modules"`
+	// Settings is the allow-listed build settings the node kept. It is what the
+	// scanner sent: the filtering happened there, before the channel, so nothing
+	// outside the allow-list ever reached this struct (ADR 0019).
+	Settings map[string]string `json:"settings,omitempty"`
 }
 
 // Resolved is what a ContainerResolver returns for a (pod UID, container ID)
@@ -79,20 +85,20 @@ type ContainerResolver interface {
 	LookupContainer(podUID types.UID, containerID string) (Resolved, bool)
 }
 
-// Store accumulates joined Go-inventory records, the dependency set of each
-// observed build, and the aggregate join counters. It is safe for concurrent
+// Store accumulates joined Go-inventory records, the facts of each observed
+// build, and the aggregate join counters. It is safe for concurrent
 // use: reports arrive on the receiver's request goroutines while the
 // flush/coverage goroutine reads snapshots.
 type Store struct {
 	mu      sync.Mutex
 	records map[Key]GoRecord
 
-	// deps holds one dependency set per observed image digest, and written
+	// builds holds one set of build facts per observed image digest, and written
 	// records which of those have already been handed to the sink. Both grow
 	// with the number of distinct builds observed since start, not with the
-	// flush cadence: a build's dependency set is immutable, so a digest already
-	// present is skipped on ingest rather than recomputed.
-	deps    map[string]BuildDependencies
+	// flush cadence: a build's facts are immutable, so a digest already present
+	// is skipped on ingest rather than recomputed.
+	builds  map[string]BuildFacts
 	written map[string]struct{}
 
 	// nodesReported is the set of nodes still in the cluster that have delivered
@@ -121,7 +127,7 @@ type Store struct {
 func NewStore(since time.Time) *Store {
 	return &Store{
 		records:       make(map[Key]GoRecord),
-		deps:          make(map[string]BuildDependencies),
+		builds:        make(map[string]BuildFacts),
 		written:       make(map[string]struct{}),
 		nodesReported: make(map[string]struct{}),
 		since:         since,
@@ -135,7 +141,7 @@ func NewStore(since time.Time) *Store {
 // flips the record as nodes re-scan. Multiple replicas reporting the same build
 // collapse to one record (idempotent upsert).
 //
-// It also files each binary's dependency set under the image digest of the
+// It also files each binary's build facts under the image digest of the
 // container it was joined to, and remembers which nodes have reported at all —
 // both for the payloads of ADR 0017.
 func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
@@ -165,47 +171,49 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 			ImageDigest: res.ImageDigest,
 			PGO:         b.PGO,
 		}
-		s.ingestDependencies(b, res.ImageDigest)
+		s.ingestBuild(b, res.ImageDigest)
 	}
 }
 
-// ingestDependencies files one binary's dependency set under its image digest.
-// A joined fact with no digest — the controller has the pod but not yet a
-// running container status — cannot identify a build, so its dependency set is
-// dropped and counted. Counting rather than silently discarding is the point:
-// an unattributable fact must be visible as a number, never as absence.
+// ingestBuild files one binary's build facts under its image digest. A joined
+// fact with no digest — the controller has the pod but not yet a running
+// container status — cannot identify a build, so its facts are dropped and
+// counted. Counting rather than silently discarding is the point: an
+// unattributable fact must be visible as a number, never as absence.
 //
 // Callers hold s.mu.
-func (s *Store) ingestDependencies(b nodescan.BinaryInfo, digest string) {
+func (s *Store) ingestBuild(b nodescan.BinaryInfo, digest string) {
 	if digest == "" {
 		s.factsUndigested++
 		return
 	}
-	if _, ok := s.deps[digest]; ok {
-		return // same digest, same build, same modules — nothing to recompute
+	if _, ok := s.builds[digest]; ok {
+		return // same digest, same build, same facts — nothing to recompute
 	}
 	modules := slices.Clone(b.Dependencies)
 	slices.Sort(modules)
 	modules = slices.Compact(modules)
-	s.deps[digest] = BuildDependencies{
+	s.builds[digest] = BuildFacts{
 		ImageDigest: digest,
 		GoVersion:   b.GoVersion,
 		MainModule:  b.MainModule,
 		Modules:     modules,
+		Settings:    maps.Clone(b.Settings),
 	}
 }
 
-// PendingDependencies returns the dependency sets not yet acknowledged as
-// written, sorted by digest. It does not mark them: the caller marks each set
-// only once its write succeeded, so a failed write is retried on the next
-// flush.
-func (s *Store) PendingDependencies() []BuildDependencies {
+// PendingBuilds returns the build facts not yet acknowledged as written, sorted
+// by digest. It does not mark them: the caller marks each build only once its
+// write succeeded, so a failed write is retried on the next flush.
+func (s *Store) PendingBuilds() []BuildFacts {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]BuildDependencies, 0, len(s.deps))
-	for digest, d := range s.deps {
+	out := make([]BuildFacts, 0, len(s.builds))
+	for digest, d := range s.builds {
 		if _, ok := s.written[digest]; !ok {
-			d.Modules = slices.Clone(d.Modules) // no aliasing of store state past the lock
+			// no aliasing of store state past the lock
+			d.Modules = slices.Clone(d.Modules)
+			d.Settings = maps.Clone(d.Settings)
 			out = append(out, d)
 		}
 	}
@@ -241,12 +249,12 @@ func LiveKeys(pods []collector.PodInfo) []Key {
 type Evicted struct {
 	// Records is records whose workload container is gone from the cluster.
 	Records int
-	// Builds is dependency sets no surviving record references any more.
+	// Builds is build facts no surviving record references any more.
 	Builds int
 }
 
-// Retain drops every record whose key is absent from live, and then every
-// dependency set no surviving record still references.
+// Retain drops every record whose key is absent from live, and then the build
+// facts no surviving record still references.
 //
 // The store accumulates records from facts the nodes push, so without this it
 // only ever grows: a deleted workload's record would keep shipping in every
@@ -289,15 +297,15 @@ func (s *Store) Retain(live []Key) Evicted {
 			referenced[r.ImageDigest] = struct{}{}
 		}
 	}
-	for digest := range s.deps {
+	for digest := range s.builds {
 		if _, ok := referenced[digest]; ok {
 			continue
 		}
-		// deps and written must be dropped together. Dropping only deps would
+		// builds and written must be dropped together. Dropping only builds would
 		// leave the digest marked as already written, so if that image ever came
-		// back its dependency set would be re-ingested and never sent again —
-		// silently, with nothing failing.
-		delete(s.deps, digest)
+		// back its facts would be re-ingested and never sent again — silently,
+		// with nothing failing.
+		delete(s.builds, digest)
 		delete(s.written, digest)
 		ev.Builds++
 	}
@@ -322,12 +330,12 @@ func (s *Store) RetainNodes(live []string) {
 	}
 }
 
-// MarkDependenciesWritten records that the set for digest reached the sink, so
-// it is not written again. The bookkeeping is in memory only, and losing it is
-// harmless: after a restart the set is written once more, and since the payload
-// is immutable given its digest, a duplicate delivery is a byte-identical
-// upsert (ADR 0003, ADR 0017).
-func (s *Store) MarkDependenciesWritten(digest string) {
+// MarkBuildWritten records that the facts for digest reached the sink, so they
+// are not written again. The bookkeeping is in memory only, and losing it is
+// harmless: after a restart the facts are written once more, and since the
+// payload is immutable given its digest, a duplicate delivery is a
+// byte-identical upsert (ADR 0003, ADR 0017).
+func (s *Store) MarkBuildWritten(digest string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.written[digest] = struct{}{}
@@ -356,8 +364,7 @@ type Counters struct {
 	GoVersions int
 	// PGOBuilds is how many records were built with PGO.
 	PGOBuilds int
-	// Builds is the number of distinct image digests whose dependency set is
-	// held.
+	// Builds is the number of distinct image digests whose facts are held.
 	Builds int
 	// FactsReceived / FactsJoined / FactsUnjoined / FactsUndigested are
 	// cumulative since start.
@@ -385,7 +392,7 @@ func (s *Store) Counters() Counters {
 		Records:         len(s.records),
 		GoVersions:      len(versions),
 		PGOBuilds:       pgo,
-		Builds:          len(s.deps),
+		Builds:          len(s.builds),
 		FactsReceived:   s.factsReceived,
 		FactsJoined:     s.factsJoined,
 		FactsUnjoined:   s.factsUnjoined,
@@ -414,7 +421,7 @@ type Coverage struct {
 	// FactsReceived is every binary in every report; Joined is those attributed
 	// to a workload container; Unjoined is those that could not be. Undigested
 	// counts joined facts whose container had no image digest yet, so their
-	// dependency set could not be keyed to a build.
+	// build facts could not be keyed to a build.
 	FactsReceived   int64 `json:"facts_received"`
 	FactsJoined     int64 `json:"facts_joined"`
 	FactsUnjoined   int64 `json:"facts_unjoined"`

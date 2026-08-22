@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func withDeps(b nodescan.BinaryInfo, deps ...string) nodescan.BinaryInfo {
 	return b
 }
 
-func TestIngestKeepsDependenciesPerBuild(t *testing.T) {
+func TestIngestKeepsBuildFactsPerBuild(t *testing.T) {
 	resolver := fakeResolver{
 		"pod-web/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
 	}
@@ -48,9 +49,9 @@ func TestIngestKeepsDependenciesPerBuild(t *testing.T) {
 			"golang.org/x/sync", "github.com/cespare/xxhash/v2", "golang.org/x/sync"),
 	}}, resolver)
 
-	pending := s.PendingDependencies()
+	pending := s.PendingBuilds()
 	if len(pending) != 1 {
-		t.Fatalf("got %d dependency sets, want 1", len(pending))
+		t.Fatalf("got %d build fact sets, want 1", len(pending))
 	}
 	got := pending[0]
 	if got.ImageDigest != "sha256:web" || got.GoVersion != "go1.26.1" || got.MainModule != "github.com/acme/web" {
@@ -63,7 +64,35 @@ func TestIngestKeepsDependenciesPerBuild(t *testing.T) {
 	}
 }
 
-func TestDependenciesDedupAcrossReplicasAndSurviveUntilMarked(t *testing.T) {
+// The settings the node kept ride into the build facts unchanged: the allow-list
+// runs on the node, before the channel (ADR 0019), so the store neither filters
+// nor interprets them.
+func TestIngestCarriesBuildSettings(t *testing.T) {
+	resolver := fakeResolver{
+		"pod-web/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+	b := binary("pod-web", "cid-web", "go1.26.1", "github.com/acme/web", false)
+	b.Settings = map[string]string{"GOARCH": "arm64", "vcs.revision": "a5edd4b", "vcs.modified": "true"}
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{b}}, resolver)
+
+	pending := s.PendingBuilds()
+	if len(pending) != 1 {
+		t.Fatalf("got %d build fact sets, want 1", len(pending))
+	}
+	if !maps.Equal(pending[0].Settings, b.Settings) {
+		t.Errorf("settings = %v, want %v", pending[0].Settings, b.Settings)
+	}
+
+	// The returned map must not alias store state: a caller writing into what it
+	// got back would corrupt the facts of a build that is immutable by contract.
+	pending[0].Settings["GOARCH"] = "tampered"
+	if again := s.PendingBuilds(); again[0].Settings["GOARCH"] != "arm64" {
+		t.Errorf("GOARCH = %q after the caller mutated its copy, want arm64", again[0].Settings["GOARCH"])
+	}
+}
+
+func TestBuildFactsDedupAcrossReplicasAndSurviveUntilMarked(t *testing.T) {
 	// Two replicas of the same build on two nodes, plus a second build: one
 	// dependency set per digest, not per replica.
 	resolver := fakeResolver{
@@ -80,9 +109,9 @@ func TestDependenciesDedupAcrossReplicasAndSurviveUntilMarked(t *testing.T) {
 		withDeps(binary("pod-c", "cid", "go1.26.1", "github.com/acme/index", false), "golang.org/x/time"),
 	}}, resolver)
 
-	pending := s.PendingDependencies()
+	pending := s.PendingBuilds()
 	if len(pending) != 2 {
-		t.Fatalf("got %d dependency sets, want 2 (one per digest)", len(pending))
+		t.Fatalf("got %d build fact sets, want 2 (one per digest)", len(pending))
 	}
 	// Sorted by digest so the flush order — and any partial-failure retry — is
 	// deterministic.
@@ -92,19 +121,19 @@ func TestDependenciesDedupAcrossReplicasAndSurviveUntilMarked(t *testing.T) {
 
 	// A set that was not marked is still pending: an unacknowledged write must
 	// be retried, not lost.
-	s.MarkDependenciesWritten("sha256:index")
-	pending = s.PendingDependencies()
+	s.MarkBuildWritten("sha256:index")
+	pending = s.PendingBuilds()
 	if len(pending) != 1 || pending[0].ImageDigest != "sha256:web" {
 		t.Fatalf("after marking one, pending = %+v, want only sha256:web", pending)
 	}
 
 	// Marked sets are never offered again, not even after the same build is
 	// re-reported by a later scan.
-	s.MarkDependenciesWritten("sha256:web")
+	s.MarkBuildWritten("sha256:web")
 	s.Ingest(nodescan.Report{Node: "n1", Binaries: []nodescan.BinaryInfo{
 		withDeps(binary("pod-a", "cid", "go1.26.1", "github.com/acme/web", false), "golang.org/x/sync"),
 	}}, resolver)
-	if pending := s.PendingDependencies(); len(pending) != 0 {
+	if pending := s.PendingBuilds(); len(pending) != 0 {
 		t.Errorf("pending after marking both = %+v, want none", pending)
 	}
 }
@@ -124,8 +153,8 @@ func TestJoinedFactWithoutDigestIsCountedNotDropped(t *testing.T) {
 	if recs := s.Snapshot(); len(recs) != 1 {
 		t.Fatalf("got %d records, want 1 — the record does not depend on the digest", len(recs))
 	}
-	if pending := s.PendingDependencies(); len(pending) != 0 {
-		t.Errorf("pending = %+v, want none: a dependency set with no digest cannot be keyed", pending)
+	if pending := s.PendingBuilds(); len(pending) != 0 {
+		t.Errorf("pending = %+v, want none: build facts with no digest cannot be keyed", pending)
 	}
 	if c := s.Coverage(); c.FactsUndigested != 1 || c.FactsJoined != 1 {
 		t.Errorf("coverage = %+v, want joined 1 / undigested 1", c)
@@ -186,7 +215,7 @@ func TestRetainForgetsDepartedWorkloads(t *testing.T) {
 
 	// The departed workload's dependency set goes with it; the surviving one
 	// stays pending because it was never marked written.
-	pending := s.PendingDependencies()
+	pending := s.PendingBuilds()
 	if len(pending) != 1 || pending[0].ImageDigest != "sha256:web" {
 		t.Errorf("pending = %+v, want only the surviving build", pending)
 	}
@@ -218,7 +247,7 @@ func TestRetainOnEmptyClusterEmptiesTheInventory(t *testing.T) {
 // A workload that leaves and comes back must be shippable again. Dropping the
 // dependency set without dropping its "already written" mark would leave the
 // returning build permanently unsent — silently, with nothing failing.
-func TestRetainClearsTheWrittenMarkWithTheDependencySet(t *testing.T) {
+func TestRetainClearsTheWrittenMarkWithTheBuildFacts(t *testing.T) {
 	resolver := fakeResolver{
 		"pod-web/cid": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
 	}
@@ -227,15 +256,15 @@ func TestRetainClearsTheWrittenMarkWithTheDependencySet(t *testing.T) {
 		withDeps(binary("pod-web", "cid", "go1.26.1", "github.com/acme/web", false), "golang.org/x/sync"),
 	}}
 	s.Ingest(report, resolver)
-	s.MarkDependenciesWritten("sha256:web")
-	if pending := s.PendingDependencies(); len(pending) != 0 {
+	s.MarkBuildWritten("sha256:web")
+	if pending := s.PendingBuilds(); len(pending) != 0 {
 		t.Fatalf("pending after marking = %+v, want none", pending)
 	}
 
 	s.Retain(nil)              // the workload is deleted
 	s.Ingest(report, resolver) // and comes back on the next scan
 
-	pending := s.PendingDependencies()
+	pending := s.PendingBuilds()
 	if len(pending) != 1 || pending[0].ImageDigest != "sha256:web" {
 		t.Fatalf("pending after the build returned = %+v, want it offered again", pending)
 	}
@@ -243,7 +272,7 @@ func TestRetainClearsTheWrittenMarkWithTheDependencySet(t *testing.T) {
 
 // Only the records' own digests keep a dependency set alive: a build no record
 // points at any more is gone even if another workload survives.
-func TestRetainKeepsDependenciesSharedByAnotherWorkload(t *testing.T) {
+func TestRetainKeepsBuildFactsSharedByAnotherWorkload(t *testing.T) {
 	// Two workloads running the same image, so one record's departure must not
 	// take the shared dependency set with it.
 	resolver := fakeResolver{
@@ -264,7 +293,7 @@ func TestRetainKeepsDependenciesSharedByAnotherWorkload(t *testing.T) {
 	if ev.Builds != 0 {
 		t.Errorf("evicted builds = %d, want 0 — the surviving workload still runs that image", ev.Builds)
 	}
-	if pending := s.PendingDependencies(); len(pending) != 1 {
+	if pending := s.PendingBuilds(); len(pending) != 1 {
 		t.Errorf("pending = %+v, want the shared build still held", pending)
 	}
 }

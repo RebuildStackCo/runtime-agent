@@ -27,6 +27,12 @@ type BinaryInfo struct {
 	GoVersion    string   `json:"go_version"`
 	MainModule   string   `json:"main_module"`
 	Dependencies []string `json:"dependencies,omitempty"`
+	// Settings is the allow-listed subset of the binary's build settings —
+	// toolchain and target facts only, never the free-form flags the build
+	// operator wrote (see buildSettingsAllowList). Absent keys mean the toolchain
+	// did not record them, which for vcs.* is the common case in container
+	// builds (ADR 0019).
+	Settings map[string]string `json:"settings,omitempty"`
 	// PGO is true when the binary was built with profile-guided optimization
 	// (a "-pgo" build setting with a non-empty value).
 	PGO bool `json:"pgo"`
@@ -148,6 +154,7 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 		GoVersion:    info.GoVersion,
 		MainModule:   mainModule,
 		Dependencies: dependencyPaths(info),
+		Settings:     buildSettings(info),
 		PGO:          hasPGO(info),
 		PodUID:       binding.PodUID,
 		ContainerID:  binding.ContainerID,
@@ -189,9 +196,67 @@ func dependencyPaths(info *buildinfo.BuildInfo) []string {
 	return paths
 }
 
+// buildSettingsAllowList is the exhaustive set of build settings the scanner
+// keeps. It is an allow-list, and that is the decision, not the mechanism
+// (ADR 0019): build settings are the one place where strings written by whoever
+// ran the build enter the agent. "-ldflags" routinely carries build-machine
+// paths, internal hostnames and injected version strings; "-pgo" carries a path
+// on the build machine; "-gcflags" and "-tags" are equally free-form. A
+// deny-list would protect only against the keys we thought to name, and the
+// toolchain is free to add new ones in any release.
+//
+// Everything here is a bounded token the toolchain chose from a fixed
+// vocabulary, or — for vcs.* — a value git produced, never a human. GOOS is
+// deliberately absent: every process the agent can see is linux, so it would be
+// a constant rather than a fact. Further arch-level knobs (GO386, GOPPC64, …)
+// are added here by name when a cluster needs them.
+var buildSettingsAllowList = map[string]struct{}{
+	"CGO_ENABLED":  {},
+	"GOARCH":       {},
+	"GOAMD64":      {}, // x86-64 microarchitecture level: v1 on a v3 fleet leaves instructions unused
+	"GOARM64":      {},
+	"GOARM":        {},
+	"-race":        {}, // a race build in production costs multiples of CPU and memory
+	"-trimpath":    {},
+	"vcs":          {},
+	"vcs.revision": {},
+	"vcs.time":     {},
+	"vcs.modified": {},
+}
+
+// maxSettingValue bounds a kept value. Every allowed key holds something short
+// and bounded — a commit hash, an RFC 3339 timestamp, "0"/"1", "v8.0" — so a
+// longer value means the binary is not what this list assumes. Such a setting is
+// dropped rather than truncated: a prefix of an unexpected string is still an
+// unexpected string.
+const maxSettingValue = 128
+
+// buildSettings returns the allow-listed build settings of the binary. The
+// result is nil when none were recorded, and marshals with sorted keys (Go sorts
+// string map keys), so the payload bytes stay deterministic — the golden
+// contract.
+func buildSettings(info *buildinfo.BuildInfo) map[string]string {
+	var out map[string]string
+	for _, s := range info.Settings {
+		if _, ok := buildSettingsAllowList[s.Key]; !ok {
+			continue
+		}
+		if s.Value == "" || len(s.Value) > maxSettingValue {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string, len(buildSettingsAllowList))
+		}
+		out[s.Key] = s.Value
+	}
+	return out
+}
+
 // hasPGO reports whether the binary was built with profile-guided optimization.
 // The toolchain records this as a "-pgo" build setting whose value is the
-// profile path ("off" or empty means no PGO).
+// profile path ("off" or empty means no PGO). Only the boolean survives: the
+// path names a directory on the build machine, so it is not allow-listed and
+// never leaves the node.
 func hasPGO(info *buildinfo.BuildInfo) bool {
 	for _, s := range info.Settings {
 		if s.Key == "-pgo" {

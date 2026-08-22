@@ -182,14 +182,32 @@ may legitimately appear in one snapshot and not the next; accumulating "has ever
 been a Go workload" across snapshots is the backend's job, and `sequence` and
 `captured_at` are what it orders them by.
 
-**`go_dependencies` is write-once and keyed by image digest.** A build's
-dependency module paths never change, so the payload is immutable given its key
-and the agent sends it once per distinct build. The backend MUST upsert it by
-image digest and MUST NOT expect it on every flush or treat a redelivery (after
-an agent restart) as a change. It carries no sequence and no `captured_at` for
-the same reason. Join it to workloads through `go_inventory.records[].image_digest`.
-It contains module *paths* only, never versions — it is not a dependency-version
-inventory and MUST NOT be presented as one.
+**`go_build` is write-once and keyed by image digest.** What a build is made of
+and how it was built — the Go version, the main module, the dependency module
+paths, and the allow-listed build settings — never changes, so the payload is
+immutable given its key and the agent sends it once per distinct build. The
+backend MUST upsert it by image digest and MUST NOT expect it on every flush or
+treat a redelivery (after an agent restart) as a change. It carries no sequence
+and no `captured_at` for the same reason. Join it to workloads through
+`go_inventory.records[].image_digest`. It contains module *paths* only, never
+versions — it is not a dependency-version inventory and MUST NOT be presented as
+one.
+
+**`go_build.settings` is a bounded allow-list, and its keys are optional**
+([ADR 0019](adr/0019-build-settings-by-allow-list.md)). The agent keeps only the
+settings enumerated in [`security.md`](security.md) §8 and discards the rest on
+the node, so the backend MUST NOT expect any particular key to be present and
+MUST NOT infer anything from an absent one. In particular `vcs.revision`,
+`vcs.time` and `vcs.modified` are recorded by the Go toolchain only when the
+build had a VCS working tree, which containerized builds frequently do not: their
+absence is the common case and MUST NOT be surfaced as missing data or as a
+coverage gap. The whole `settings` object is omitted when nothing was kept.
+
+**`node_metadata.nodes[].architecture` is what `go_build.settings.GOARCH` is
+compared against.** A build's target architecture and microarchitecture level
+mean nothing on their own; the comparison is the finding. The field is the
+kubelet's own value (`amd64`, `arm64`), and is omitted if the kubelet does not
+report one.
 
 ### Delivery semantics
 
