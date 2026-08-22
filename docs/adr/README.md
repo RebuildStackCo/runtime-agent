@@ -81,3 +81,4 @@ line to paste.
 - [0021. Pod lifecycle: the scheduler's reason goes where the shortfall already is, the cluster's removals become a journal](0021-pod-lifecycle-journal.md)
 - [0022. The payload registry lives in code, and an amendment cannot stay silent](0022-registry-in-code-and-declared-amendments.md)
 - [0023. A profile's key names the build; its provenance names the claim](0023-profile-key-and-provenance.md)
+- [0024. `security.md` states what is true; the decision records state why](0024-security-doc-states-what-adrs-state-why.md)
