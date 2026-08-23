@@ -37,8 +37,18 @@ func samplesPerSecond(overheadCeilingPercent int) int {
 // validates, and ships each profile. A capture that cannot load degrades to
 // scanner-only, recorded as program_load_failed (ADR 0011 §2). Blocks until ctx
 // is cancelled.
-func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Profiling,
-	procRoot, node string, targets *targetsClient, shipper *profileShipper, m *ebpfGateMetrics) {
+//
+// Two controller answers bound a window, and they are refreshed on different
+// cadences because they answer different questions. The target set — which
+// containers rank highest — changes with consumption and is refetched every
+// IntervalSeconds. The scan scope — which pods passed the customer's filters —
+// changes with the cluster and is refetched every window, matching the
+// scanner's own cadence (ADR 0015). Both must admit a container before its
+// samples are shipped, and the scope fails closed exactly as the scanner does:
+// no answer, nothing shipped (ADR 0025).
+func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.NodeProfiling,
+	procRoot, node string, targets *targetsClient, scoper *scopeClient,
+	shipper *profileShipper, m *ebpfGateMetrics) {
 
 	sps := samplesPerSecond(p.OverheadCeilingPercent)
 	session, err := nodeprofile.Start(ctx, logger, nodeprofile.Config{SamplesPerSecond: sps})
@@ -82,21 +92,42 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Pro
 					lastFetch = end
 				}
 			}
+			// Fail closed, like the scanner: an unreachable controller or an
+			// unconfigured endpoint costs this window's captures, never a
+			// widening of what is profiled. The samples are dropped with the
+			// window; nothing accumulates waiting for a scope.
+			scope := nodescan.DenyAll()
+			if scoper == nil {
+				logger.Warn("no scope endpoint configured; profiling nothing",
+					"hint", "set -scope-endpoint so the controller can supply the pods this node may profile")
+			} else if uids, err := scoper.fetch(ctx, node); err != nil {
+				logger.Error("fetching scope failed; profiling nothing this window", "error", err)
+			} else {
+				scope = nodescan.NewScope(uids)
+			}
 			cursor = processWindow(ctx, logger, filter, sps, procRoot, node,
-				start, end, session.Drain(), targetSet, p.TopN, cursor, shipper)
+				start, end, session.Drain(), targetSet, scope, p.MaxTargetsPerWindow, cursor, shipper)
 			start = time.Now()
 		}
 	}
 }
 
-// processWindow groups a window's samples by container, keeps only targeted
-// containers, and ships up to maxPerWindow of them, rotating the start point by
-// cursor so no target monopolizes capture. It returns the next cursor.
+// processWindow groups a window's samples by container, keeps only containers
+// that both the controller targeted and the scope admits, and ships up to
+// maxPerWindow of them, rotating the start point by cursor so no target
+// monopolizes capture. It returns the next cursor.
+//
+// The two conditions are not redundant. The target set says which containers are
+// worth profiling; the scope says which pods the customer's filters admit at
+// all. A container in the first and not the second is one whose executable the
+// scanner is forbidden to open (ADR 0015) — profiling it would take the more
+// sensitive signal from the pod denied the less sensitive one.
 func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile.SymbolFilter,
 	sps int, procRoot, node string, start, end time.Time, samples []nodeprofile.Sample,
-	targetSet map[string]struct{}, maxPerWindow, cursor int, shipper *profileShipper) int {
+	targetSet map[string]struct{}, scope nodescan.Scope, maxPerWindow, cursor int,
+	shipper *profileShipper) int {
 
-	if len(samples) == 0 || len(targetSet) == 0 {
+	if len(samples) == 0 || len(targetSet) == 0 || scope.Size() == 0 {
 		return cursor
 	}
 
@@ -106,6 +137,7 @@ func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile
 	}
 	groups := map[string]*group{}
 	bindings := map[int64]nodescan.PodBinding{}
+	outOfScope := 0
 	for _, s := range samples {
 		b, ok := bindings[s.PID]
 		if !ok {
@@ -118,12 +150,24 @@ func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile
 		if _, want := targetSet[b.ContainerID]; !want {
 			continue
 		}
+		if !scope.Admits(b.PodUID) {
+			// Counted, never identified: the pod UID of an out-of-scope sample
+			// does not reach the log (CLAUDE.md invariant 6). A non-zero count
+			// means the controller named a container its own filters exclude —
+			// informer lag, or a controller disagreeing with itself.
+			outOfScope++
+			continue
+		}
 		g := groups[b.ContainerID]
 		if g == nil {
 			g = &group{podUID: b.PodUID}
 			groups[b.ContainerID] = g
 		}
 		g.samples = append(g.samples, s)
+	}
+	if outOfScope > 0 {
+		logger.Warn("dropped targeted samples outside the controller's own scan scope",
+			"samples", outOfScope)
 	}
 	if len(groups) == 0 {
 		return cursor

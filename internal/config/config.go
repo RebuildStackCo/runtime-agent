@@ -10,43 +10,86 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Config is the root of the agent configuration file.
+// The two roles have separate configuration schemas, and that separation is a
+// security property rather than tidiness (ADR 0025).
+//
+// A setting belongs in the node's file only if the node can enforce it alone.
+// The symbol allow-list and the cost ceilings qualify: the node applies them to
+// its own samples with no help from anyone, so no controller reply can widen
+// them. Which namespaces are eligible does not: eligibility is by namespace,
+// and a node with zero Kubernetes API access resolves a container to a pod UID
+// and never to a namespace (ADR 0009). It lives in the controller's file, where
+// it is applied.
+//
+// They shared one schema until ADR 0025, and the cost was not hypothetical. The
+// node's sample ConfigMap carried `eligibleNamespaces` under the comment
+// "which workloads may be profiled at all (empty = none)", the node parsed it,
+// logged it, and enforced nothing — a knob that read as deny-by-default and was
+// inert. Separate types make that a parse error instead: `UnmarshalStrict`
+// rejects a field the node's schema does not have, so a setting the node cannot
+// honor stops the node instead of misleading its operator.
+
+// Config is the root of the controller's configuration file.
 type Config struct {
-	Filters    Filters    `json:"filters"`
-	Spool      Spool      `json:"spool"`
-	NodeIntake NodeIntake `json:"nodeIntake"`
-	Profiling  Profiling  `json:"profiling"`
+	Filters    Filters             `json:"filters"`
+	Spool      Spool               `json:"spool"`
+	NodeIntake NodeIntake          `json:"nodeIntake"`
+	Profiling  ControllerProfiling `json:"profiling"`
 }
 
-// Profiling configures the eBPF CPU profiler (ADR 0011). It is shared by both
-// roles: the controller reads Enabled, the eligible set, and TopN to bound the
-// targeting reply; the node reads the symbol allow-list, capture cadence, and
-// overhead ceiling to run the profiler. On the node the -enable-ebpf flag is the
-// master switch and this config is additive (which workloads, which symbols, how
-// often); on the controller Enabled turns the targeting endpoint on.
-type Profiling struct {
+// NodeConfig is the root of the node role's configuration file. It holds only
+// what the node enforces itself; everything else about profiling is the
+// controller's (see the note above).
+type NodeConfig struct {
+	Profiling NodeProfiling `json:"profiling"`
+}
+
+// ControllerProfiling is the controller's half: whether to answer targeting
+// queries at all, and which workloads may ever be named in an answer.
+type ControllerProfiling struct {
 	// Enabled turns on the controller's targeting endpoint. Off by default.
 	Enabled bool `json:"enabled"`
 
 	// EligibleNamespaces bounds which namespaces may be profiled at all. Empty
 	// admits none: profiling is an explicit allow-list, not a deny-list (the
-	// posture of a security boundary, ADR 0011 §4). The controller may pick
-	// targets only within this set, and the node re-checks it.
+	// posture of a security boundary, ADR 0011).
+	//
+	// It is enforced here and only here. A node cannot re-check it, and a node
+	// that tried would be checking a label this controller supplied — which
+	// bounds a buggy controller and not a hostile one (ADR 0025).
 	EligibleNamespaces []string `json:"eligibleNamespaces"`
 	// EligibleWorkloads optionally restricts to specific workload names within
 	// the eligible namespaces. Empty admits every workload in those namespaces.
 	EligibleWorkloads []string `json:"eligibleWorkloads"`
 
+	// TopN is how many top-consuming workloads an answer may name; 0 selects the
+	// default. The node caps the count again with its own
+	// MaxTargetsPerWindow, so the effective limit is the smaller of the two.
+	TopN int `json:"topN"`
+}
+
+// NodeProfiling is the node's half: the symbol allow-list that decides what may
+// leave the node, and the ceilings on what profiling costs the node. Every field
+// here is enforced from this file, on the node, against the node's own samples.
+type NodeProfiling struct {
 	// AllowedModulePrefixes is the symbol allow-list: Go module-path prefixes of
 	// the customer's own code whose frames may leave the node (ADR 0011 §4).
+	//
+	// This is the load-bearing control of the whole profiling path. It is one
+	// list per node, not per workload, and it is the only thing standing between
+	// a compromised controller and the structure of the customer's code — which
+	// is why it lives in a file Helm owns rather than arriving over the wire.
 	AllowedModulePrefixes []string `json:"allowedModulePrefixes"`
 	// ThirdPartySymbols is "drop" (default) or "keep": whether third-party
 	// dependency frames are kept.
 	ThirdPartySymbols string `json:"thirdPartySymbols"`
 
-	// TopN is how many top-consuming workloads the controller returns; 0 selects
-	// the default.
-	TopN int `json:"topN"`
+	// MaxTargetsPerWindow caps how many containers the node captures in one
+	// window; 0 selects the default. It is deliberately not called TopN: the
+	// controller's TopN bounds how many workloads may be *named*, this bounds
+	// how many are *captured*, and one name for two limits is how an operator
+	// stops knowing which one applied.
+	MaxTargetsPerWindow int `json:"maxTargetsPerWindow"`
 	// CaptureDurationSeconds is how long one capture runs; 0 selects 60s.
 	CaptureDurationSeconds int `json:"captureDurationSeconds"`
 	// IntervalSeconds is the gap between capture rounds; 0 selects the default.
@@ -57,9 +100,10 @@ type Profiling struct {
 	OverheadCeilingPercent int `json:"overheadCeilingPercent"`
 }
 
-// Defaults and enumerations for profiling, applied by Profiling.Normalized.
+// Defaults and enumerations for profiling, applied by the Normalized methods.
 const (
 	DefaultProfilingTopN                   = 5
+	DefaultProfilingMaxTargetsPerWindow    = 5
 	DefaultProfilingCaptureDurationSeconds = 60
 	DefaultProfilingIntervalSeconds        = 300
 	DefaultProfilingOverheadCeilingPercent = 5
@@ -68,16 +112,25 @@ const (
 	ThirdPartySymbolsKeep = "keep"
 )
 
+// Normalized returns a copy with empty numeric fields replaced by their
+// defaults. It does not invent an eligible set: an empty allow-list stays empty
+// (admit none).
+func (p ControllerProfiling) Normalized() ControllerProfiling {
+	if p.TopN <= 0 {
+		p.TopN = DefaultProfilingTopN
+	}
+	return p
+}
+
 // Normalized returns a copy with empty numeric and policy fields replaced by
 // their defaults, so consumers do not each re-implement the empty-means-default
-// rule. It does not invent an eligible set: an empty allow-list stays empty
-// (admit none).
-func (p Profiling) Normalized() Profiling {
+// rule.
+func (p NodeProfiling) Normalized() NodeProfiling {
 	if p.ThirdPartySymbols == "" {
 		p.ThirdPartySymbols = ThirdPartySymbolsDrop
 	}
-	if p.TopN <= 0 {
-		p.TopN = DefaultProfilingTopN
+	if p.MaxTargetsPerWindow <= 0 {
+		p.MaxTargetsPerWindow = DefaultProfilingMaxTargetsPerWindow
 	}
 	if p.CaptureDurationSeconds <= 0 {
 		p.CaptureDurationSeconds = DefaultProfilingCaptureDurationSeconds
@@ -146,11 +199,28 @@ type NamespaceFilters struct {
 	Deny  []string `json:"deny"`
 }
 
-// Load reads the configuration file at path. An empty path yields the zero
-// configuration: collect everything, honoring only the opt-out annotations.
-// Unknown fields are an error, so a typo cannot silently disable a filter.
+// Load reads the controller's configuration file at path. An empty path yields
+// the zero configuration: collect everything, honoring only the opt-out
+// annotations. Unknown fields are an error, so a typo cannot silently disable a
+// filter.
 func Load(path string) (Config, error) {
-	var cfg Config
+	return load[Config](path)
+}
+
+// LoadNode reads the node role's configuration file at path. An empty path
+// yields the zero configuration, which the caller normalizes into defaults.
+//
+// Unknown fields are an error here for a second reason beyond typos: the node's
+// schema is deliberately narrower than the controller's, so a controller-only
+// setting placed in a node ConfigMap stops the node rather than being parsed and
+// ignored. That is the intended failure — a setting the node cannot enforce must
+// not look like one it does (ADR 0025).
+func LoadNode(path string) (NodeConfig, error) {
+	return load[NodeConfig](path)
+}
+
+func load[T any](path string) (T, error) {
+	var cfg T
 	if path == "" {
 		return cfg, nil
 	}

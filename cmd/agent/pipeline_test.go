@@ -16,6 +16,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
 func TestSamplesPerSecond(t *testing.T) {
@@ -74,7 +75,8 @@ func TestProcessWindowShipsOnlyTargetedContainers(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	processWindow(context.Background(), logger, filter, 20, procRoot, "node",
-		time.Unix(100, 0), time.Unix(160, 0), samples, targetSet, 5, 0, shipper)
+		time.Unix(100, 0), time.Unix(160, 0), samples, targetSet,
+		nodescan.NewScope([]string{podUID}), 5, 0, shipper)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -96,5 +98,74 @@ func TestProcessWindowNoTargetsShipsNothing(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// empty target set -> nothing shipped, no shipper touched
 	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
-		20, procRoot, "node", time.Unix(1, 0), time.Unix(2, 0), samples, map[string]struct{}{}, 5, 0, nil)
+		20, procRoot, "node", time.Unix(1, 0), time.Unix(2, 0), samples, map[string]struct{}{},
+		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), 5, 0, nil)
+}
+
+// A container the controller targeted but whose pod its own scan scope excludes
+// is not profiled. The two answers come from the same controller, so this does
+// not bound a hostile one — it catches a controller disagreeing with itself
+// (informer lag) and removes the asymmetry where the more sensitive signal was
+// taken from a pod the scanner may not even read (ADR 0025).
+func TestProcessWindowShipsNothingOutsideTheScanScope(t *testing.T) {
+	procRoot := t.TempDir()
+	// The profiled pod is a different one from what the scope admits below —
+	// the shape of a controller that named a container its own filters exclude.
+	const excludedPodUID = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
+	cid := strings.Repeat("a", 64)
+	writeCgroup(t, procRoot, 100, excludedPodUID, cid)
+
+	shipped := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		shipped = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	samples := []nodeprofile.Sample{
+		{PID: 100, Value: 3, Frames: []nodeprofile.Frame{{Function: "main.hot", Kind: "go"}}},
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	// Targeted, but the scope admits a different pod.
+	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
+		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
+		map[string]struct{}{cid: {}},
+		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), 5, 0,
+		newProfileShipper(srv.URL, writeToken(t, "tok")))
+
+	if shipped {
+		t.Error("shipped a profile for a pod outside the controller's own scan scope")
+	}
+}
+
+// And with no scope at all — an unreachable controller, or an endpoint the
+// operator did not configure — the window ships nothing rather than everything
+// it was told to. Same discipline as the scanner (ADR 0015 §2).
+func TestProcessWindowFailsClosedWithoutAScope(t *testing.T) {
+	procRoot := t.TempDir()
+	const podUID = "1234abcd-12ab-34cd-56ef-1234567890ab"
+	cid := strings.Repeat("a", 64)
+	writeCgroup(t, procRoot, 100, podUID, cid)
+
+	shipped := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		shipped = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	samples := []nodeprofile.Sample{
+		{PID: 100, Value: 3, Frames: []nodeprofile.Frame{{Function: "main.hot", Kind: "go"}}},
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
+		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
+		map[string]struct{}{cid: {}}, nodescan.DenyAll(), 5, 0,
+		newProfileShipper(srv.URL, writeToken(t, "tok")))
+
+	if shipped {
+		t.Error("shipped a profile with no scan scope; profiling must fail closed")
+	}
 }

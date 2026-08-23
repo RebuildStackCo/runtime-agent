@@ -348,18 +348,21 @@ profiling:
 // third-party frame is redacted), third-party symbols drop, and a short capture
 // cadence so the test sees a profile quickly. A higher overhead ceiling raises the
 // sampling rate, which shortens time-to-signal in the test.
-func renderNodeProfilingConfig(ns string) string {
+//
+// It carries no eligible set. That is the controller's (see
+// renderControllerConfigProfiling), and since ADR 0025 the node's schema rejects
+// it outright — a node given a setting it cannot enforce fails to start rather
+// than parsing and ignoring it.
+func renderNodeProfilingConfig() string {
 	return fmt.Sprintf(`profiling:
-  eligibleNamespaces:
-    - %s
   allowedModulePrefixes:
     - %s
   thirdPartySymbols: drop
-  topN: 5
+  maxTargetsPerWindow: 5
   captureDurationSeconds: 30
   intervalSeconds: 60
   overheadCeilingPercent: 20
-`, ns, sampleModulePath)
+`, sampleModulePath)
 }
 
 // deployNodeDaemonSetEBPFCapture applies the ebpf node variant into ns for the
@@ -406,7 +409,7 @@ func deployNodeDaemonSetEBPFCapture(ctx context.Context, t *testing.T, cs kubern
 			var cm corev1.ConfigMap
 			mustUnmarshal(t, doc, &cm)
 			cm.Namespace = ns
-			cm.Data["config.yaml"] = renderNodeProfilingConfig(ns)
+			cm.Data["config.yaml"] = renderNodeProfilingConfig()
 			create(ctx, t, "ConfigMap", func() error {
 				_, err := cs.CoreV1().ConfigMaps(ns).Create(ctx, &cm, metav1.CreateOptions{})
 				return err
