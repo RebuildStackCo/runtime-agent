@@ -85,3 +85,4 @@ line to paste.
 - [0025. The node's configuration holds only what the node can enforce](0025-node-config-holds-only-what-the-node-enforces.md)
 - [0026. The controller needs no persistent volume, and therefore no StatefulSet](0026-no-persistent-volume.md)
 - [0027. No payload carries an ordering field: the spool holds one version of a key](0027-no-payload-ordering-field.md)
+- [0028. The opt-out annotation works on the workload, and the workload step fails open](0028-workload-level-opt-out.md)

@@ -437,8 +437,9 @@ the `nodes` breakdown; this says why, still without naming a pod
 ([ADR 0021](adr/0021-pod-lifecycle-journal.md)).
 
 Both are limited to what passes your filters — a pod excluded by a namespace
-filter or an opt-out annotation is absent from the snapshot entirely, and its
-identity never appears in either payload.
+filter, or by an opt-out annotation on its namespace, its workload or itself,
+is absent from the snapshot entirely, and its identity never appears in either
+payload.
 
 Both also carry `captured_at`, the instant the snapshot was assembled, as does
 the Go inventory below. It timestamps the agent's own work, not anything in your
@@ -464,7 +465,8 @@ generated, never workload content ([ADR 0020](adr/0020-container-restart-journal
 
 If you would rather it did not leave, the controls are the ones in
 [§11](#11-your-controls-and-what-the-agent-says-about-itself): a namespace
-filter or the `rebuildstack.co/collect: "false"` annotation. An excluded pod
+filter, or the `rebuildstack.co/collect: "false"` annotation on the namespace,
+the workload, or the pod. An excluded pod
 produces no journal record at all — the exclusion applies before any of this is
 formed, and also removes what was already collected.
 
@@ -737,9 +739,25 @@ Three, and they are the complete list:
 |---|---|---|
 | **Namespace allow / deny lists** | Helm values → ConfigMap (`filters.namespaces`) | Names, `*` wildcards permitted. An empty allow list admits every namespace; a non-empty one admits only matches. Deny applies on top and wins on conflict |
 | **Namespace opt-out annotation** | on the Namespace object | `rebuildstack.co/collect: "false"` excludes every pod in it |
+| **Workload opt-out annotation** | on the Deployment, StatefulSet, DaemonSet, CronJob, or a bare Job or ReplicaSet | the same annotation excludes every pod that workload manages. **On the object itself, never in its pod template** — a template annotation is part of the template hash, so writing one there would roll every replica. Opting out of telemetry does not restart anything ([ADR 0028](adr/0028-workload-level-opt-out.md)) |
 | **Pod opt-out annotation** | on the Pod object | the same annotation excludes that pod |
 
-These three scope **everything**, profiling included: the workloads that may be
+**Where the workload control does not reach.** The agent reads the workload
+kinds above and no others. A pod managed by a custom resource — an Argo
+Rollout, a Knative Revision, an in-house operator — has a controller the agent
+cannot read, because reading arbitrary custom resources would need RBAC this
+product does not ask for ([§4](#4-kubernetes-api-access-rbac)). Such a pod is
+**collected**, not excluded: this agent is opt-out by design, and a controller
+it cannot read is not evidence that you opted out. The namespace and pod
+annotations still work on those workloads.
+
+You are not left to discover this. The coverage report counts it in
+`workload_unknown_kind` — how many collected pods had their workload-level
+opt-out unchecked for that reason — separately from `workload_not_cached`,
+which is a transient lookup miss and should sit at zero. Both are counts; no
+pod or workload is named.
+
+These four scope **everything**, profiling included: the workloads that may be
 profiled are the workloads you collect, and there is no separate list for it
 (ADR 0025). What profiling adds on top is not another filter but two deliberate
 acts — deploying the node DaemonSet with the `ebpf` profile, and enabling it on

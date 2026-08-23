@@ -155,7 +155,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		logger.Info("spool open", "dir", cfg.Spool.Dir)
 	}
 
-	filter := collector.NewPodFilter(cfg.Filters.Namespaces.Allow, cfg.Filters.Namespaces.Deny)
+	filter := collector.NewFilter(cfg.Filters.Namespaces.Allow, cfg.Filters.Namespaces.Deny)
 
 	podWatcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
 		logger.Info("pod observed",
@@ -401,7 +401,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"pods_observed", c.PodsObserved,
 			"excluded_namespace_filter", c.ExcludedNamespaceFilter,
 			"excluded_namespace_annotation", c.ExcludedNamespaceAnnotation,
+			"excluded_workload_annotation", c.ExcludedWorkloadAnnotation,
 			"excluded_pod_annotation", c.ExcludedPodAnnotation,
+			// The blind spot, not an exclusion: pods collected without their
+			// workload-level opt-out being checked (ADR 0028). The first is a
+			// standing property of a cluster running operators the agent does
+			// not read; the second should stay at zero.
+			"workload_unknown_kind", c.WorkloadUnknownKind,
+			"workload_not_cached", c.WorkloadNotCached,
 			"usage_signals", usagePoller.Signals(),
 		}
 		if goStore != nil {

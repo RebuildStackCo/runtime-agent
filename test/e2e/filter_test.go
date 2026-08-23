@@ -75,7 +75,7 @@ func TestPodFilterAgainstRealCluster(t *testing.T) {
 		seen[p.Namespace+"/"+p.Name] = p
 		mu.Unlock()
 	})
-	filter := collector.NewPodFilter(nil, []string{nsDenied})
+	filter := collector.NewFilter(nil, []string{nsDenied})
 	watcher.SetFilter(filter)
 	watcherDone := make(chan error, 1)
 	go func() { watcherDone <- watcher.Run(ctx) }()
