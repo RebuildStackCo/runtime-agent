@@ -283,11 +283,11 @@ func TestUsageSweepForgetsGoneContainers(t *testing.T) {
 }
 
 func TestUsageFlushEmitsClosedThenSnapshots(t *testing.T) {
-	var snapshots []int64
+	var snapshots int
 	var closedCount int
 	p := NewUsagePoller(nil, func() []string { return nil }, webResolver(),
-		func(sequence int64, records []*rollup.Record) {
-			snapshots = append(snapshots, sequence)
+		func(records []*rollup.Record) {
+			snapshots++
 			if len(records) == 0 {
 				panic("snapshot callback with no records")
 			}
@@ -299,11 +299,12 @@ func TestUsageFlushEmitsClosedThenSnapshots(t *testing.T) {
 	at := usageTestStart.Add(30 * time.Second)
 	p.ingest(summaryWith(cpuMemStats(usageTestStart, at, 15e9, 64<<20)), at)
 
-	// Window still open: snapshot only, with an increasing sequence.
+	// Window still open: every flush emits a snapshot, and each replaces its
+	// predecessor under the window's key.
 	p.flush(at.Add(time.Minute))
 	p.flush(at.Add(2 * time.Minute))
-	if len(snapshots) != 2 || snapshots[0] != 1 || snapshots[1] != 2 {
-		t.Fatalf("snapshot sequences = %v, want [1 2]", snapshots)
+	if snapshots != 2 {
+		t.Fatalf("open window produced %d snapshots across two flushes, want 2", snapshots)
 	}
 	if closedCount != 0 {
 		t.Fatalf("closed %d records while the window is open", closedCount)
@@ -314,8 +315,8 @@ func TestUsageFlushEmitsClosedThenSnapshots(t *testing.T) {
 	if closedCount != 1 {
 		t.Fatalf("closed %d records, want 1", closedCount)
 	}
-	if len(snapshots) != 2 {
-		t.Fatalf("empty open set still produced a snapshot: %v", snapshots)
+	if snapshots != 2 {
+		t.Fatalf("empty open set still produced a snapshot: %d total", snapshots)
 	}
 }
 

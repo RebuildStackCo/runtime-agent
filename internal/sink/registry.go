@@ -27,8 +27,9 @@ type Delivery string
 
 const (
 	// DeliverySupersedes means a newer payload replaces the older one under the
-	// same key. The backend upserts; order comes from the sequence the payload
-	// carries, never from arrival time.
+	// same key. The backend upserts, last write wins, and no payload carries an
+	// ordering field: the spool holds exactly one version of a key, atomically
+	// replaced, so the agent never offers two versions to order (ADR 0027).
 	DeliverySupersedes Delivery = "supersedes"
 	// DeliveryAccumulates means every payload has a distinct key and none
 	// replaces another. The backend inserts.

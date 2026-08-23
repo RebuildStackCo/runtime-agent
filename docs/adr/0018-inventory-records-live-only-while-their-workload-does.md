@@ -3,7 +3,7 @@
 Date: 2026-08-21
 Status: Accepted
 Amends: 0017
-Amended by: 0019
+Amended by: 0019, 0027
 
 Amends [ADR 0017](0017-build-facts-keyed-by-digest.md): its `coverage` block
 gains a lifetime rule for `nodes_reported`, and the record-lifetime question it

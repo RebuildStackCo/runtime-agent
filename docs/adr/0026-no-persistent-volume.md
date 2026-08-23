@@ -3,6 +3,7 @@
 Date: 2026-08-23
 Status: Accepted
 Amends: 0007 §1, 0008 §3
+Amended by: 0027
 
 Removes the `persistence.enabled` opt-in of ADR 0007 §1 and the write-free
 strict mode ADR 0008 §3 built on top of it, and settles the workload kind ADR

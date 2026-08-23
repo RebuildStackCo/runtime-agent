@@ -122,3 +122,44 @@ func TestRegistryRowsAreComplete(t *testing.T) {
 		}
 	}
 }
+
+// No payload carries an ordering field (ADR 0027). The five counters that
+// produced `sequence` restarted at one with the process, so a backend obeying
+// the old "order by the agent's sequence" rule would have rejected everything a
+// restarted controller sent under a fixed key until the count caught up.
+//
+// The replacement is structural rather than declared: the spool holds one
+// version of a natural key, atomically replaced, so last-write-wins is correct
+// without a field. This test is what stops a future kind from quietly
+// reintroducing one — the reasoning lives in an ADR, and an ADR cannot fail.
+func TestNoPayloadCarriesAnOrderingField(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("testdata", "*.golden.json"))
+	if err != nil {
+		t.Fatalf("globbing goldens: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no golden payloads found; this check would pass vacuously")
+	}
+	// Names a payload must not use for an ordering field. `captured_at` is not
+	// here on purpose: it dates an observation, and ADR 0027 §3 keeps it a fact
+	// rather than machinery.
+	ordering := []string{"sequence", "seq", "revision", "generation", "version"}
+	for _, path := range paths {
+		raw, err := os.ReadFile(path) // #nosec G304 -- test-controlled path
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
+		}
+		for _, name := range ordering {
+			if _, found := fields[name]; found {
+				t.Errorf("%s carries %q. Superseding payloads are ordered by nothing: the "+
+					"spool holds one version of a key (ADR 0027). If a total order is really "+
+					"needed, it takes its own ADR — a counter cannot survive a restart.",
+					filepath.Base(path), name)
+			}
+		}
+	}
+}

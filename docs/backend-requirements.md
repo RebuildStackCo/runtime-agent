@@ -254,16 +254,16 @@ snapshots means "no longer collected", not "not observed this time". The backend
 MUST treat a superseding snapshot as the complete current truth and MUST NOT
 carry forward records absent from it. A short-lived workload (a CronJob's pods)
 may legitimately appear in one snapshot and not the next; accumulating "has ever
-been a Go workload" across snapshots is the backend's job, and `sequence` and
-`captured_at` are what it orders them by.
+been a Go workload" across snapshots is the backend's job, and `captured_at` is
+what dates them.
 
 **`go_build` is write-once and keyed by image digest.** What a build is made of
 and how it was built — the Go version, the main module, the dependency module
 paths, and the allow-listed build settings — never changes, so the payload is
 immutable given its key and the agent sends it once per distinct build. The
 backend MUST upsert it by image digest and MUST NOT expect it on every flush or
-treat a redelivery (after an agent restart) as a change. It carries no sequence
-and no `captured_at` for the same reason. Join it to workloads through
+treat a redelivery (after an agent restart) as a change. It carries no
+`captured_at` for the same reason. Join it to workloads through
 `go_inventory.records[].image_digest`. It contains module *paths* only, never
 versions — it is not a dependency-version inventory and MUST NOT be presented as
 one.
@@ -295,10 +295,14 @@ report one.
   data is fresh during the window, not an hour later. The backend MUST
   upsert snapshots by the natural key above: a newer snapshot of a window
   replaces an older one, and the final closed-window record replaces every
-  snapshot. Ordering MUST follow the agent-side snapshot sequence — never
-  arrival order, which retransmission after an outage can invert. Snapshots
-  have the same aggregate shape as any rollup; they do not relax §9 (no raw
-  time series).
+  snapshot. **Last write wins, and no payload carries an ordering field**
+  ([ADR 0027](adr/0027-no-payload-ordering-field.md)): the agent's spool holds
+  exactly one version of a natural key at a time, atomically replaced, so it
+  never has two versions to offer. In exchange the agent MUST keep at most one
+  request per natural key in flight — a resend of an unacknowledged payload
+  re-reads the current version and is therefore the same or newer, never older.
+  Snapshots have the same aggregate shape as any rollup; they do not relax §9
+  (no raw time series).
 - **Acknowledgment is a durability promise.** The backend MUST NOT
   acknowledge data it can still lose. The agent trims its local buffers only
   after acknowledgment.

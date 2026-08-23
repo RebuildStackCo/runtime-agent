@@ -236,17 +236,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 
 	// logRecords writes rollup records one line each; the JSON body is the
 	// exact record shape (kind marks snapshots vs. final closed windows).
-	logRecords := func(kind string, sequence int64, records []*rollup.Record) {
+	logRecords := func(kind string, records []*rollup.Record) {
 		for _, r := range records {
 			encoded, err := json.Marshal(r)
 			if err != nil {
 				logger.Error("encoding usage record", "error", err)
 				continue
 			}
-			logger.Info(kind,
-				"sequence", sequence,
-				"record", json.RawMessage(encoded),
-			)
+			logger.Info(kind, "record", json.RawMessage(encoded))
 		}
 	}
 	// The targeting publisher (ADR 0011 §3, §6b) ranks collected workloads by
@@ -263,19 +260,19 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// synchronized regardless.
 	var usagePoller *collector.UsagePoller
 	usagePoller = collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
-		func(sequence int64, records []*rollup.Record) {
-			logRecords("usage rollup snapshot", sequence, records)
+		func(records []*rollup.Record) {
+			logRecords("usage rollup snapshot", records)
 			if targetsPublisher != nil {
 				targetsPublisher.Publish(records)
 			}
 			if spool != nil {
-				if err := spool.WriteUsageSnapshot(sequence, records, usagePoller.Observation()); err != nil {
+				if err := spool.WriteUsageSnapshot(records, usagePoller.Observation()); err != nil {
 					logger.Error("spooling usage snapshot", "error", err)
 				}
 			}
 		},
 		func(records []*rollup.Record) {
-			logRecords("usage rollup closed", 0, records)
+			logRecords("usage rollup closed", records)
 			if spool != nil {
 				if err := spool.WriteClosedWindows(records, usagePoller.Observation()); err != nil {
 					logger.Error("spooling closed windows", "error", err)
@@ -299,7 +296,6 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		goStore = inventory.NewStore(time.Now())
 	}
 	var inventoryMu sync.Mutex
-	var goInventorySeq int64
 	flushInventory := func() {
 		if goStore == nil || spool == nil {
 			return
@@ -318,8 +314,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			logger.Info("go inventory forgot departed workloads",
 				"records", evicted.Records, "builds", evicted.Builds)
 		}
-		goInventorySeq++
-		if err := spool.WriteGoInventory(goInventorySeq, time.Now(), goStore.Coverage(), goStore.Snapshot()); err != nil {
+		if err := spool.WriteGoInventory(time.Now(), goStore.Coverage(), goStore.Snapshot()); err != nil {
 			logger.Error("spooling go inventory", "error", err)
 		}
 		// Build facts are keyed by image digest and immutable for it, so each is
@@ -337,28 +332,27 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// Workload and node metadata are derived from the watchers' live indexes on
 	// each flush rather than accumulated from events: a snapshot is the current
 	// state of the cluster, so it drops what the cluster dropped and needs no
-	// state of its own (ADR 0003, loss-harmless). Both are superseding batches,
-	// ordered by their own sequence; the flush runs only on the coverage
-	// goroutine, so that sequence needs no synchronization.
-	var metadataSeq int64
+	// state of its own (ADR 0003, loss-harmless). Both are superseding batches
+	// under a fixed key, and neither carries anything that orders it: each write
+	// replaces the previous file, so there is never a second version to rank
+	// (ADR 0027).
 	flushMetadata := func() {
 		if spool == nil {
 			return
 		}
-		metadataSeq++
 		// One capture instant for both payloads of a flush: they describe the
 		// same cluster state and are joined against each other downstream.
 		capturedAt := time.Now()
 		records := metadata.Aggregate(podWatcher.Pods())
-		if err := spool.WriteWorkloadMetadata(metadataSeq, capturedAt, records); err != nil {
+		if err := spool.WriteWorkloadMetadata(capturedAt, records); err != nil {
 			logger.Error("spooling workload metadata", "error", err)
 		}
 		nodes := nodeWatcher.Nodes()
-		if err := spool.WriteNodeMetadata(metadataSeq, capturedAt, nodes); err != nil {
+		if err := spool.WriteNodeMetadata(capturedAt, nodes); err != nil {
 			logger.Error("spooling node metadata", "error", err)
 		}
 		logger.Info("metadata flushed",
-			"sequence", metadataSeq,
+			"captured_at", capturedAt,
 			"workload_records", len(records),
 			"nodes", len(nodes),
 		)
@@ -367,39 +361,35 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// Restart windows ride the same cadence: the open window is re-written each
 	// flush (it supersedes under its own key) and a window that has ended is
 	// written one last time and dropped from memory. Same goroutine as the
-	// metadata flush, so the sequence needs no synchronization.
-	var restartSeq int64
+	// metadata flush.
 	flushRestarts := func() {
 		if spool == nil {
 			return
 		}
-		restartSeq++
 		records := append(restartJournal.CloseBefore(time.Now()), restartJournal.Snapshots()...)
 		if len(records) == 0 {
 			return // a cluster where nothing restarted writes nothing
 		}
-		if err := spool.WriteContainerRestarts(restartSeq, records); err != nil {
+		if err := spool.WriteContainerRestarts(records); err != nil {
 			logger.Error("spooling container restarts", "error", err)
 			return
 		}
-		logger.Info("container restarts flushed", "sequence", restartSeq, "records", len(records))
+		logger.Info("container restarts flushed", "records", len(records))
 	}
 
-	var disruptionSeq int64
 	flushDisruptions := func() {
 		if spool == nil {
 			return
 		}
-		disruptionSeq++
 		records := append(disruptionJournal.CloseBefore(time.Now()), disruptionJournal.Snapshots()...)
 		if len(records) == 0 {
 			return // a cluster where nothing was preempted or evicted writes nothing
 		}
-		if err := spool.WritePodDisruptions(disruptionSeq, records); err != nil {
+		if err := spool.WritePodDisruptions(records); err != nil {
 			logger.Error("spooling pod disruptions", "error", err)
 			return
 		}
-		logger.Info("pod disruptions flushed", "sequence", disruptionSeq, "records", len(records))
+		logger.Info("pod disruptions flushed", "records", len(records))
 	}
 
 	// Excluded pods are reported as aggregate counts only, never by name
