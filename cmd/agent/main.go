@@ -220,6 +220,26 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		)
 		disruptionJournal.Observe(d)
 	})
+
+	// Finished Job runs. Same window shape as the journals above; the facts are
+	// the run's own instants and outcome, which is what a usage rollup cannot
+	// supply for a workload that ran for part of a window (ADR 0029).
+	jobJournal := journal.NewJobRuns(collector.UsageWindowLength)
+	podWatcher.OnJobFinished(func(r collector.JobRun) {
+		logger.Info("job run finished",
+			"namespace", r.Namespace,
+			"workload_kind", r.Workload.Kind,
+			"workload_name", r.Workload.Name,
+			"job", r.Name,
+			"result", r.Result,
+			"fail_reason", r.FailReason,
+			"started_at", r.StartedAt,
+			"finished_at", r.FinishedAt,
+			"succeeded", r.Succeeded,
+			"failed", r.Failed,
+		)
+		jobJournal.Observe(r)
+	})
 	podWatcher.SetFilter(filter)
 	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
 		logger.Info("node observed",
@@ -392,6 +412,21 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		logger.Info("pod disruptions flushed", "records", len(records))
 	}
 
+	flushJobRuns := func() {
+		if spool == nil {
+			return
+		}
+		records := append(jobJournal.CloseBefore(time.Now()), jobJournal.Snapshots()...)
+		if len(records) == 0 {
+			return // a cluster with no batch workloads writes nothing
+		}
+		if err := spool.WriteJobRuns(records); err != nil {
+			logger.Error("spooling job runs", "error", err)
+			return
+		}
+		logger.Info("job runs flushed", "records", len(records))
+	}
+
 	// Excluded pods are reported as aggregate counts only, never by name
 	// (docs/security.md §8). Inventory counters are aggregate too: no identity
 	// of an unjoined fact appears, only a count (CLAUDE.md invariant 6).
@@ -403,6 +438,13 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"excluded_namespace_annotation", c.ExcludedNamespaceAnnotation,
 			"excluded_workload_annotation", c.ExcludedWorkloadAnnotation,
 			"excluded_pod_annotation", c.ExcludedPodAnnotation,
+			// Jobs are counted apart from pods: one Job makes many pods, so a
+			// shared number would answer neither question (ADR 0029).
+			"jobs_observed", c.JobsObserved,
+			"jobs_excluded_namespace_filter", c.JobsExcludedNamespaceFilter,
+			"jobs_excluded_namespace_annotation", c.JobsExcludedNamespaceAnnotation,
+			"jobs_excluded_workload_annotation", c.JobsExcludedWorkloadAnnotation,
+			"jobs_excluded_annotation", c.JobsExcludedAnnotation,
 			// The blind spot, not an exclusion: pods collected without their
 			// workload-level opt-out being checked (ADR 0028). The first is a
 			// standing property of a cluster running operators the agent does
@@ -446,6 +488,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				flushInventory()
 				flushRestarts()
 				flushDisruptions()
+				flushJobRuns()
 			}
 		}
 	}()
@@ -556,6 +599,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	flushInventory()
 	flushRestarts()
 	flushDisruptions()
+	flushJobRuns()
 	return errors.Join(errs...)
 }
 

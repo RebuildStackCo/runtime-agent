@@ -98,6 +98,16 @@ var registry = []PayloadKind{
 		ADR:        "0021",
 	},
 	{
+		// Windowed like the other two journals, and for the same reason: the
+		// window bounds the spool's file count, which a fleet of CronJobs would
+		// otherwise control (ADR 0029).
+		Kind:       "job_runs",
+		Source:     SourceJournal,
+		NaturalKey: "(window start, window length)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0029",
+	},
+	{
 		Kind:       "go_inventory",
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",

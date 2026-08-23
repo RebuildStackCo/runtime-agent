@@ -86,3 +86,4 @@ line to paste.
 - [0026. The controller needs no persistent volume, and therefore no StatefulSet](0026-no-persistent-volume.md)
 - [0027. No payload carries an ordering field: the spool holds one version of a key](0027-no-payload-ordering-field.md)
 - [0028. The opt-out annotation works on the workload, and the workload step fails open](0028-workload-level-opt-out.md)
+- [0029. Finished Job runs ship as a windowed journal, and are not baselined](0029-job-runs.md)

@@ -65,7 +65,7 @@ everything; C1b and C2 are independent of each other.
 
 ---
 
-## Slice C1a — the opt-out annotation works on the workload
+## Slice C1a — the opt-out annotation works on the workload  ✅ MERGED (#56)
 
 Not originally planned. It surfaced while designing C1b's filter: a Job's pods
 inherit `spec.template.metadata.annotations`, so the documented way to opt a
@@ -84,7 +84,7 @@ and `workload_not_cached`. `PodFilter` becomes `Filter`.
 
 ---
 
-## Slice C1b — `job_runs`
+## Slice C1b — `job_runs`  ✅
 
 **Kind:** `job_runs` · **source:** `journal` · **key:** (window start, window
 length) · **delivery:** supersedes
@@ -114,11 +114,15 @@ duplicating them here would give two answers to one question. Consequence to
 state in the ADR: when a Job's pods are reaped before the agent sees them, the
 run is reported with no resource envelope to join to.
 
-**Reporting rule — baseline on first observation.** Jobs already in a terminal
-state when the informer syncs are recorded as seen and never reported. ADR 0020
-§5 set this: reporting pre-existing history would place it in whichever window
-happens to be open at startup, dating events by when the agent started rather
-than when they happened.
+**Reporting rule — corrected while building: no baseline.** The plan said to
+baseline already-terminal Jobs on the ADR 0020 §5 precedent. That precedent does
+not transfer. Restarts are baselined because a restart counter carries no time;
+a Job carries `startTime`, `completionTime` and its condition's transition time,
+so an already-finished run files itself in the window where it actually
+finished. This is ADR 0021's distinction, and the agent gains the cluster's
+recent batch history at startup instead of discarding it. The startup burst is
+bounded by the cluster's own retention — three successful and one failed Job per
+CronJob by default.
 
 **Honest limitation:** with `ttlSecondsAfterFinished` set, a Job disappears
 shortly after finishing, so a run completed while the agent was down is lost.

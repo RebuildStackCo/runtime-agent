@@ -179,6 +179,23 @@ type podDisruptionsPayload struct {
 	Records       []journal.DisruptionRecord `json:"records"`
 }
 
+// jobRunsPayload is every finished Job run of one window: one file per window
+// holding many records, like the restart and disruption journals (ADR 0029).
+//
+// The window is a delivery boundary rather than an aggregation — a run finishes
+// once and carries its own instants — and it exists to keep the spool's file
+// count bounded by time rather than by how many CronJobs the cluster schedules.
+//
+// It supersedes within its window: a run reported again while its object still
+// exists rewrites its own record, so the file's newest write is its value.
+type jobRunsPayload struct {
+	Kind          string                 `json:"kind"`
+	Source        string                 `json:"source"`
+	WindowStart   time.Time              `json:"window_start"`
+	WindowSeconds int64                  `json:"window_seconds"`
+	Records       []journal.JobRunRecord `json:"records"`
+}
+
 // workloadMetadataPayload is the declared shape of every collected workload
 // container — requests, limits, QoS, ports — and where its replicas run. Like
 // go-inventory it is a single superseding batch under a fixed natural key (the
@@ -366,6 +383,35 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 	name := fmt.Sprintf("oom-%d-%s-%s-%s-%d.json",
 		e.FinishedAt.Unix(), e.Namespace, e.Pod, e.Container, e.RestartCount)
 	return s.write(name, oomPayload{Kind: "oom_kill", Source: SourceJournal, Event: e})
+}
+
+// WriteJobRuns writes the finished Job runs of each window they belong to, one
+// file per window, atomically replacing that window's previous file. records
+// must already be in a deterministic order (the accumulator sorts them) so the
+// payload bytes are stable — the golden contract.
+//
+// A window in which no Job finished writes nothing. A cluster with no batch
+// workloads has nothing to say, and an empty payload would claim otherwise for
+// every quiet hour of every cluster.
+func (s *Spool) WriteJobRuns(records []journal.JobRunRecord) error {
+	grouped := make(map[windowKey][]journal.JobRunRecord)
+	for _, r := range records {
+		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
+		grouped[k] = append(grouped[k], r)
+	}
+	for k, group := range grouped {
+		payload := jobRunsPayload{
+			Kind:          "job_runs",
+			Source:        SourceJournal,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Records:       group,
+		}
+		if err := s.write(fmt.Sprintf("job-runs-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WriteGoInventory writes the current Go inventory as one superseding batch
