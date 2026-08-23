@@ -10,16 +10,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// The two roles have separate configuration schemas, and that separation is a
-// security property rather than tidiness (ADR 0025).
-//
-// A setting belongs in the node's file only if the node can enforce it alone.
-// The symbol allow-list and the cost ceilings qualify: the node applies them to
-// its own samples with no help from anyone, so no controller reply can widen
-// them. Which namespaces are eligible does not: eligibility is by namespace,
-// and a node with zero Kubernetes API access resolves a container to a pod UID
-// and never to a namespace (ADR 0009). It lives in the controller's file, where
-// it is applied.
+// The two roles have separate configuration schemas, and a setting belongs in
+// the node's file only if the node can enforce it alone (ADR 0025). The symbol
+// allow-list and the cost ceilings qualify: the node applies them to its own
+// samples with no help from anyone, so no controller reply can widen them.
 //
 // They shared one schema until ADR 0025, and the cost was not hypothetical. The
 // node's sample ConfigMap carried `eligibleNamespaces` under the comment
@@ -28,6 +22,13 @@ import (
 // inert. Separate types make that a parse error instead: `UnmarshalStrict`
 // rejects a field the node's schema does not have, so a setting the node cannot
 // honor stops the node instead of misleading its operator.
+//
+// That field is gone from both schemas now. Which workloads may be profiled is
+// which workloads are collected, and Filters already says so; a second namespace
+// list was the same intent expressed twice, with the opposite meaning for an
+// empty value — and the shipped controller sample proved the trap by enabling
+// profiling with an empty eligible set, which produces nothing, forever,
+// silently.
 
 // Config is the root of the controller's configuration file.
 type Config struct {
@@ -45,26 +46,22 @@ type NodeConfig struct {
 }
 
 // ControllerProfiling is the controller's half: whether to answer targeting
-// queries at all, and which workloads may ever be named in an answer.
+// queries at all, and how many workloads an answer may name.
+//
+// There is no separate eligible set. Which workloads may be profiled is which
+// workloads are collected — Filters above — and a second namespace list would
+// be the same intent expressed twice, in two shapes, with opposite meanings for
+// an empty value (ADR 0025).
 type ControllerProfiling struct {
-	// Enabled turns on the controller's targeting endpoint. Off by default.
+	// Enabled turns on the controller's targeting endpoint. Off by default;
+	// together with deploying the node DaemonSet it is the deliberate act that
+	// starts profiling.
 	Enabled bool `json:"enabled"`
 
-	// EligibleNamespaces bounds which namespaces may be profiled at all. Empty
-	// admits none: profiling is an explicit allow-list, not a deny-list (the
-	// posture of a security boundary, ADR 0011).
-	//
-	// It is enforced here and only here. A node cannot re-check it, and a node
-	// that tried would be checking a label this controller supplied — which
-	// bounds a buggy controller and not a hostile one (ADR 0025).
-	EligibleNamespaces []string `json:"eligibleNamespaces"`
-	// EligibleWorkloads optionally restricts to specific workload names within
-	// the eligible namespaces. Empty admits every workload in those namespaces.
-	EligibleWorkloads []string `json:"eligibleWorkloads"`
-
 	// TopN is how many top-consuming workloads an answer may name; 0 selects the
-	// default. The node caps the count again with its own
-	// MaxTargetsPerWindow, so the effective limit is the smaller of the two.
+	// default. It is the only count bound in the profiling path: the node's own
+	// cost is bounded by OverheadCeilingPercent and, ultimately, by its container
+	// CPU limit.
 	TopN int `json:"topN"`
 }
 
@@ -84,12 +81,6 @@ type NodeProfiling struct {
 	// dependency frames are kept.
 	ThirdPartySymbols string `json:"thirdPartySymbols"`
 
-	// MaxTargetsPerWindow caps how many containers the node captures in one
-	// window; 0 selects the default. It is deliberately not called TopN: the
-	// controller's TopN bounds how many workloads may be *named*, this bounds
-	// how many are *captured*, and one name for two limits is how an operator
-	// stops knowing which one applied.
-	MaxTargetsPerWindow int `json:"maxTargetsPerWindow"`
 	// CaptureDurationSeconds is how long one capture runs; 0 selects 60s.
 	CaptureDurationSeconds int `json:"captureDurationSeconds"`
 	// IntervalSeconds is the gap between capture rounds; 0 selects the default.
@@ -103,7 +94,6 @@ type NodeProfiling struct {
 // Defaults and enumerations for profiling, applied by the Normalized methods.
 const (
 	DefaultProfilingTopN                   = 5
-	DefaultProfilingMaxTargetsPerWindow    = 5
 	DefaultProfilingCaptureDurationSeconds = 60
 	DefaultProfilingIntervalSeconds        = 300
 	DefaultProfilingOverheadCeilingPercent = 5
@@ -128,9 +118,6 @@ func (p ControllerProfiling) Normalized() ControllerProfiling {
 func (p NodeProfiling) Normalized() NodeProfiling {
 	if p.ThirdPartySymbols == "" {
 		p.ThirdPartySymbols = ThirdPartySymbolsDrop
-	}
-	if p.MaxTargetsPerWindow <= 0 {
-		p.MaxTargetsPerWindow = DefaultProfilingMaxTargetsPerWindow
 	}
 	if p.CaptureDurationSeconds <= 0 {
 		p.CaptureDurationSeconds = DefaultProfilingCaptureDurationSeconds

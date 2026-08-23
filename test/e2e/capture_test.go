@@ -322,11 +322,18 @@ func execSpoolReader(ctx context.Context, t *testing.T, config *rest.Config, cs 
 }
 
 // renderControllerConfigProfiling is renderControllerConfig plus an enabled
-// profiling block scoped to this namespace's sample: the controller opens the
-// targets endpoint and ranks only the goworkload Deployment, so the reply names
-// exactly the sample's containers.
+// profiling block. Scope comes from the collection filter and nothing else
+// (ADR 0025): allowing only this test's namespace is what confines both the
+// rollups and the profiling targets to the sample workload. The agent's own pods
+// live in that namespace too and are ranked alongside it; their frames do not
+// survive the node's symbol allow-list, so their profiles fail validation and
+// are never shipped — the filters doing their job rather than a second knob.
 func renderControllerConfigProfiling(ns string) string {
-	return fmt.Sprintf(`spool:
+	return fmt.Sprintf(`filters:
+  namespaces:
+    allow:
+      - %s
+spool:
   dir: /var/spool/runtime-agent
 nodeIntake:
   enabled: true
@@ -335,10 +342,6 @@ nodeIntake:
   expectedSubject: "system:serviceaccount:%s:runtime-agent-node"
 profiling:
   enabled: true
-  eligibleNamespaces:
-    - %s
-  eligibleWorkloads:
-    - goworkload
   topN: 5
 `, ns, ns)
 }
@@ -349,16 +352,14 @@ profiling:
 // cadence so the test sees a profile quickly. A higher overhead ceiling raises the
 // sampling rate, which shortens time-to-signal in the test.
 //
-// It carries no eligible set. That is the controller's (see
-// renderControllerConfigProfiling), and since ADR 0025 the node's schema rejects
-// it outright — a node given a setting it cannot enforce fails to start rather
-// than parsing and ignoring it.
+// It carries no eligible set and no target count: since ADR 0025 the node's
+// schema rejects both outright — a node given a setting it cannot enforce fails
+// to start rather than parsing and ignoring it.
 func renderNodeProfilingConfig() string {
 	return fmt.Sprintf(`profiling:
   allowedModulePrefixes:
     - %s
   thirdPartySymbols: drop
-  maxTargetsPerWindow: 5
   captureDurationSeconds: 30
   intervalSeconds: 60
   overheadCeilingPercent: 20

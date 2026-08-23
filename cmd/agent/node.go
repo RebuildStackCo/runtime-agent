@@ -45,9 +45,9 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	// The node's configuration schema is narrower than the controller's, and
 	// holds only what the node enforces on its own samples: the symbol
 	// allow-list that decides what may leave this node, and the ceilings on what
-	// profiling costs it. Which workloads are eligible is not here — that is by
-	// namespace, and the node has no way to learn a container's namespace
-	// (ADR 0009, ADR 0025). A controller-only setting placed in this file is a
+	// profiling costs it. Which workloads get profiled is not here and not in
+	// profiling at all — it is which workloads the controller collects
+	// (ADR 0025). A controller-only setting placed in this file is a
 	// startup error, not a field parsed and ignored. -enable-ebpf remains the
 	// master switch; this config is additive.
 	cfg, err := config.LoadNode(*configPath)
@@ -83,7 +83,6 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		logger.Info("ebpf profiling config",
 			"allowed_module_prefixes", len(profiling.AllowedModulePrefixes),
 			"third_party_symbols", profiling.ThirdPartySymbols,
-			"max_targets_per_window", profiling.MaxTargetsPerWindow,
 			"capture_duration_s", profiling.CaptureDurationSeconds,
 			"interval_s", profiling.IntervalSeconds,
 			"overhead_ceiling_pct", profiling.OverheadCeilingPercent,

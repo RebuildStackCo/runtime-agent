@@ -75,7 +75,6 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 	var (
 		targetSet map[string]struct{}
 		lastFetch time.Time
-		cursor    int // rotation cursor across windows
 		start     = time.Now()
 	)
 	for {
@@ -105,30 +104,34 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 			} else {
 				scope = nodescan.NewScope(uids)
 			}
-			cursor = processWindow(ctx, logger, filter, sps, procRoot, node,
-				start, end, session.Drain(), targetSet, scope, p.MaxTargetsPerWindow, cursor, shipper)
+			processWindow(ctx, logger, filter, sps, procRoot, node,
+				start, end, session.Drain(), targetSet, scope, shipper)
 			start = time.Now()
 		}
 	}
 }
 
-// processWindow groups a window's samples by container, keeps only containers
-// that both the controller targeted and the scope admits, and ships up to
-// maxPerWindow of them, rotating the start point by cursor so no target
-// monopolizes capture. It returns the next cursor.
+// processWindow groups a window's samples by container and ships every container
+// that both the controller targeted and the scope admits.
 //
 // The two conditions are not redundant. The target set says which containers are
 // worth profiling; the scope says which pods the customer's filters admit at
 // all. A container in the first and not the second is one whose executable the
 // scanner is forbidden to open (ADR 0015) — profiling it would take the more
 // sensitive signal from the pod denied the less sensitive one.
+//
+// How many containers a window may ship is bounded by the controller's TopN
+// alone. A node-side cap existed and was removed (ADR 0025): profiling is
+// directed from the controller, a second count limit in a second file only
+// raised the question of which one applied, and the node's real cost bounds are
+// its sampling rate and its container CPU limit — neither of which a target
+// count changes.
 func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile.SymbolFilter,
 	sps int, procRoot, node string, start, end time.Time, samples []nodeprofile.Sample,
-	targetSet map[string]struct{}, scope nodescan.Scope, maxPerWindow, cursor int,
-	shipper *profileShipper) int {
+	targetSet map[string]struct{}, scope nodescan.Scope, shipper *profileShipper) {
 
 	if len(samples) == 0 || len(targetSet) == 0 || scope.Size() == 0 {
-		return cursor
+		return
 	}
 
 	type group struct {
@@ -170,21 +173,17 @@ func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile
 			"samples", outOfScope)
 	}
 	if len(groups) == 0 {
-		return cursor
+		return
 	}
 
-	// Deterministic rotation over the targeted containers this window.
+	// Sorted so a window's profiles are produced in a stable order; with no
+	// per-window cap there is nothing to rotate, and every group ships.
 	cids := make([]string, 0, len(groups))
 	for cid := range groups {
 		cids = append(cids, cid)
 	}
 	sort.Strings(cids)
-	if maxPerWindow <= 0 || maxPerWindow > len(cids) {
-		maxPerWindow = len(cids)
-	}
-	cursor %= len(cids)
-	for i := 0; i < maxPerWindow; i++ {
-		cid := cids[(cursor+i)%len(cids)]
+	for _, cid := range cids {
 		g := groups[cid]
 
 		filtered, _ := filter.Filter(g.samples)
@@ -207,7 +206,6 @@ func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile
 			}
 		}
 	}
-	return cursor + maxPerWindow
 }
 
 func toStringSet(xs []string) map[string]struct{} {

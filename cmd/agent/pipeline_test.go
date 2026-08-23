@@ -76,7 +76,7 @@ func TestProcessWindowShipsOnlyTargetedContainers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	processWindow(context.Background(), logger, filter, 20, procRoot, "node",
 		time.Unix(100, 0), time.Unix(160, 0), samples, targetSet,
-		nodescan.NewScope([]string{podUID}), 5, 0, shipper)
+		nodescan.NewScope([]string{podUID}), shipper)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -99,7 +99,7 @@ func TestProcessWindowNoTargetsShipsNothing(t *testing.T) {
 	// empty target set -> nothing shipped, no shipper touched
 	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
 		20, procRoot, "node", time.Unix(1, 0), time.Unix(2, 0), samples, map[string]struct{}{},
-		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), 5, 0, nil)
+		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), nil)
 }
 
 // A container the controller targeted but whose pod its own scan scope excludes
@@ -131,7 +131,7 @@ func TestProcessWindowShipsNothingOutsideTheScanScope(t *testing.T) {
 	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
 		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
 		map[string]struct{}{cid: {}},
-		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), 5, 0,
+		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}),
 		newProfileShipper(srv.URL, writeToken(t, "tok")))
 
 	if shipped {
@@ -162,7 +162,7 @@ func TestProcessWindowFailsClosedWithoutAScope(t *testing.T) {
 
 	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
 		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
-		map[string]struct{}{cid: {}}, nodescan.DenyAll(), 5, 0,
+		map[string]struct{}{cid: {}}, nodescan.DenyAll(),
 		newProfileShipper(srv.URL, writeToken(t, "tok")))
 
 	if shipped {

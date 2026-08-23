@@ -181,14 +181,13 @@ spec:
 # The node's profiling config. Its schema is deliberately narrower than the
 # controller's and holds only what the node enforces on its own samples: the
 # symbol allow-list that decides what may leave this node, and the ceilings on
-# what profiling costs it (ADR 0025).
+# what profiling costs it (ADR 0025). A controller-only setting placed in this
+# file stops the node at startup rather than being parsed and ignored, which is
+# what it used to do.
 #
-# Which workloads are eligible is NOT here. Eligibility is by namespace, and a
-# node with zero Kubernetes API access resolves a container to a pod UID and
-# never to a namespace (ADR 0009) — it is set in the controller's ConfigMap,
-# where it is applied. A controller-only setting placed in this file stops the
-# node at startup rather than being parsed and ignored, which is what it used to
-# do.
+# Which workloads get profiled is not configured here or anywhere else in
+# profiling: it is which workloads are collected, from the controller's
+# filters.namespaces.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -204,10 +203,9 @@ data:
       # reply can widen it. One list per node, not per workload.
       allowedModulePrefixes: []
       thirdPartySymbols: drop          # drop (default) | keep
-      # Ceilings on this node's own cost, also enforced here. The controller has
-      # its own topN bounding how many workloads it may name; the effective
-      # limit is the smaller of the two.
-      maxTargetsPerWindow: 5
+      # Ceilings on this node's own cost, enforced here. How many workloads may
+      # be profiled is the controller's topN; this node bounds what profiling
+      # costs it, not how many targets it is given.
       captureDurationSeconds: 60
       intervalSeconds: 300
       overheadCeilingPercent: 5

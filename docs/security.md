@@ -293,12 +293,19 @@ running binary, and only symbolized, allow-list-filtered profiles (see
 [§8](#8-data-collected-and-data-leaving-the-cluster)) leave the node — and only
 towards the in-cluster controller.
 
-**What decides who gets profiled.** Profiling is off unless you enable it and
-name eligible namespaces; the eligible set is empty by default, so nothing is
-profiled until you opt a namespace in. On its own interval the node asks the
-controller which of the eligible workloads rank highest by consumption, and the
-reply is a list of container IDs on that node — the one node↔controller reply
-the node acts on (ADR 0011 §3).
+**What decides who gets profiled.** Profiling is off unless you deploy the node
+DaemonSet with the `ebpf` profile *and* enable it on the controller — two
+deliberate acts, neither of which happens by accident. Once on, the workloads it
+may profile are **the workloads you already chose to collect**
+([§11](#11-your-controls-and-what-the-agent-says-about-itself)). There is no
+second namespace list to keep in step with the first (ADR 0025).
+
+On its own interval the node asks the controller which of those workloads rank
+highest by consumption, and the reply is a list of container IDs on that node —
+the one node↔controller reply the node acts on (ADR 0011 §3). The reply is bounded
+by construction rather than by a filter applied at answer time: the ranking comes
+from usage rollups, which exist only for pods your filters admitted, so a
+workload you excluded was never measured and cannot be named.
 
 Two answers must admit a container before its samples are shipped: the targets
 reply, and the scan scope of [§10.2](#102-node-level-visibility-cannot-be-namespace-scoped) —
@@ -314,10 +321,9 @@ previously stated wrongly (ADR 0025):
 |---|---|---|---|
 | Symbol allow-list — which module prefixes may leave in a frame | the node's own ConfigMap | yes | **yes** |
 | Overhead ceiling, capture duration, interval | the node's own ConfigMap | yes | **yes** |
-| Max targets per window | the node's own ConfigMap | yes | **yes** |
 | Profile validation (parses, `cpu`/`nanoseconds`, a service function present) | the node's code | yes | **yes** |
 | The container exists on this node | the node's `/proc` | yes | **yes** |
-| Eligible namespaces and workloads | the controller's ConfigMap | yes | no |
+| Your collection filters, via the targets reply | the controller | yes | no |
 | Scan scope | the controller's reply | yes | no |
 
 The bottom two are facts the node receives rather than facts it holds, so they
@@ -325,8 +331,9 @@ bound a controller that is wrong and not one that is lying — a hostile
 controller would simply send a different answer. **This is not a gap that can be
 closed** while the node holds zero Kubernetes API access (ADR 0009): every
 namespace fact reaches it through the controller, so no node-side re-check of a
-controller-supplied label can constrain the controller. Giving the node the
-eligible set to check would look like a safeguard and be none.
+controller-supplied label can constrain the controller. Giving the node a
+namespace list to check against would look like a safeguard and be none — which
+is why there is no longer one (ADR 0025).
 
 What that leaves is the top five rows, and they are genuinely unforgeable. The
 symbol allow-list is the load-bearing one: it is the reason a stack trace is
@@ -721,9 +728,12 @@ Three, and they are the complete list:
 | **Namespace opt-out annotation** | on the Namespace object | `rebuildstack.co/collect: "false"` excludes every pod in it |
 | **Pod opt-out annotation** | on the Pod object | the same annotation excludes that pod |
 
-Profiling has its own, stricter gate on top of these: it is off unless enabled,
-and its eligible namespaces are an allow-list that is **empty by default**
-([§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011)).
+These three scope **everything**, profiling included: the workloads that may be
+profiled are the workloads you collect, and there is no separate list for it
+(ADR 0025). What profiling adds on top is not another filter but two deliberate
+acts — deploying the node DaemonSet with the `ebpf` profile, and enabling it on
+the controller — plus the symbol allow-list that governs what a stack frame may
+carry out of the cluster ([§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011)).
 
 There is **no label-selector filter.** Earlier revisions of this document listed
 one; it was never decided in an ADR and never existed in the configuration, so
