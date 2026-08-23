@@ -115,7 +115,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | Resource | Verbs | Why |
 |---|---|---|
 | `pods` | get/list/watch | Map containers to workloads; read `requests`/`limits` from spec; detect OOM kills and count restarts from `status.containerStatuses[]` (`restartCount`, and the reason and exit code of `lastState.terminated`); read the `PodScheduled` and `DisruptionTarget` conditions to report why a replica is not running and when the cluster took one away; read `containerPorts` to locate pprof endpoints |
-| `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod |
+| `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod; read each workload's own annotations to honor an opt-out written there ([ADR 0028](adr/0028-workload-level-opt-out.md)); and read finished Jobs' timings and outcomes for `job_runs` ([ADR 0029](adr/0029-job-runs.md)) |
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
@@ -379,6 +379,7 @@ appearing here (ADR 0022).
 | `oom_kill` | One out-of-memory kill: namespace, pod, container, workload, when it finished, exit code, restart count, and the memory limit in force | **yes** |
 | `container_restarts` | Per (namespace, pod, container) and hour: restart count, breakdown by termination reason, how many restarts had no reason visible, last exit code | **yes** |
 | `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
+| `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
@@ -395,6 +396,15 @@ section describes each in detail.
 ### Field minimization
 
 - The agent **never reads Secrets or ConfigMaps** (no RBAC for them exists).
+  Its own configuration is a different thing and arrives as a mounted file, not
+  through the API.
+- From Jobs, the agent keeps `metadata`, the terminal condition's *type*,
+  *reason* and *transition time*, `status.startTime`, `status.completionTime`,
+  `status.succeeded`, `status.failed`, and three declared fields:
+  `spec.parallelism`, `spec.completions`, `spec.backoffLimit`. From
+  `spec.template` it reads **annotations only**, to honor an opt-out written
+  there — never the `env`, `args` or `command` beneath it, on a Job no less than
+  on a pod.
 - From pod specs, the agent keeps only `metadata`, `spec.containers[].resources`,
   `spec.containers[].ports`, `ownerReferences`, and `status`. It explicitly
   discards `env`, `args`, and `command` before anything is stored or
@@ -447,6 +457,13 @@ cluster, so that a stale snapshot can be recognized rather than assumed current
 ([ADR 0017](adr/0017-build-facts-keyed-by-digest.md)).
 
 ### Object history, and the one place pods are named (ADR 0020)
+
+`job_runs` names the Job object, which for a scheduled job is a generated
+per-run name such as `rollup-29123456`, and the CronJob that scheduled it. The
+name is what tells two runs of one schedule apart, and it is a name your cluster
+generated, never workload content — the same line `container_restarts` draws
+([ADR 0029](adr/0029-job-runs.md)). A run whose Job, CronJob, namespace or pod
+template carries the opt-out annotation produces no record at all.
 
 `oom_kill`, `container_restarts` and `pod_disruptions` report what the cluster's
 own object status records about a container's history — see the table above for

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -85,12 +86,13 @@ type PodInfo struct {
 // new ones. Every observed pod is reported through the OnPod callback,
 // resolved to the workload that manages it.
 type PodWatcher struct {
-	clientset    kubernetes.Interface
-	onPod        func(PodInfo)
-	onOOM        func(OOMKill)
-	onRestart    func(ContainerRestart)
-	onDisruption func(PodDisruption)
-	filter       *Filter
+	clientset     kubernetes.Interface
+	onPod         func(PodInfo)
+	onOOM         func(OOMKill)
+	onRestart     func(ContainerRestart)
+	onDisruption  func(PodDisruption)
+	onJobFinished func(JobRun)
+	filter        *Filter
 
 	// Listers for the owner chain. The ReplicaSet and Job listers resolve a
 	// pod to its top-level workload; the four below read that workload's own
@@ -112,6 +114,10 @@ type PodWatcher struct {
 	// reportedDisruptions deduplicates disrupted pods across the many status
 	// updates one receives between being condemned and disappearing.
 	reportedDisruptions map[string]struct{}
+	// reportedJobs deduplicates finished Jobs across the status updates a Job
+	// receives after it terminates. Keyed by UID rather than name because a
+	// CronJob's run names are generated but a bare Job's name is reusable.
+	reportedJobs map[types.UID]struct{}
 	// reportedSig deduplicates pod reports across the many status updates a
 	// pod receives: the collected view is re-sent only when its image-digest
 	// signature changes (digests appear on the update that follows container
@@ -163,6 +169,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		reportedOOMs:        make(map[string]struct{}),
 		restartCounts:       make(map[string]int32),
 		reportedDisruptions: make(map[string]struct{}),
+		reportedJobs:        make(map[types.UID]struct{}),
 		reportedSig:         make(map[types.UID]string),
 		index:               make(map[types.UID]podIndexEntry),
 		nameIndex:           make(map[string]types.UID),
@@ -202,9 +209,10 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	// Informers must be instantiated before Start, or the factory won't
 	// run them.
 	podsInformer := pods.Informer()
+	jobsInformer := jobs.Informer()
 	ownerSynced := []cache.InformerSynced{
 		rs.Informer().HasSynced,
-		jobs.Informer().HasSynced,
+		jobsInformer.HasSynced,
 		deployments.Informer().HasSynced,
 		statefulSets.Informer().HasSynced,
 		daemonSets.Informer().HasSynced,
@@ -273,6 +281,39 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		return fmt.Errorf("register pod handler: %w", err)
 	}
 	defer func() { _ = podsInformer.RemoveEventHandler(reg) }()
+
+	// The Job handler rides the informer that already resolves owner chains,
+	// so `job_runs` costs no watch the controller was not already running
+	// (ADR 0029). Like the pod handler it is registered after sync and replays
+	// the cache as Adds — which is wanted here: a Job carries its own
+	// timestamps, so a run that finished before the agent started files itself
+	// in the window where it actually happened.
+	jobReg, err := jobsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			if job, ok := obj.(*batchv1.Job); ok {
+				w.reportJobRun(job)
+			}
+		},
+		// A Job reaches its terminal condition through an update, which is the
+		// path that reports almost every run of a running cluster.
+		UpdateFunc: func(_, obj any) {
+			if job, ok := obj.(*batchv1.Job); ok {
+				w.reportJobRun(job)
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if unknown, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = unknown.Obj
+			}
+			if job, ok := obj.(*batchv1.Job); ok {
+				w.forgetJobRun(job)
+			}
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("register job handler: %w", err)
+	}
+	defer func() { _ = jobsInformer.RemoveEventHandler(jobReg) }()
 
 	<-ctx.Done()
 	return nil

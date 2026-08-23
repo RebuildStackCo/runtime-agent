@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -32,6 +33,12 @@ const (
 	ExcludedByNamespaceAnnotation ExclusionReason = "namespace_annotation"
 	ExcludedByWorkloadAnnotation  ExclusionReason = "workload_annotation"
 	ExcludedByPodAnnotation       ExclusionReason = "pod_annotation"
+	// ExcludedByObjectAnnotation is the object's own annotation where that
+	// object is not a pod — today a Job, whose own metadata is where an
+	// annotation on a CronJob's `jobTemplate.metadata` lands, and whose pod
+	// template is where an opt-out written the pre-ADR-0028 way lives. The two
+	// are one reason because they mean one thing: this run was opted out.
+	ExcludedByObjectAnnotation ExclusionReason = "object_annotation"
 )
 
 // UnresolvedWorkload says why a pod's workload annotations could not be read.
@@ -75,6 +82,15 @@ type Filter struct {
 
 	workloadUnknownKind atomic.Int64
 	workloadNotCached   atomic.Int64
+
+	// Jobs are counted apart from pods. Folding them together would make
+	// `pods_observed` state a falsehood about pods, and the coverage report is
+	// the one place the customer is told what was not collected.
+	jobsObserved                    atomic.Int64
+	jobsExcludedNamespaceFilter     atomic.Int64
+	jobsExcludedNamespaceAnnotation atomic.Int64
+	jobsExcludedWorkloadAnnotation  atomic.Int64
+	jobsExcludedAnnotation          atomic.Int64
 }
 
 // NewFilter builds a filter from namespace name lists; entries may use
@@ -111,6 +127,35 @@ func (f *Filter) AdmitPod(pod *corev1.Pod, nsAnnotations map[string]string, work
 	return true, ""
 }
 
+// AdmitJob reports whether a finished Job's facts may be collected.
+//
+// It is the pod decision with one step added. The workload step is the Job's
+// owning CronJob; the object step is the Job's own annotations; and the last
+// step reads the Job's **pod template**, which is what excluded this run's pods
+// if the customer opted out the way security.md documented before ADR 0028.
+//
+// Without that last step the agent would ship `job_runs` for a workload whose
+// pods it refuses to measure — collected and sent, which is worse than
+// collected and dropped. Reading `spec.template.metadata.annotations` is
+// metadata, never the `env`, `args` or `command` beneath it (CLAUDE.md
+// invariant 4).
+func (f *Filter) AdmitJob(job *batchv1.Job, nsAnnotations map[string]string, workload WorkloadLookup) (bool, ExclusionReason) {
+	if !f.namespaceAllowed(job.Namespace) {
+		return false, ExcludedByNamespaceFilter
+	}
+	if nsAnnotations[CollectAnnotation] == "false" {
+		return false, ExcludedByNamespaceAnnotation
+	}
+	if workload.Annotations[CollectAnnotation] == "false" {
+		return false, ExcludedByWorkloadAnnotation
+	}
+	if job.Annotations[CollectAnnotation] == "false" ||
+		job.Spec.Template.Annotations[CollectAnnotation] == "false" {
+		return false, ExcludedByObjectAnnotation
+	}
+	return true, ""
+}
+
 func (f *Filter) namespaceAllowed(namespace string) bool {
 	if len(f.allow) > 0 && !matchAny(f.allow, namespace) {
 		return false
@@ -132,6 +177,23 @@ func (f *Filter) countExcluded(reason ExclusionReason) {
 		f.excludedWorkloadAnnotation.Add(1)
 	case ExcludedByPodAnnotation:
 		f.excludedPodAnnotation.Add(1)
+	}
+}
+
+func (f *Filter) countJobObserved() {
+	f.jobsObserved.Add(1)
+}
+
+func (f *Filter) countJobExcluded(reason ExclusionReason) {
+	switch reason {
+	case ExcludedByNamespaceFilter:
+		f.jobsExcludedNamespaceFilter.Add(1)
+	case ExcludedByNamespaceAnnotation:
+		f.jobsExcludedNamespaceAnnotation.Add(1)
+	case ExcludedByWorkloadAnnotation:
+		f.jobsExcludedWorkloadAnnotation.Add(1)
+	case ExcludedByObjectAnnotation:
+		f.jobsExcludedAnnotation.Add(1)
 	}
 }
 
@@ -165,6 +227,14 @@ type Coverage struct {
 	// second should sit at zero.
 	WorkloadUnknownKind int64
 	WorkloadNotCached   int64
+
+	// Job counters, kept apart from the pod ones on purpose: one Job produces
+	// many pods, so a shared counter would answer neither question.
+	JobsObserved                    int64
+	JobsExcludedNamespaceFilter     int64
+	JobsExcludedNamespaceAnnotation int64
+	JobsExcludedWorkloadAnnotation  int64
+	JobsExcludedAnnotation          int64
 }
 
 // Snapshot returns the current coverage counters.
@@ -177,6 +247,12 @@ func (f *Filter) Snapshot() Coverage {
 		ExcludedPodAnnotation:       f.excludedPodAnnotation.Load(),
 		WorkloadUnknownKind:         f.workloadUnknownKind.Load(),
 		WorkloadNotCached:           f.workloadNotCached.Load(),
+
+		JobsObserved:                    f.jobsObserved.Load(),
+		JobsExcludedNamespaceFilter:     f.jobsExcludedNamespaceFilter.Load(),
+		JobsExcludedNamespaceAnnotation: f.jobsExcludedNamespaceAnnotation.Load(),
+		JobsExcludedWorkloadAnnotation:  f.jobsExcludedWorkloadAnnotation.Load(),
+		JobsExcludedAnnotation:          f.jobsExcludedAnnotation.Load(),
 	}
 }
 

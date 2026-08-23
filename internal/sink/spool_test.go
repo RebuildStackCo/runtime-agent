@@ -285,6 +285,86 @@ func fixedDisruptions() []journal.DisruptionRecord {
 	}
 }
 
+// fixedJobRuns is a deterministic window of finished runs: a CronJob run that
+// succeeded after a retry, a CronJob run that exhausted its backoff limit, and
+// a bare Job that never started before failing. The three cover the fields a
+// consumer has to tell apart — a retry that cost resources, a failure reason
+// that is a capacity fact, and a zero start instant that is a real state.
+func fixedJobRuns() []journal.JobRunRecord {
+	return []journal.JobRunRecord{
+		{
+			Namespace:     "analytics",
+			Workload:      collector.WorkloadRef{Kind: "CronJob", Name: "rollup"},
+			Name:          "rollup-29123456",
+			StartedAt:     windowStart.Add(5 * time.Minute),
+			FinishedAt:    windowStart.Add(7 * time.Minute),
+			Result:        "succeeded",
+			Succeeded:     1,
+			Failed:        2,
+			Parallelism:   ptrTo(int32(1)),
+			Completions:   ptrTo(int32(1)),
+			BackoffLimit:  ptrTo(int32(6)),
+			WindowStart:   windowStart,
+			WindowSeconds: 3600,
+		},
+		{
+			Namespace:     "analytics",
+			Workload:      collector.WorkloadRef{Kind: "CronJob", Name: "rollup"},
+			Name:          "rollup-29123457",
+			StartedAt:     windowStart.Add(35 * time.Minute),
+			FinishedAt:    windowStart.Add(41 * time.Minute),
+			Result:        "failed",
+			FailReason:    "BackoffLimitExceeded",
+			Failed:        7,
+			Parallelism:   ptrTo(int32(1)),
+			Completions:   ptrTo(int32(1)),
+			BackoffLimit:  ptrTo(int32(6)),
+			WindowStart:   windowStart,
+			WindowSeconds: 3600,
+		},
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "Job", Name: "migrate-v42"},
+			Name:      "migrate-v42",
+			// No StartedAt: the run failed before the controller recorded a
+			// start, which the payload omits rather than rendering as the epoch.
+			FinishedAt:    windowStart.Add(12 * time.Minute),
+			Result:        "failed",
+			FailReason:    "DeadlineExceeded",
+			WindowStart:   windowStart,
+			WindowSeconds: 3600,
+		},
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
+func TestGoldenJobRunsPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteJobRuns(fixedJobRuns()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("job-runs-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "job-runs.golden.json")
+}
+
+// One file per window, not per run. A cluster whose CronJobs finish hundreds of
+// runs an hour must not put the spool's file count under its own control
+// (ADR 0029, the reasoning ADR 0021 established for disruptions).
+func TestJobRunsOfOneWindowShareAFile(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteJobRuns(fixedJobRuns()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool holds %d files for three runs of one window, want 1", len(entries))
+	}
+}
+
 func TestGoldenPodDisruptionsPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
 	if err := s.WritePodDisruptions(fixedDisruptions()); err != nil {
