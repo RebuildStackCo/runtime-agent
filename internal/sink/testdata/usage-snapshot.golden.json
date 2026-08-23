@@ -1,7 +1,6 @@
 {
   "kind": "usage_snapshot",
   "source": "measured",
-  "sequence": 7,
   "window_start": "2026-08-06T10:00:00Z",
   "window_seconds": 3600,
   "observation": {

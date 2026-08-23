@@ -173,15 +173,14 @@ func assertSpoolHoldsBurner(t *testing.T, spoolDir, ns string) {
 			t.Fatal(err)
 		}
 		var payload struct {
-			Kind     string           `json:"kind"`
-			Sequence int64            `json:"sequence"`
-			Records  []*rollup.Record `json:"records"`
+			Kind    string           `json:"kind"`
+			Records []*rollup.Record `json:"records"`
 		}
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			t.Fatalf("spool payload %s is not valid JSON: %v", path, err)
 		}
-		if payload.Kind != "usage_snapshot" || payload.Sequence < 1 {
-			t.Fatalf("payload %s has kind %q sequence %d", path, payload.Kind, payload.Sequence)
+		if payload.Kind != "usage_snapshot" {
+			t.Fatalf("payload %s has kind %q, want usage_snapshot", path, payload.Kind)
 		}
 		for _, r := range payload.Records {
 			if r.Namespace == ns && r.WorkloadName == "burner" && r.CPU.CoreNanoseconds > 0 {
@@ -209,10 +208,10 @@ func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.
 	// observation state, exactly as the agent wires it.
 	var poller *collector.UsagePoller
 	poller = collector.NewUsagePoller(clientset, nodeWatcher.Names, podWatcher,
-		func(sequence int64, records []*rollup.Record) {
-			t.Logf("usage snapshot %d: %d records", sequence, len(records))
+		func(records []*rollup.Record) {
+			t.Logf("usage snapshot: %d records", len(records))
 			results.put(records)
-			if err := spool.WriteUsageSnapshot(sequence, records, poller.Observation()); err != nil {
+			if err := spool.WriteUsageSnapshot(records, poller.Observation()); err != nil {
 				t.Errorf("spooling snapshot: %v", err)
 			}
 		},

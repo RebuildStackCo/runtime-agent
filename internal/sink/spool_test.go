@@ -130,7 +130,7 @@ func closedFile(dir string) string {
 
 func TestGoldenUsageSnapshotPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteUsageSnapshot(7, fixedRecords(), fixedObservation()); err != nil {
+	if err := s.WriteUsageSnapshot(fixedRecords(), fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, snapshotFile(dir), "usage-snapshot.golden.json")
@@ -192,7 +192,7 @@ func fixedRestarts() []journal.RestartRecord {
 
 func TestGoldenContainerRestartsPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteContainerRestarts(3, fixedRestarts()); err != nil {
+	if err := s.WriteContainerRestarts(fixedRestarts()); err != nil {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("restarts-%d-3600.json", windowStart.Unix())
@@ -207,7 +207,7 @@ func TestContainerRestartsAreOneFilePerWindow(t *testing.T) {
 	next := records[0]
 	next.WindowStart = windowStart.Add(time.Hour)
 	records = append(records, next)
-	if err := s.WriteContainerRestarts(1, records); err != nil {
+	if err := s.WriteContainerRestarts(records); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -224,12 +224,12 @@ func TestContainerRestartsAreOneFilePerWindow(t *testing.T) {
 // closes is its final value.
 func TestContainerRestartsSupersedeWithinTheirWindow(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteContainerRestarts(1, fixedRestarts()); err != nil {
+	if err := s.WriteContainerRestarts(fixedRestarts()); err != nil {
 		t.Fatal(err)
 	}
 	grown := fixedRestarts()
 	grown[0].Restarts = 9
-	if err := s.WriteContainerRestarts(2, grown); err != nil {
+	if err := s.WriteContainerRestarts(grown); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -240,8 +240,7 @@ func TestContainerRestartsSupersedeWithinTheirWindow(t *testing.T) {
 		t.Fatalf("spool holds %d files after two writes of one window, want 1", len(entries))
 	}
 	var payload struct {
-		Sequence int64 `json:"sequence"`
-		Records  []struct {
+		Records []struct {
 			Restarts int64 `json:"restarts"`
 		} `json:"records"`
 	}
@@ -252,9 +251,9 @@ func TestContainerRestartsSupersedeWithinTheirWindow(t *testing.T) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Sequence != 2 || payload.Records[0].Restarts != 9 {
-		t.Errorf("surviving payload = sequence %d, first record %d restarts; want 2 and 9",
-			payload.Sequence, payload.Records[0].Restarts)
+	if payload.Records[0].Restarts != 9 {
+		t.Errorf("surviving payload's first record has %d restarts, want 9 (newest supersedes)",
+			payload.Records[0].Restarts)
 	}
 }
 
@@ -288,7 +287,7 @@ func fixedDisruptions() []journal.DisruptionRecord {
 
 func TestGoldenPodDisruptionsPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WritePodDisruptions(5, fixedDisruptions()); err != nil {
+	if err := s.WritePodDisruptions(fixedDisruptions()); err != nil {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("disruptions-%d-3600.json", windowStart.Unix())
@@ -306,7 +305,7 @@ func TestPodDisruptionsAreOneFilePerWindow(t *testing.T) {
 		extra.Pod = fmt.Sprintf("index-%d", i+1)
 		records = append(records, extra)
 	}
-	if err := s.WritePodDisruptions(1, records); err != nil {
+	if err := s.WritePodDisruptions(records); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -341,7 +340,7 @@ func fixedInventory() []inventory.GoRecord {
 
 func TestGoldenGoInventoryPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteGoInventory(4, capturedAt, fixedCoverage(), fixedInventory()); err != nil {
+	if err := s.WriteGoInventory(capturedAt, fixedCoverage(), fixedInventory()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "go-inventory.json"), "go-inventory.golden.json")
@@ -349,10 +348,11 @@ func TestGoldenGoInventoryPayload(t *testing.T) {
 
 func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteGoInventory(1, capturedAt, fixedCoverage(), fixedInventory()); err != nil {
+	if err := s.WriteGoInventory(capturedAt, fixedCoverage(), fixedInventory()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteGoInventory(2, capturedAt, fixedCoverage(), fixedInventory()); err != nil {
+	later := capturedAt.Add(time.Minute)
+	if err := s.WriteGoInventory(later, fixedCoverage(), fixedInventory()); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -363,7 +363,7 @@ func TestGoInventorySupersedesOnDisk(t *testing.T) {
 		t.Fatalf("spool holds %d files after two inventory writes, want 1 (supersede by key)", len(entries))
 	}
 	var payload struct {
-		Sequence int64 `json:"sequence"`
+		CapturedAt time.Time `json:"captured_at"`
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "go-inventory.json")) // #nosec G304 -- test-controlled path
 	if err != nil {
@@ -372,8 +372,9 @@ func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Sequence != 2 {
-		t.Fatalf("surviving inventory has sequence %d, want 2 (newest supersedes)", payload.Sequence)
+	if !payload.CapturedAt.Equal(later) {
+		t.Fatalf("surviving inventory was captured at %s, want %s (newest supersedes)",
+			payload.CapturedAt, later)
 	}
 }
 
@@ -570,7 +571,7 @@ func fixedNodeMetadata() []collector.NodeInfo {
 
 func TestGoldenWorkloadMetadataPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteWorkloadMetadata(7, capturedAt, fixedWorkloadMetadata()); err != nil {
+	if err := s.WriteWorkloadMetadata(capturedAt, fixedWorkloadMetadata()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "workload-metadata.json"), "workload-metadata.golden.json")
@@ -578,7 +579,7 @@ func TestGoldenWorkloadMetadataPayload(t *testing.T) {
 
 func TestGoldenNodeMetadataPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteNodeMetadata(7, capturedAt, fixedNodeMetadata()); err != nil {
+	if err := s.WriteNodeMetadata(capturedAt, fixedNodeMetadata()); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "node-metadata.json"), "node-metadata.golden.json")
@@ -586,13 +587,19 @@ func TestGoldenNodeMetadataPayload(t *testing.T) {
 
 // Metadata describes current state, so each flush replaces its predecessor
 // rather than accumulating — the on-disk mirror of upsert-by-key ingest.
+// Each flush carries a later capture instant, and the last one is what the file
+// holds. That is also the whole of the ordering story since ADR 0027: the spool
+// keeps one version of a key, so "which is newest" is answered by which file is
+// there, not by a counter inside it.
 func TestMetadataSupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
-	for _, seq := range []int64{1, 2, 3} {
-		if err := s.WriteWorkloadMetadata(seq, capturedAt, fixedWorkloadMetadata()); err != nil {
+	var last time.Time
+	for i := range 3 {
+		last = capturedAt.Add(time.Duration(i) * time.Minute)
+		if err := s.WriteWorkloadMetadata(last, fixedWorkloadMetadata()); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.WriteNodeMetadata(seq, capturedAt, fixedNodeMetadata()); err != nil {
+		if err := s.WriteNodeMetadata(last, fixedNodeMetadata()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -605,9 +612,9 @@ func TestMetadataSupersedesOnDisk(t *testing.T) {
 	}
 	for _, name := range []string{"workload-metadata.json", "node-metadata.json"} {
 		var payload struct {
-			Kind     string `json:"kind"`
-			Source   string `json:"source"`
-			Sequence int64  `json:"sequence"`
+			Kind       string    `json:"kind"`
+			Source     string    `json:"source"`
+			CapturedAt time.Time `json:"captured_at"`
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- test-controlled path
 		if err != nil {
@@ -616,8 +623,9 @@ func TestMetadataSupersedesOnDisk(t *testing.T) {
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Sequence != 3 {
-			t.Errorf("%s has sequence %d, want 3 (newest supersedes)", name, payload.Sequence)
+		if !payload.CapturedAt.Equal(last) {
+			t.Errorf("%s was captured at %s, want %s (newest supersedes)",
+				name, payload.CapturedAt, last)
 		}
 		// Provenance is what stops the backend merging a declared value with a
 		// measured or sampled one under the same key.
@@ -757,10 +765,14 @@ func TestProfilesDoNotSupersede(t *testing.T) {
 func TestSnapshotSupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
 	records := fixedRecords()
-	if err := s.WriteUsageSnapshot(1, records, fixedObservation()); err != nil {
+	if err := s.WriteUsageSnapshot(records, fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteUsageSnapshot(2, records, fixedObservation()); err != nil {
+	// A later snapshot of the same window has polled more times — the observable
+	// difference between two writes now that no counter labels them.
+	later := fixedObservation()
+	later.PollsAttempted++
+	if err := s.WriteUsageSnapshot(records, later); err != nil {
 		t.Fatal(err)
 	}
 
@@ -772,7 +784,7 @@ func TestSnapshotSupersedesOnDisk(t *testing.T) {
 		t.Fatalf("spool holds %d files after two snapshots of one window, want 1", len(entries))
 	}
 	var payload struct {
-		Sequence int64 `json:"sequence"`
+		Observation collector.Observation `json:"observation"`
 	}
 	raw, err := os.ReadFile(snapshotFile(dir)) // #nosec G304 -- test-controlled path
 	if err != nil {
@@ -781,15 +793,16 @@ func TestSnapshotSupersedesOnDisk(t *testing.T) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Sequence != 2 {
-		t.Fatalf("surviving snapshot has sequence %d, want 2 (newest supersedes)", payload.Sequence)
+	if payload.Observation.PollsAttempted != later.PollsAttempted {
+		t.Fatalf("surviving snapshot reports %d polls attempted, want %d (newest supersedes)",
+			payload.Observation.PollsAttempted, later.PollsAttempted)
 	}
 }
 
 func TestClosedWindowReplacesSnapshot(t *testing.T) {
 	s, dir := newTestSpool(t)
 	records := fixedRecords()
-	if err := s.WriteUsageSnapshot(1, records, fixedObservation()); err != nil {
+	if err := s.WriteUsageSnapshot(records, fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.WriteClosedWindows(records, fixedObservation()); err != nil {
@@ -818,7 +831,7 @@ func TestSweepDropsExpiredAndTempFiles(t *testing.T) {
 	}
 
 	// The sweep rides the snapshot cadence.
-	if err := s.WriteUsageSnapshot(1, fixedRecords(), fixedObservation()); err != nil {
+	if err := s.WriteUsageSnapshot(fixedRecords(), fixedObservation()); err != nil {
 		t.Fatal(err)
 	}
 

@@ -56,7 +56,7 @@ type UsagePoller struct {
 	nodes     func() []string
 	pods      PodResolver
 
-	onSnapshot func(sequence int64, records []*rollup.Record)
+	onSnapshot func(records []*rollup.Record)
 	onClosed   func(records []*rollup.Record)
 	onError    func(node string, err error)
 
@@ -64,7 +64,6 @@ type UsagePoller struct {
 	acc      *rollup.Accumulator
 	tracker  map[trackerKey]*counterState
 	throttle map[trackerKey]*throttleState
-	sequence int64
 
 	// Observation state: which kubelet signals this cluster actually exposes
 	// (runtime probing, ADR 0006) and how the polling itself is going. Written
@@ -116,15 +115,14 @@ type counterState struct {
 
 // NewUsagePoller wires a poller to its node list, pod attribution, and
 // output callbacks. Any callback may be nil. onSnapshot receives deep
-// copies of the open-window records with a monotonically increasing
-// sequence number — the ordering key for the backend's supersede ingest;
-// onClosed receives final records of ended windows; onError reports
-// per-node poll failures, which are routine during node lifecycle events.
+// copies of the open-window records; onClosed receives final records of ended
+// windows; onError reports per-node poll failures, which are routine during
+// node lifecycle events.
 func NewUsagePoller(
 	clientset kubernetes.Interface,
 	nodes func() []string,
 	pods PodResolver,
-	onSnapshot func(sequence int64, records []*rollup.Record),
+	onSnapshot func(records []*rollup.Record),
 	onClosed func(records []*rollup.Record),
 	onError func(node string, err error),
 ) *UsagePoller {
@@ -390,15 +388,15 @@ func (p *UsagePoller) sweep(now time.Time) {
 }
 
 // flush emits closed windows first, then a fresh snapshot of the still-open
-// ones. The sequence number increases per snapshot batch — the backend
-// orders supersedes by it, never by arrival time.
+// ones. Each snapshot replaces its predecessor under the window's key and
+// carries nothing that orders it: the spool holds one snapshot per window, so
+// there are never two to order (ADR 0027).
 func (p *UsagePoller) flush(now time.Time) {
 	if closed := p.acc.CloseBefore(now); len(closed) > 0 && p.onClosed != nil {
 		p.onClosed(closed)
 	}
 	if snapshots := p.acc.Snapshots(); len(snapshots) > 0 && p.onSnapshot != nil {
-		p.sequence++
-		p.onSnapshot(p.sequence, snapshots)
+		p.onSnapshot(snapshots)
 	}
 }
 

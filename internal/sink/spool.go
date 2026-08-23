@@ -87,7 +87,6 @@ func NewSpool(dir string, maxAge time.Duration) (*Spool, error) {
 type usagePayload struct {
 	Kind          string                `json:"kind"`
 	Source        string                `json:"source"`
-	Sequence      int64                 `json:"sequence,omitempty"`
 	WindowStart   time.Time             `json:"window_start"`
 	WindowSeconds int64                 `json:"window_seconds"`
 	Observation   collector.Observation `json:"observation"`
@@ -106,7 +105,8 @@ type oomPayload struct {
 // per (namespace, workload, container), joined from node facts (ADR 0010). It
 // is a single superseding batch: each write replaces the previous one under its
 // fixed natural key (the payload kind), the on-disk mirror of the backend's
-// upsert-by-key ingest. The sequence orders supersedes, never arrival time.
+// upsert-by-key ingest. There is no ordering field: the spool holds one version
+// of a key at a time, so the newest write is the only one there is (ADR 0027).
 //
 // CapturedAt dates the assembly of the snapshot, not each fact in it: the node
 // facts were collected by scans that finished at various moments before it.
@@ -114,7 +114,6 @@ type oomPayload struct {
 type goInventoryPayload struct {
 	Kind       string               `json:"kind"`
 	Source     string               `json:"source"`
-	Sequence   int64                `json:"sequence,omitempty"`
 	CapturedAt time.Time            `json:"captured_at"`
 	Coverage   inventory.Coverage   `json:"coverage"`
 	Records    []inventory.GoRecord `json:"records"`
@@ -123,9 +122,9 @@ type goInventoryPayload struct {
 // goBuildPayload is what one build is made of and how it was built, keyed by its
 // image digest: the toolchain, the dependency module set, and the allow-listed
 // build settings. Unlike every other structural payload it neither supersedes
-// nor carries a sequence or a capture time — these are properties of the build,
-// fixed the moment the image was produced, so the payload is immutable given its
-// key and a redelivery is byte-identical (ADR 0017).
+// nor carries a capture time — these are properties of the build, fixed the
+// moment the image was produced, so the payload is immutable given its key and a
+// redelivery is byte-identical (ADR 0017).
 //
 // Settings may be absent: the toolchain records vcs.* only when it can, which in
 // container builds is the exception rather than the rule (ADR 0019).
@@ -157,7 +156,6 @@ type goBuildPayload struct {
 type containerRestartsPayload struct {
 	Kind          string                  `json:"kind"`
 	Source        string                  `json:"source"`
-	Sequence      int64                   `json:"sequence,omitempty"`
 	WindowStart   time.Time               `json:"window_start"`
 	WindowSeconds int64                   `json:"window_seconds"`
 	Records       []journal.RestartRecord `json:"records"`
@@ -176,7 +174,6 @@ type containerRestartsPayload struct {
 type podDisruptionsPayload struct {
 	Kind          string                     `json:"kind"`
 	Source        string                     `json:"source"`
-	Sequence      int64                      `json:"sequence,omitempty"`
 	WindowStart   time.Time                  `json:"window_start"`
 	WindowSeconds int64                      `json:"window_seconds"`
 	Records       []journal.DisruptionRecord `json:"records"`
@@ -193,7 +190,6 @@ type podDisruptionsPayload struct {
 type workloadMetadataPayload struct {
 	Kind       string            `json:"kind"`
 	Source     string            `json:"source"`
-	Sequence   int64             `json:"sequence,omitempty"`
 	CapturedAt time.Time         `json:"captured_at"`
 	Records    []metadata.Record `json:"records"`
 }
@@ -206,7 +202,6 @@ type workloadMetadataPayload struct {
 type nodeMetadataPayload struct {
 	Kind       string               `json:"kind"`
 	Source     string               `json:"source"`
-	Sequence   int64                `json:"sequence,omitempty"`
 	CapturedAt time.Time            `json:"captured_at"`
 	Nodes      []collector.NodeInfo `json:"nodes"`
 }
@@ -266,12 +261,11 @@ func (w windowKey) name() string {
 // atomically replacing that window's previous snapshot — the on-disk mirror
 // of the backend's supersede-by-key ingest. It also sweeps expired files,
 // riding the snapshot cadence so no extra timer exists.
-func (s *Spool) WriteUsageSnapshot(sequence int64, records []*rollup.Record, obs collector.Observation) error {
+func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs collector.Observation) error {
 	for k, group := range groupByWindow(records) {
 		payload := usagePayload{
 			Kind:          "usage_snapshot",
 			Source:        SourceMeasured,
-			Sequence:      sequence,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Observation:   obs,
@@ -315,7 +309,7 @@ func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs collector.Obser
 // A window with no restarts writes nothing: the accumulator only holds records
 // for containers that actually restarted, and an empty payload would say
 // "observed and none" for every window of every quiet cluster.
-func (s *Spool) WriteContainerRestarts(sequence int64, records []journal.RestartRecord) error {
+func (s *Spool) WriteContainerRestarts(records []journal.RestartRecord) error {
 	grouped := make(map[windowKey][]journal.RestartRecord)
 	for _, r := range records {
 		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
@@ -325,7 +319,6 @@ func (s *Spool) WriteContainerRestarts(sequence int64, records []journal.Restart
 		payload := containerRestartsPayload{
 			Kind:          "container_restarts",
 			Source:        SourceJournal,
-			Sequence:      sequence,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
@@ -345,7 +338,7 @@ func (s *Spool) WriteContainerRestarts(sequence int64, records []journal.Restart
 // A window with no disruptions writes nothing. A cluster where nothing was
 // preempted or evicted has nothing to say, and an empty payload would claim
 // otherwise for every quiet hour of every cluster.
-func (s *Spool) WritePodDisruptions(sequence int64, records []journal.DisruptionRecord) error {
+func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
 	grouped := make(map[windowKey][]journal.DisruptionRecord)
 	for _, r := range records {
 		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
@@ -355,7 +348,6 @@ func (s *Spool) WritePodDisruptions(sequence int64, records []journal.Disruption
 		payload := podDisruptionsPayload{
 			Kind:          "pod_disruptions",
 			Source:        SourceJournal,
-			Sequence:      sequence,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
@@ -382,11 +374,10 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 // snapshot does. records must already be in a deterministic order (the store
 // sorts them) so the payload bytes are stable — the golden contract. capturedAt
 // is passed in rather than read from the clock for the same reason.
-func (s *Spool) WriteGoInventory(sequence int64, capturedAt time.Time, cov inventory.Coverage, records []inventory.GoRecord) error {
+func (s *Spool) WriteGoInventory(capturedAt time.Time, cov inventory.Coverage, records []inventory.GoRecord) error {
 	payload := goInventoryPayload{
 		Kind:       "go_inventory",
 		Source:     SourceStructural,
-		Sequence:   sequence,
 		CapturedAt: capturedAt.UTC(),
 		Coverage:   cov,
 		Records:    records,
@@ -437,11 +428,10 @@ func digestFileToken(digest string) string {
 // WriteWorkloadMetadata writes the current workload metadata as one superseding
 // batch. records must already be in a deterministic order (metadata.Aggregate
 // sorts them) so the payload bytes are stable — the golden contract.
-func (s *Spool) WriteWorkloadMetadata(sequence int64, capturedAt time.Time, records []metadata.Record) error {
+func (s *Spool) WriteWorkloadMetadata(capturedAt time.Time, records []metadata.Record) error {
 	payload := workloadMetadataPayload{
 		Kind:       "workload_metadata",
 		Source:     SourceStructural,
-		Sequence:   sequence,
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
@@ -450,11 +440,10 @@ func (s *Spool) WriteWorkloadMetadata(sequence int64, capturedAt time.Time, reco
 
 // WriteNodeMetadata writes the current node inventory as one superseding batch.
 // nodes must already be sorted by name (NodeWatcher.Nodes does it).
-func (s *Spool) WriteNodeMetadata(sequence int64, capturedAt time.Time, nodes []collector.NodeInfo) error {
+func (s *Spool) WriteNodeMetadata(capturedAt time.Time, nodes []collector.NodeInfo) error {
 	payload := nodeMetadataPayload{
 		Kind:       "node_metadata",
 		Source:     SourceStructural,
-		Sequence:   sequence,
 		CapturedAt: capturedAt.UTC(),
 		Nodes:      nodes,
 	}

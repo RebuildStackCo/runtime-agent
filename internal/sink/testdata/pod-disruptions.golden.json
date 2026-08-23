@@ -1,7 +1,6 @@
 {
   "kind": "pod_disruptions",
   "source": "journal",
-  "sequence": 5,
   "window_start": "2026-08-06T10:00:00Z",
   "window_seconds": 3600,
   "records": [
