@@ -303,12 +303,12 @@ report one.
   acknowledge data it can still lose. The agent trims its local buffers only
   after acknowledgment.
 - **Late and out-of-order data is normal.** The agent buffers through
-  outages — in memory and, where the customer enabled disk persistence, in
-  its spool — and uploads backlog on reconnection. The backend MUST accept
+  outages — in memory and in its spool, which is ephemeral (ADR 0026) — and
+  uploads backlog on reconnection. The backend MUST accept
   historical timestamps and batch catch-up uploads, and SHOULD tolerate
   moderate agent clock skew — data is keyed by agent-side timestamps.
-- **Gaps are normal too.** Durability is an installation choice, not a
-  contract guarantee (ADR 0007): an agent restarted during an outage may
+- **Gaps are normal too.** The agent's spool is ephemeral by decision, not by
+  configuration (ADR 0007, ADR 0026): an agent restarted during an outage may
   reconnect with nothing older than its fresh data. Routine loss is bounded
   by the snapshot cadence. The backend MUST NOT treat a gap as an error and
   MUST NOT expect agents to re-supply history they no longer hold.

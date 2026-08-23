@@ -159,10 +159,12 @@ const (
 	DefaultNodeIntakeAudience      = "rebuildstack-controller"
 )
 
-// Spool configures the local payload sink (ADR 0003, ADR 0007). The
-// directory's durability is the installation's choice: emptyDir by default,
-// a PersistentVolume for those who want unacknowledged data to survive
-// rescheduling.
+// Spool configures the local payload sink (ADR 0003, ADR 0007). The directory
+// is an emptyDir and the agent offers no durability option for it (ADR 0026):
+// unacknowledged payloads are loss-harmless, and a reschedule loses at most the
+// span the backend had not yet acknowledged. Dir is a path, so an operator who
+// wants that span to survive can mount something durable there — that is their
+// decision to make, not a setting the agent carries.
 type Spool struct {
 	// Dir is where payload batches are written. Empty disables the local
 	// sink — a log-only development mode.

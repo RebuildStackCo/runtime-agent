@@ -56,9 +56,11 @@ runtime-agent node         # DaemonSet (optional) — eBPF profiling and Go bina
 ```
 
 - The controller is single-replica by design: it is the one writer of the
-  identity Secret and the one holder of the cluster's backend identity. It runs
-  as a Deployment today; ADR 0008 assumes a StatefulSet, and which of the two
-  the chart ships is reconciled when the identity work lands (ADR 0022 §5).
+  identity Secret and the one holder of the cluster's backend identity. It is a
+  Deployment with `strategy: Recreate` — one replica, and the old pod stops
+  before the new one starts. Not a StatefulSet: it claims no volume and no
+  stable name, and a StatefulSet would hold a replacement back while a node is
+  unreachable, stopping collection cluster-wide (ADR 0026).
 - The node role sends data to the controller over the cluster network only.
 - The controller exposes an in-cluster-only HTTP receiver for those node
   reports (ADR 0010): it accepts data pushes from the node DaemonSet and
@@ -98,10 +100,13 @@ lower-privilege of the two and is what the current node role runs.
 All rules are `get`, `list`, `watch` — with **one write exception,
 disclosed in the table below**: `get`/`update` on the agent's own
 pre-created identity Secret, scoped by `resourceNames` in a namespaced Role
-(ADR 0008) — **[planned]**, and the only row of this table that is. With
-`persistence.enabled: true` that grant is not emitted at
-all, and the chart is entirely write-free. Nothing else anywhere carries
-`create`, `update`, `patch`, `delete`, or `deletecollection`.
+(ADR 0008) — **[planned]**, and the only row of this table that is. Nothing else
+anywhere carries `create`, `update`, `patch`, `delete`, or `deletecollection`.
+
+That one grant is unconditional once shipping exists, and there is no setting
+that removes it (ADR 0026). What removes it is not shipping: an installation
+that sends nothing to a backend holds no identity, so there is nothing to
+write and the grant is not emitted.
 
 The table below is the **controller's** access. The node role (the DaemonSet,
 [§7](#7-node-privileges)) holds **no** RBAC at all — its ServiceAccount is
@@ -114,7 +119,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
-| its own identity Secret **[planned]** | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret. Not emitted when `persistence.enabled: true` |
+| its own identity Secret **[planned]** | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret |
 
 **Authenticating node reports adds no RBAC.** When the node DaemonSet is
 installed (ADR 0010), the controller authenticates each node's projected
@@ -190,11 +195,11 @@ and stops there. What follows is the designed model, decided in
 
 ### Storage
 
-The controller keeps a small local volume — an `emptyDir` by default;
-`persistence.enabled: true` swaps in a PersistentVolume (~2Gi) for installations
-that want unacknowledged data to survive rescheduling
-([ADR 0007](adr/0007-optional-durability.md)). The volume holds exactly one
-thing:
+The controller keeps a small local volume — an `emptyDir`, always. The agent
+asks for no PersistentVolume and offers no setting that would give it one
+([ADR 0007](adr/0007-optional-durability.md),
+[ADR 0026](adr/0026-no-persistent-volume.md)), so installing it requires no
+StorageClass and no provisioning rights. The volume holds exactly one thing:
 
 - **The spool of unshipped payload batches** — rollups, metadata and
   allow-listed profiles, held until delivery is acknowledged and deleted
@@ -213,11 +218,17 @@ accounted for on disk outside the spool.
 - **Configuration is never cached on it.** Filters are read from the ConfigMap
   at every start; if the configuration is unavailable the agent does not
   collect. A stale filter set cannot resurrect from disk.
-- Encryption at rest is your storage layer's: point the PVC at an encrypted
-  StorageClass.
-- With the default `emptyDir`, a rescheduled pod loses only the unacknowledged
-  spool — bounded by the flush cadence in normal operation, and by the outage
-  span if the backend was unreachable (ADR 0007).
+- Encryption at rest is your node's: an `emptyDir` lives on the kubelet's disk,
+  so whatever encrypts that disk encrypts the spool. Nothing on it is a secret
+  in any case — it holds only payloads already approved to leave the cluster.
+- A rescheduled pod loses the unacknowledged spool — bounded by the flush
+  cadence in normal operation, by the outage span if the backend was
+  unreachable, and reported as a gap rather than passed over silently (ADR
+  0007). Nothing on the volume is irreplaceable, which is why losing it is a
+  supported outcome and not a failure.
+- `spool.dir` is a path. If you want that span to survive a reschedule, mount
+  durable storage there; the agent behaves identically and makes no promise
+  about it either way.
 
 ---
 

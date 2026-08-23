@@ -108,6 +108,14 @@ metadata:
     app.kubernetes.io/component: controller
 spec:
   replicas: 1
+  # Terminate the old controller before starting the new one. A Deployment's
+  # default rolling update rounds maxSurge up to one, so `replicas: 1` would
+  # still run two controllers on every upgrade; Recreate is what makes the
+  # single replica mean at-most-one. Not a StatefulSet: nothing here needs a
+  # volume claim or a stable name, and a StatefulSet buys the node-partition
+  # case with cluster-wide collection downtime (ADR 0026).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: runtime-agent
@@ -153,6 +161,9 @@ spec:
         - name: config
           configMap:
             name: runtime-agent-controller
-        # emptyDir by default (ADR 0007): unshipped payloads are loss-harmless.
+        # Always an emptyDir (ADR 0007, ADR 0026): unshipped payloads are
+        # loss-harmless, and there is no persistence option to swap this for a
+        # volume claim. An operator who wants durability mounts something else
+        # at spool.dir; that is their choice, not a setting the agent offers.
         - name: spool
           emptyDir: {}
