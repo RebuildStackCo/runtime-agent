@@ -82,3 +82,4 @@ line to paste.
 - [0022. The payload registry lives in code, and an amendment cannot stay silent](0022-registry-in-code-and-declared-amendments.md)
 - [0023. A profile's key names the build; its provenance names the claim](0023-profile-key-and-provenance.md)
 - [0024. `security.md` states what is true; the decision records state why](0024-security-doc-states-what-adrs-state-why.md)
+- [0025. The node's configuration holds only what the node can enforce](0025-node-config-holds-only-what-the-node-enforces.md)

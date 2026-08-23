@@ -115,10 +115,9 @@ func readProjectedToken(path string) (string, error) {
 // What the node applies to it is the intersection with its own processes and
 // every ceiling in its ConfigMap — top-N, capture duration, interval, overhead,
 // and the symbol allow-list that governs egress. It does not re-check the
-// eligible set: a container ID cannot be resolved to a namespace without API
-// access (ADR 0009), so eligibility is enforced on the controller. ADR 0011 §3
-// describes this differently; ADR 0022 §5 records the discrepancy and leaves the
-// fix to its own decision.
+// collection filters: a container ID cannot be resolved to a namespace without
+// API access (ADR 0009). Scope is applied on the controller, before the ranking
+// exists — see nodeintake.TargetsHandler and ADR 0025.
 type targetsClient struct {
 	endpoint  string
 	tokenPath string

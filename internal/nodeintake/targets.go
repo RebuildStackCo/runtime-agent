@@ -18,7 +18,7 @@ type TargetsRequest struct {
 }
 
 // TargetsResponse is the reply: the runtime container IDs on the querying node
-// that belong to the top-N eligible workloads. These are node-actionable — the
+// that belong to the top-N collected workloads. These are node-actionable — the
 // node profiles the processes whose cgroup container ID is in this set.
 type TargetsResponse struct {
 	ContainerIDs []string `json:"container_ids"`
@@ -41,20 +41,19 @@ type NodeTargeter interface {
 // PodWatcher, never configuration or a command, and the external backend is
 // untouched.
 //
-// Where the bound actually sits is worth stating precisely, because ADR 0011 §3
-// states it differently and ADR 0022 §5 records the gap. **Eligibility is
-// enforced here, on the controller** — the publisher filters to the operator's
-// eligible set before this handler ever runs. The node cannot re-check it: the
-// reply is container IDs, and a node with no API access (ADR 0009) cannot
-// resolve one to a namespace. What the node does enforce is every ceiling —
-// top-N, capture duration, interval, overhead — and the symbol allow-list that
-// decides what may leave it at all (ADR 0011 §4).
+// Where the bound sits is worth stating precisely, because ADR 0011 §3 stated it
+// differently (ADR 0025). **Scope is the collection filter**, applied long
+// before this handler: the ranking is computed from usage rollups, which exist
+// only for pods those filters admitted, and the expansion to container IDs reads
+// PodWatcher's admitted index. A workload the customer excluded was never
+// measured and is not in this index, so it cannot be named here.
 //
-// So a well-behaved controller can only name eligible workloads, and a
-// compromised one is bounded by the ceilings and the allow-list rather than by
-// the eligible set. Closing that gap means growing the reply to carry the
-// workload identity the node would need; it is a decision of its own, named
-// open in ADR 0022 §5 rather than patched here.
+// What the node adds is what the node holds: the symbol allow-list that decides
+// what may leave it, its cost ceilings, and profile validation (ADR 0011 §4–5).
+// Those bound a hostile controller. This reply and the scan scope do not — they
+// are the controller's own answers — and no node-side re-check could change
+// that, since a node with no API access (ADR 0009) cannot test a namespace claim
+// it was handed.
 type TargetsHandler struct {
 	verifier TokenVerifier
 	targeter NodeTargeter

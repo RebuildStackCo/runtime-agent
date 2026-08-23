@@ -105,8 +105,8 @@ func TestRunProfilingPipelineGraceful(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := newEBPFGateMetrics()
-	runProfilingPipeline(context.Background(), logger, config.Profiling{}.Normalized(),
-		t.TempDir(), "node", nil, nil, m)
+	runProfilingPipeline(context.Background(), logger, config.NodeProfiling{}.Normalized(),
+		t.TempDir(), "node", nil, nil, nil, m)
 	if m.refusals[ebpfgate.ReasonProgramLoadFailed] != 1 {
 		t.Errorf("program_load_failed = %d, want 1", m.refusals[ebpfgate.ReasonProgramLoadFailed])
 	}

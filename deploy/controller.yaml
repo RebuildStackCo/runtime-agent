@@ -70,15 +70,15 @@ data:
       # Pin the accepted caller to the node role's ServiceAccount.
       expectedSubject: "system:serviceaccount:runtime-agent:runtime-agent-node"
     # eBPF profiling (ADR 0011). The controller side: enabling it opens the
-    # targets query endpoint and ranks the eligible workloads. The eligible set
-    # lives here (the controller enforces it — the node has no API to), while the
-    # node's own ConfigMap carries the symbol allow-list it enforces locally.
-    # eligibleNamespaces is empty by default: no workload is profiled until an
-    # operator opts specific namespaces in.
+    # targets query endpoint and ranks collected workloads by consumption.
+    #
+    # Which workloads may be profiled is which workloads are collected — the
+    # filters above, and nothing else. There is no second namespace list to keep
+    # in step with them (ADR 0025). topN caps how many an answer may name; the
+    # node's own ConfigMap carries the symbol allow-list and the overhead ceiling
+    # it enforces locally.
     profiling:
       enabled: true
-      eligibleNamespaces: []
-      # eligibleWorkloads: []   # optional, within the namespaces above
       topN: 5
 ---
 apiVersion: v1

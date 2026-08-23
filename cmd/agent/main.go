@@ -249,14 +249,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			)
 		}
 	}
-	// The targeting publisher (ADR 0011 §3, §6b) ranks eligible workloads by
+	// The targeting publisher (ADR 0011 §3, §6b) ranks collected workloads by
 	// consumption from each usage snapshot and publishes the top N for the node
 	// targets query. Created only when profiling is enabled; the snapshot
 	// callback feeds it deep-copied records, so it never races the Accumulator.
 	var targetsPublisher *targeting.Publisher
 	if cfg.Profiling.Enabled {
 		pc := cfg.Profiling.Normalized()
-		targetsPublisher = targeting.NewPublisher(cfg.Profiling.EligibleNamespaces, cfg.Profiling.EligibleWorkloads, pc.TopN)
+		targetsPublisher = targeting.NewPublisher(pc.TopN)
 	}
 	// Declared before construction so the callbacks can read the poller's own
 	// observation state; they run on the poll goroutine, and Observation() is
@@ -603,7 +603,7 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 }
 
 // nodeTargeter answers a node's targets query: it intersects the publisher's
-// top-N eligible workloads with the containers PodWatcher sees on that node, and
+// top-N collected workloads with the containers PodWatcher sees on that node, and
 // returns their container IDs. This is where a cluster-wide workload ranking
 // becomes a node-actionable set (ADR 0011 §3): the node profiles the processes
 // whose cgroup container ID is returned here.

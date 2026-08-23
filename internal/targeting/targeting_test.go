@@ -22,40 +22,34 @@ func names(ts []Target) string {
 	return strings.Join(out, ",")
 }
 
-func TestPublisherRanksEligibleTopN(t *testing.T) {
-	p := NewPublisher([]string{"shop"}, nil, 2)
+func TestPublisherRanksTopN(t *testing.T) {
+	p := NewPublisher(2)
 	p.Publish([]*rollup.Record{
 		rec("shop", "api", 100),
 		rec("shop", "web", 300),
 		rec("shop", "worker", 200),
-		rec("infra", "proxy", 999), // ineligible namespace: excluded
 	})
 	if got := names(p.Snapshot()); got != "web,worker" {
-		t.Errorf("targets = %q, want web,worker (top 2 by cpu, infra excluded)", got)
+		t.Errorf("targets = %q, want web,worker (top 2 by cpu)", got)
 	}
 }
 
-func TestPublisherEmptyEligibleAdmitsNone(t *testing.T) {
-	p := NewPublisher(nil, nil, 5)
-	p.Publish([]*rollup.Record{rec("shop", "api", 100)})
-	if s := p.Snapshot(); len(s) != 0 {
-		t.Errorf("empty eligible set must admit none, got %q", names(s))
-	}
-}
-
-func TestPublisherEligibleWorkloadsRestrict(t *testing.T) {
-	p := NewPublisher([]string{"shop"}, []string{"api"}, 5)
+// The bound on what may be ranked is the input, not a second filter: records
+// reach Publish only for pods the collection filters admitted, so a workload the
+// customer excluded was never measured and cannot appear here (ADR 0025).
+func TestPublisherRanksWhateverWasCollected(t *testing.T) {
+	p := NewPublisher(5)
 	p.Publish([]*rollup.Record{
-		rec("shop", "api", 50),
-		rec("shop", "web", 100), // higher cpu but not in eligible workloads
+		rec("shop", "api", 100),
+		rec("infra", "proxy", 999),
 	})
-	if got := names(p.Snapshot()); got != "api" {
-		t.Errorf("targets = %q, want api (eligibleWorkloads restricts)", got)
+	if got := names(p.Snapshot()); got != "proxy,api" {
+		t.Errorf("targets = %q, want proxy,api — the publisher ranks what it is given", got)
 	}
 }
 
 func TestPublisherSumsPerWorkload(t *testing.T) {
-	p := NewPublisher([]string{"shop"}, nil, 1)
+	p := NewPublisher(1)
 	p.Publish([]*rollup.Record{
 		rec("shop", "api", 100),
 		rec("shop", "api", 100), // same workload -> 200
@@ -67,7 +61,7 @@ func TestPublisherSumsPerWorkload(t *testing.T) {
 }
 
 func TestPublisherSnapshotBeforePublish(t *testing.T) {
-	if s := NewPublisher([]string{"x"}, nil, 3).Snapshot(); s != nil {
+	if s := NewPublisher(3).Snapshot(); s != nil {
 		t.Errorf("Snapshot before Publish = %q, want nil", names(s))
 	}
 }

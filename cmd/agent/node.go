@@ -42,13 +42,15 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		return err
 	}
 
-	// The node reads the same config file as the controller, for the eBPF
-	// profiling knobs (ADR 0011): the symbol allow-list and the capture
-	// cadence/overhead it enforces itself, and the eligible set, which is
-	// enforced on the controller because a node cannot resolve a container to a
-	// namespace (see targetsClient, and ADR 0022 §5). -enable-ebpf remains the
+	// The node's configuration schema is narrower than the controller's, and
+	// holds only what the node enforces on its own samples: the symbol
+	// allow-list that decides what may leave this node, and the ceilings on what
+	// profiling costs it. Which workloads get profiled is not here and not in
+	// profiling at all — it is which workloads the controller collects
+	// (ADR 0025). A controller-only setting placed in this file is a
+	// startup error, not a field parsed and ignored. -enable-ebpf remains the
 	// master switch; this config is additive.
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadNode(*configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -79,11 +81,8 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	ebpfMetrics := newEBPFGateMetrics()
 	if *enableEBPF {
 		logger.Info("ebpf profiling config",
-			"eligible_namespaces", len(profiling.EligibleNamespaces),
-			"eligible_workloads", len(profiling.EligibleWorkloads),
 			"allowed_module_prefixes", len(profiling.AllowedModulePrefixes),
 			"third_party_symbols", profiling.ThirdPartySymbols,
-			"top_n", profiling.TopN,
 			"capture_duration_s", profiling.CaptureDurationSeconds,
 			"interval_s", profiling.IntervalSeconds,
 			"overhead_ceiling_pct", profiling.OverheadCeilingPercent,
@@ -91,7 +90,13 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		if res := ebpfGate(logger, *procRoot, *sysRoot, ebpfMetrics); res.Supported() {
 			targetsCl := newTargetsClient(*targetsEndpoint, *tokenPath)
 			profileSh := newProfileShipper(*profileEndpoint, *tokenPath)
-			go runProfilingPipeline(ctx, logger, profiling, *procRoot, node, targetsCl, profileSh, ebpfMetrics)
+			// The pipeline gets its own scope client: a captured sample is only
+			// shipped if its pod is in the scope the controller supplies, the
+			// same set that gates scanning (ADR 0015). Profiling a pod whose
+			// executable the scanner is not allowed to open was an asymmetry,
+			// and stack traces are the more sensitive of the two (ADR 0025).
+			go runProfilingPipeline(ctx, logger, profiling, *procRoot, node,
+				targetsCl, newScopeClient(*scopeEndpoint, *tokenPath), profileSh, ebpfMetrics)
 		}
 	}
 

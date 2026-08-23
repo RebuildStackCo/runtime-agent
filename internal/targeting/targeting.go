@@ -5,9 +5,14 @@
 // is owned by the poller goroutine and has no synchronization, so the HTTP
 // handler must never read it. Instead the poller calls Publish on its own tick
 // with an already-deep-copied snapshot, and the handler reads only the atomically
-// published result. The publisher also enforces the config bound — the published
-// list is already filtered to the eligible set and capped at TopN — so the reply
-// can never name a workload the operator did not permit.
+// published result.
+//
+// What bounds the published list is the input, not a second filter. Records
+// reach Publish from the usage rollups, which exist only for pods the collection
+// filters admitted, so a workload the customer excluded cannot be ranked — it was
+// never measured. Profiling scope is collection scope; there is no separate
+// eligible set to keep in step with it (ADR 0025). TopN then caps how many of
+// the admitted workloads an answer may name.
 package targeting
 
 import (
@@ -27,38 +32,27 @@ type Target struct {
 	WorkloadName string
 }
 
-// Publisher ranks eligible workloads by CPU consumption and publishes the top N.
+// Publisher ranks collected workloads by CPU consumption and publishes the top N.
 type Publisher struct {
-	eligibleNS map[string]struct{}
-	eligibleWL map[string]struct{} // empty => every workload in an eligible namespace
-	topN       int
-	current    atomic.Pointer[[]Target]
+	topN    int
+	current atomic.Pointer[[]Target]
 }
 
-// NewPublisher builds a publisher bound to the operator's eligible set and TopN.
-// An empty eligibleNamespaces admits nothing (deny-by-default); an empty
-// eligibleWorkloads admits every workload within the eligible namespaces.
-func NewPublisher(eligibleNamespaces, eligibleWorkloads []string, topN int) *Publisher {
+// NewPublisher builds a publisher capped at topN; 0 or less selects one.
+func NewPublisher(topN int) *Publisher {
 	if topN <= 0 {
 		topN = 1
 	}
-	return &Publisher{
-		eligibleNS: toSet(eligibleNamespaces),
-		eligibleWL: toSet(eligibleWorkloads),
-		topN:       topN,
-	}
+	return &Publisher{topN: topN}
 }
 
-// Publish ranks records by CPU consumption, keeps only eligible workloads, takes
-// the top N, and publishes the result. It is called from the usage poller's
-// snapshot callback, where records are already a deep copy — so it never races
-// the Accumulator. Consumption is summed per workload across the records.
+// Publish ranks records by CPU consumption, takes the top N, and publishes the
+// result. It is called from the usage poller's snapshot callback, where records
+// are already a deep copy — so it never races the Accumulator. Consumption is
+// summed per workload across the records.
 func (p *Publisher) Publish(records []*rollup.Record) {
 	sum := make(map[Target]int64)
 	for _, r := range records {
-		if !p.eligible(r.Namespace, r.WorkloadName) {
-			continue
-		}
 		t := Target{
 			Namespace:    r.Namespace,
 			WorkloadKind: r.WorkloadKind,
@@ -101,23 +95,4 @@ func (p *Publisher) Snapshot() []Target {
 		return *v
 	}
 	return nil
-}
-
-func (p *Publisher) eligible(namespace, workload string) bool {
-	if _, ok := p.eligibleNS[namespace]; !ok {
-		return false
-	}
-	if len(p.eligibleWL) == 0 {
-		return true
-	}
-	_, ok := p.eligibleWL[workload]
-	return ok
-}
-
-func toSet(xs []string) map[string]struct{} {
-	m := make(map[string]struct{}, len(xs))
-	for _, x := range xs {
-		m[x] = struct{}{}
-	}
-	return m
 }
