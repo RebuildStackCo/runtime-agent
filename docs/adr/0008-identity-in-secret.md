@@ -4,7 +4,7 @@ Date: 2026-08-09
 
 Status: Accepted
 Amends: 0003, 0005, 0007
-Amended by: 0010
+Amended by: 0010, 0026
 
 Amends 0003 and 0005 on where identity is stored; their spool/checkpoint and
 two-tier-credential decisions stand. Refines the degradation notes of 0007.
