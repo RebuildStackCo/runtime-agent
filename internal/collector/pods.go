@@ -90,11 +90,19 @@ type PodWatcher struct {
 	onOOM        func(OOMKill)
 	onRestart    func(ContainerRestart)
 	onDisruption func(PodDisruption)
-	filter       *PodFilter
+	filter       *Filter
 
-	rsLister  appslisters.ReplicaSetLister
-	jobLister batchlisters.JobLister
-	nsLister  corelisters.NamespaceLister
+	// Listers for the owner chain. The ReplicaSet and Job listers resolve a
+	// pod to its top-level workload; the four below read that workload's own
+	// annotations, which is the only way to honor an opt-out without touching
+	// a pod template and rolling every replica (ADR 0028).
+	rsLister     appslisters.ReplicaSetLister
+	jobLister    batchlisters.JobLister
+	deployLister appslisters.DeploymentLister
+	stsLister    appslisters.StatefulSetLister
+	dsLister     appslisters.DaemonSetLister
+	cronLister   batchlisters.CronJobLister
+	nsLister     corelisters.NamespaceLister
 
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
@@ -151,7 +159,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	return &PodWatcher{
 		clientset:           clientset,
 		onPod:               onPod,
-		filter:              NewPodFilter(nil, nil),
+		filter:              NewFilter(nil, nil),
 		reportedOOMs:        make(map[string]struct{}),
 		restartCounts:       make(map[string]int32),
 		reportedDisruptions: make(map[string]struct{}),
@@ -164,33 +172,50 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 // SetFilter replaces the default collect-everything filter. Must be called
 // before Run. The filter gates every pod-derived signal: an excluded pod is
 // neither reported nor scanned for OOM kills.
-func (w *PodWatcher) SetFilter(filter *PodFilter) {
+func (w *PodWatcher) SetFilter(filter *Filter) {
 	w.filter = filter
 }
 
-// Run blocks until ctx is canceled. ReplicaSet and Job caches are synced
-// before pod events are delivered, so owner chains resolve from the first
-// event on.
+// Run blocks until ctx is canceled. Every owner-chain cache is synced before
+// pod events are delivered, so a pod's workload — and its opt-out annotation
+// — resolves from the first event on. A pod admitted before its controller
+// was cached would be admitted without the workload check, which is exactly
+// the blind spot the coverage counters exist to size.
 func (w *PodWatcher) Run(ctx context.Context) error {
 	factory := informers.NewSharedInformerFactory(w.clientset, 0)
 	rs := factory.Apps().V1().ReplicaSets()
 	jobs := factory.Batch().V1().Jobs()
+	deployments := factory.Apps().V1().Deployments()
+	statefulSets := factory.Apps().V1().StatefulSets()
+	daemonSets := factory.Apps().V1().DaemonSets()
+	cronJobs := factory.Batch().V1().CronJobs()
 	namespaces := factory.Core().V1().Namespaces()
 	pods := factory.Core().V1().Pods()
 	w.rsLister = rs.Lister()
 	w.jobLister = jobs.Lister()
+	w.deployLister = deployments.Lister()
+	w.stsLister = statefulSets.Lister()
+	w.dsLister = daemonSets.Lister()
+	w.cronLister = cronJobs.Lister()
 	w.nsLister = namespaces.Lister()
 
 	// Informers must be instantiated before Start, or the factory won't
 	// run them.
 	podsInformer := pods.Informer()
-	rsSynced, jobsSynced := rs.Informer().HasSynced, jobs.Informer().HasSynced
-	nsSynced := namespaces.Informer().HasSynced
+	ownerSynced := []cache.InformerSynced{
+		rs.Informer().HasSynced,
+		jobs.Informer().HasSynced,
+		deployments.Informer().HasSynced,
+		statefulSets.Informer().HasSynced,
+		daemonSets.Informer().HasSynced,
+		cronJobs.Informer().HasSynced,
+		namespaces.Informer().HasSynced,
+	}
 
 	factory.Start(ctx.Done())
 	defer factory.Shutdown()
 
-	if !cache.WaitForCacheSync(ctx.Done(), rsSynced, jobsSynced, nsSynced, podsInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), append(ownerSynced, podsInformer.HasSynced)...) {
 		if ctx.Err() != nil {
 			return nil // canceled during sync — a normal shutdown, not a failure
 		}
@@ -461,15 +486,86 @@ func (w *PodWatcher) admit(pod *corev1.Pod, count bool) bool {
 	if ns, err := w.nsLister.Get(pod.Namespace); err == nil {
 		nsAnnotations = ns.Annotations
 	}
-	allowed, reason := w.filter.Admit(pod, nsAnnotations)
+	workload := w.workloadAnnotations(pod)
+	allowed, reason := w.filter.AdmitPod(pod, nsAnnotations, workload)
 	if count {
 		if allowed {
 			w.filter.countObserved()
 		} else {
 			w.filter.countExcluded(reason)
 		}
+		if workload.Unresolved != "" {
+			w.filter.countUnresolvedWorkload(workload.Unresolved)
+		}
 	}
 	return allowed
+}
+
+// workloadAnnotations reads the annotations of the controller that ultimately
+// manages the pod, walking the same chain as resolveWorkload but reading the
+// object rather than the reference.
+//
+// It never fails the pod: an unreadable controller yields an Unresolved
+// reason, which the filter counts and then admits (Filter.AdmitPod says why).
+// A pod with no controller is its own subject and resolves to nothing to
+// check, which is not an unresolved state.
+func (w *PodWatcher) workloadAnnotations(pod *corev1.Pod) WorkloadLookup {
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil {
+		return WorkloadLookup{}
+	}
+	switch owner.Kind {
+	case "ReplicaSet":
+		set, err := w.rsLister.ReplicaSets(pod.Namespace).Get(owner.Name)
+		if err != nil {
+			return WorkloadLookup{Unresolved: WorkloadNotCached}
+		}
+		// A ReplicaSet with no controller is a bare one, managed directly.
+		// One owned by anything other than a Deployment — an Argo Rollout —
+		// is a kind this agent does not read.
+		parent := metav1.GetControllerOf(set)
+		if parent == nil {
+			return WorkloadLookup{Annotations: set.Annotations}
+		}
+		if parent.Kind != "Deployment" {
+			return WorkloadLookup{Unresolved: WorkloadKindUnknown}
+		}
+		deployment, err := w.deployLister.Deployments(pod.Namespace).Get(parent.Name)
+		if err != nil {
+			return WorkloadLookup{Unresolved: WorkloadNotCached}
+		}
+		return WorkloadLookup{Annotations: deployment.Annotations}
+	case "Job":
+		job, err := w.jobLister.Jobs(pod.Namespace).Get(owner.Name)
+		if err != nil {
+			return WorkloadLookup{Unresolved: WorkloadNotCached}
+		}
+		parent := metav1.GetControllerOf(job)
+		if parent == nil {
+			return WorkloadLookup{Annotations: job.Annotations}
+		}
+		if parent.Kind != "CronJob" {
+			return WorkloadLookup{Unresolved: WorkloadKindUnknown}
+		}
+		cron, err := w.cronLister.CronJobs(pod.Namespace).Get(parent.Name)
+		if err != nil {
+			return WorkloadLookup{Unresolved: WorkloadNotCached}
+		}
+		return WorkloadLookup{Annotations: cron.Annotations}
+	case "StatefulSet":
+		set, err := w.stsLister.StatefulSets(pod.Namespace).Get(owner.Name)
+		if err != nil {
+			return WorkloadLookup{Unresolved: WorkloadNotCached}
+		}
+		return WorkloadLookup{Annotations: set.Annotations}
+	case "DaemonSet":
+		set, err := w.dsLister.DaemonSets(pod.Namespace).Get(owner.Name)
+		if err != nil {
+			return WorkloadLookup{Unresolved: WorkloadNotCached}
+		}
+		return WorkloadLookup{Annotations: set.Annotations}
+	}
+	return WorkloadLookup{Unresolved: WorkloadKindUnknown}
 }
 
 // describe reduces a pod to the collected view.

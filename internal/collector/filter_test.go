@@ -6,8 +6,11 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -54,6 +57,7 @@ func TestAdmitSemantics(t *testing.T) {
 		allow, deny []string
 		pod         *corev1.Pod
 		nsAnn       map[string]string
+		workload    WorkloadLookup
 		wantAllowed bool
 		wantReason  ExclusionReason
 	}{
@@ -67,12 +71,25 @@ func TestAdmitSemantics(t *testing.T) {
 		{name: "other annotation value collects", pod: podIn("shop", map[string]string{CollectAnnotation: "yes"}), wantAllowed: true},
 		{name: "namespace filter attributed before annotations", deny: []string{"shop"}, pod: podIn("shop", optOut), nsAnn: optOut, wantReason: ExcludedByNamespaceFilter},
 		{name: "namespace annotation attributed before pod annotation", pod: podIn("shop", optOut), nsAnn: optOut, wantReason: ExcludedByNamespaceAnnotation},
+
+		// The workload step. It sits between the namespace and the pod, and it
+		// is the only one that does not reject when it cannot be evaluated.
+		{name: "workload annotation opts out", pod: podIn("shop", nil), workload: WorkloadLookup{Annotations: optOut}, wantReason: ExcludedByWorkloadAnnotation},
+		{name: "workload annotation attributed before pod annotation", pod: podIn("shop", optOut), workload: WorkloadLookup{Annotations: optOut}, wantReason: ExcludedByWorkloadAnnotation},
+		{name: "namespace annotation attributed before workload annotation", pod: podIn("shop", nil), nsAnn: optOut, workload: WorkloadLookup{Annotations: optOut}, wantReason: ExcludedByNamespaceAnnotation},
+		{name: "other workload annotation value collects", pod: podIn("shop", nil), workload: WorkloadLookup{Annotations: map[string]string{CollectAnnotation: "yes"}}, wantAllowed: true},
+		// Fail-open, deliberately: this product is opt-out, so a controller the
+		// agent cannot read is not evidence that anyone opted out (ADR 0028).
+		{name: "unknown workload kind still collects", pod: podIn("shop", nil), workload: WorkloadLookup{Unresolved: WorkloadKindUnknown}, wantAllowed: true},
+		{name: "uncached workload still collects", pod: podIn("shop", nil), workload: WorkloadLookup{Unresolved: WorkloadNotCached}, wantAllowed: true},
+		// ...but a control the customer did set still applies to it.
+		{name: "unreadable workload does not override the pod's own opt-out", pod: podIn("shop", optOut), workload: WorkloadLookup{Unresolved: WorkloadKindUnknown}, wantReason: ExcludedByPodAnnotation},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			allowed, reason := NewPodFilter(c.allow, c.deny).Admit(c.pod, c.nsAnn)
+			allowed, reason := NewFilter(c.allow, c.deny).AdmitPod(c.pod, c.nsAnn, c.workload)
 			if allowed != c.wantAllowed || reason != c.wantReason {
-				t.Errorf("Admit = (%v, %q), want (%v, %q)", allowed, reason, c.wantAllowed, c.wantReason)
+				t.Errorf("AdmitPod = (%v, %q), want (%v, %q)", allowed, reason, c.wantAllowed, c.wantReason)
 			}
 		})
 	}
@@ -99,7 +116,7 @@ func TestWatcherGatesPodsAndCountsCoverage(t *testing.T) {
 		seen[p.Namespace+"/"+p.Name] = p
 		mu.Unlock()
 	})
-	filter := NewPodFilter(nil, []string{"pr-*"})
+	filter := NewFilter(nil, []string{"pr-*"})
 	watcher.SetFilter(filter)
 	oomEvents := make(chan OOMKill, 16)
 	watcher.OnOOMKill(func(o OOMKill) { oomEvents <- o })
@@ -174,5 +191,114 @@ func TestWatcherGatesPodsAndCountsCoverage(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("watcher returned error: %v", err)
+	}
+}
+
+// The opt-out annotation on the controller itself, walked through the real
+// owner chain. This is the control that did not exist before ADR 0028: the
+// only way to exclude a workload used to be an annotation in its pod template,
+// which is part of the template hash and therefore rolls every replica.
+//
+// The Rollout case is the blind spot, and it is deliberately a collection, not
+// an exclusion: the agent cannot read a CRD, and an unreadable controller is
+// not evidence that anyone opted out.
+func TestWorkloadAnnotationExcludesWithoutTouchingPodTemplates(t *testing.T) {
+	optOut := map[string]string{CollectAnnotation: "false"}
+	meta := func(name string, ann map[string]string) metav1.ObjectMeta {
+		return metav1.ObjectMeta{Namespace: "shop", Name: name, Annotations: ann,
+			UID: types.UID("uid-" + name)}
+	}
+	owned := func(podName string, owner metav1.OwnerReference) *corev1.Pod {
+		p := pod(podName, &owner)
+		return p
+	}
+
+	// A Deployment that opted out, reached through its ReplicaSet.
+	deployment := &appsv1.Deployment{ObjectMeta: meta("web", optOut)}
+	webRS := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "shop", Name: "web-abc", UID: "uid-web-abc",
+		OwnerReferences: []metav1.OwnerReference{controllerRef("Deployment", "web")},
+	}}
+	// A CronJob that opted out, reached through its Job.
+	cron := &batchv1.CronJob{ObjectMeta: meta("report", optOut)}
+	reportJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "shop", Name: "report-1", UID: "uid-report-1",
+		OwnerReferences: []metav1.OwnerReference{controllerRef("CronJob", "report")},
+	}}
+	// A StatefulSet that did not opt out.
+	sts := &appsv1.StatefulSet{ObjectMeta: meta("index", nil)}
+	// A ReplicaSet owned by a CRD: unreadable, therefore collected and counted.
+	rolloutRS := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "shop", Name: "pay-xyz", UID: "uid-pay-xyz",
+		OwnerReferences: []metav1.OwnerReference{controllerRef("Rollout", "payments")},
+	}}
+
+	clientset := fake.NewClientset(
+		deployment, webRS, cron, reportJob, sts, rolloutRS,
+		owned("web-pod", controllerRef("ReplicaSet", "web-abc")),
+		owned("report-pod", controllerRef("Job", "report-1")),
+		owned("index-pod", controllerRef("StatefulSet", "index")),
+		owned("pay-pod", controllerRef("ReplicaSet", "pay-xyz")),
+	)
+
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	watcher := NewPodWatcher(clientset, func(p PodInfo) {
+		mu.Lock()
+		seen[p.Name] = true
+		mu.Unlock()
+	})
+	filter := NewFilter(nil, nil)
+	watcher.SetFilter(filter)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c := filter.Snapshot()
+		if c.PodsObserved+c.ExcludedWorkloadAnnotation == 4 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("filter saw %+v before timeout, want 4 pods total", c)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, name := range []string{"index-pod", "pay-pod"} {
+		if !seen[name] {
+			t.Errorf("%s was not reported; the workload did not opt out", name)
+		}
+	}
+	for _, name := range []string{"web-pod", "report-pod"} {
+		if seen[name] {
+			t.Errorf("%s was reported; its workload carries %s=false", name, CollectAnnotation)
+		}
+	}
+
+	got := filter.Snapshot()
+	if got.ExcludedWorkloadAnnotation != 2 {
+		t.Errorf("excluded by workload annotation = %d, want 2 (the Deployment and the CronJob)",
+			got.ExcludedWorkloadAnnotation)
+	}
+	if got.PodsObserved != 2 {
+		t.Errorf("pods observed = %d, want 2", got.PodsObserved)
+	}
+	if got.WorkloadUnknownKind != 1 {
+		t.Errorf("workload_unknown_kind = %d, want 1 (the Rollout-owned ReplicaSet); "+
+			"this counter is what tells a customer the workload-level control does not "+
+			"reach their operator's workloads", got.WorkloadUnknownKind)
+	}
+	if got.ExcludedPodAnnotation != 0 || got.ExcludedNamespaceAnnotation != 0 {
+		t.Errorf("unexpected exclusions %+v; no pod or namespace was annotated", got)
 	}
 }
