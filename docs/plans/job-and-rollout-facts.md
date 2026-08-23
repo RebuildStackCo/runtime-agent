@@ -84,7 +84,7 @@ and `workload_not_cached`. `PodFilter` becomes `Filter`.
 
 ---
 
-## Slice C1b — `job_runs`  ✅
+## Slice C1b — `job_runs`  ✅ MERGED (#57)
 
 **Kind:** `job_runs` · **source:** `journal` · **key:** (window start, window
 length) · **delivery:** supersedes
@@ -146,7 +146,7 @@ correction · unit tests · this file ticked.
 
 ---
 
-## Slice C2 — `deployment_revisions`
+## Slice C2 — `deployment_revisions`  ✅
 
 **Kind:** `deployment_revisions` · **source:** `structural` · **key:** the kind
 itself (one per cluster) · **delivery:** supersedes

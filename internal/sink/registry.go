@@ -129,6 +129,16 @@ var registry = []PayloadKind{
 		ADR:        "0012, 0014, 0021",
 	},
 	{
+		// Current state, not history: Kubernetes keeps only
+		// `revisionHistoryLimit` revisions, and accumulating past that is the
+		// backend's job across snapshots (ADR 0018's reasoning, ADR 0030).
+		Kind:       "deployment_revisions",
+		Source:     SourceStructural,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0030",
+	},
+	{
 		Kind:       "node_metadata",
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",

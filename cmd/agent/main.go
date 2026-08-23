@@ -41,6 +41,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
+	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 	"github.com/RebuildStackCo/runtime-agent/internal/targeting"
@@ -371,10 +372,19 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if err := spool.WriteNodeMetadata(capturedAt, nodes); err != nil {
 			logger.Error("spooling node metadata", "error", err)
 		}
+		// Revisions ride the same instant: they are joined against workload
+		// metadata under the same workload key, and two capture times would let
+		// a consumer pair a revision with a shape from a different moment
+		// (ADR 0030).
+		revisionRecords := revisions.Aggregate(podWatcher.ReplicaSets())
+		if err := spool.WriteDeploymentRevisions(capturedAt, revisionRecords); err != nil {
+			logger.Error("spooling deployment revisions", "error", err)
+		}
 		logger.Info("metadata flushed",
 			"captured_at", capturedAt,
 			"workload_records", len(records),
 			"nodes", len(nodes),
+			"revisions", len(revisionRecords),
 		)
 	}
 

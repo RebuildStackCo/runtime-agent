@@ -16,6 +16,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -712,6 +713,96 @@ func TestMetadataSupersedesOnDisk(t *testing.T) {
 		if payload.Source != SourceStructural {
 			t.Errorf("%s source = %q, want %q", name, payload.Source, SourceStructural)
 		}
+	}
+}
+
+// fixedRevisions is a Deployment mid-rollout: the outgoing revision still
+// carrying traffic, the incoming one not yet ready, and an older one kept at
+// zero. The three are what a consumer must be able to tell apart, and none of
+// those states is named by the agent.
+func fixedRevisions() []revisions.Record {
+	return []revisions.Record{
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Name:      "web-6d4cf56db",
+			Revision:  ptrTo(int64(46)),
+			CreatedAt: capturedAt.Add(-72 * time.Hour),
+			Replicas:  revisions.Replicas{Desired: 0, Current: 0, Ready: 0},
+			Containers: []revisions.Container{
+				{Name: "app", Image: "example.com/app:1.2.2"},
+			},
+		},
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Name:      "web-7f8d9c5b4",
+			Revision:  ptrTo(int64(47)),
+			CreatedAt: capturedAt.Add(-2 * time.Hour),
+			Replicas:  revisions.Replicas{Desired: 3, Current: 3, Ready: 3},
+			Containers: []revisions.Container{
+				{Name: "migrate", Image: "example.com/migrate:v3", Init: true},
+				{Name: "app", Image: "example.com/app:1.2.3"},
+			},
+		},
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Name:      "web-849fbc77d",
+			Revision:  ptrTo(int64(48)),
+			CreatedAt: capturedAt.Add(-3 * time.Minute),
+			Replicas:  revisions.Replicas{Desired: 1, Current: 1, Ready: 0},
+			Containers: []revisions.Container{
+				{Name: "migrate", Image: "example.com/migrate:v3", Init: true},
+				{Name: "app", Image: "example.com/app:1.2.4"},
+			},
+		},
+	}
+}
+
+func TestGoldenDeploymentRevisionsPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteDeploymentRevisions(capturedAt, fixedRevisions()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "deployment-revisions.json"), "deployment-revisions.golden.json")
+}
+
+// Current state under a fixed key, so each flush replaces its predecessor
+// rather than accumulating — the on-disk mirror of upsert-by-key ingest.
+func TestDeploymentRevisionsSupersedeOnDisk(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteDeploymentRevisions(capturedAt, fixedRevisions()); err != nil {
+		t.Fatal(err)
+	}
+	later := capturedAt.Add(time.Minute)
+	if err := s.WriteDeploymentRevisions(later, fixedRevisions()[:1]); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool holds %d files after two revision writes, want 1 (supersede by key)", len(entries))
+	}
+	var payload struct {
+		CapturedAt time.Time `json:"captured_at"`
+		Records    []struct {
+			Name string `json:"name"`
+		} `json:"records"`
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "deployment-revisions.json")) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.CapturedAt.Equal(later) || len(payload.Records) != 1 {
+		t.Errorf("surviving payload = (%s, %d records), want (%s, 1); a superseding snapshot "+
+			"is the complete current truth, not a merge with its predecessor",
+			payload.CapturedAt, len(payload.Records), later)
 	}
 }
 

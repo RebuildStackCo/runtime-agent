@@ -19,6 +19,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -221,6 +222,27 @@ type nodeMetadataPayload struct {
 	Source     string               `json:"source"`
 	CapturedAt time.Time            `json:"captured_at"`
 	Nodes      []collector.NodeInfo `json:"nodes"`
+}
+
+// deploymentRevisionsPayload is the current revision history of every collected
+// Deployment: which ReplicaSets exist, what each runs, and how many replicas
+// each is carrying (ADR 0030).
+//
+// A superseding batch under a fixed key, the same shape as workload metadata and
+// for the same reason: it describes current cluster state, so the newest
+// snapshot replaces its predecessor rather than accumulating. Kubernetes keeps
+// only `revisionHistoryLimit` revisions, so history beyond that is the backend's
+// to accumulate across snapshots, exactly as ADR 0018 decided for the Go
+// inventory.
+//
+// Scope is Deployments alone. StatefulSet and DaemonSet revisions live in
+// `controllerrevisions`, which the agent has no RBAC for; the kind's name says
+// so rather than implying a generality it lacks.
+type deploymentRevisionsPayload struct {
+	Kind       string             `json:"kind"`
+	Source     string             `json:"source"`
+	CapturedAt time.Time          `json:"captured_at"`
+	Records    []revisions.Record `json:"records"`
 }
 
 // profilePayload is one captured eBPF CPU profile: the allow-list-filtered,
@@ -494,6 +516,20 @@ func (s *Spool) WriteNodeMetadata(capturedAt time.Time, nodes []collector.NodeIn
 		Nodes:      nodes,
 	}
 	return s.write("node-metadata.json", payload)
+}
+
+// WriteDeploymentRevisions writes the current revision history as one
+// superseding batch. records must already be in a deterministic order
+// (revisions.Aggregate sorts them) so the payload bytes are stable — the golden
+// contract.
+func (s *Spool) WriteDeploymentRevisions(capturedAt time.Time, records []revisions.Record) error {
+	payload := deploymentRevisionsPayload{
+		Kind:       "deployment_revisions",
+		Source:     SourceStructural,
+		CapturedAt: capturedAt.UTC(),
+		Records:    records,
+	}
+	return s.write("deployment-revisions.json", payload)
 }
 
 // WriteProfile writes one captured eBPF CPU profile. Unlike the superseding
