@@ -1,0 +1,80 @@
+{
+  "kind": "deployment_revisions",
+  "source": "structural",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "records": [
+    {
+      "namespace": "shop",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "name": "web-6d4cf56db",
+      "revision": 46,
+      "created_at": "2026-08-03T10:12:00Z",
+      "replicas": {
+        "desired": 0,
+        "current": 0,
+        "ready": 0
+      },
+      "containers": [
+        {
+          "name": "app",
+          "image": "example.com/app:1.2.2"
+        }
+      ]
+    },
+    {
+      "namespace": "shop",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "name": "web-7f8d9c5b4",
+      "revision": 47,
+      "created_at": "2026-08-06T08:12:00Z",
+      "replicas": {
+        "desired": 3,
+        "current": 3,
+        "ready": 3
+      },
+      "containers": [
+        {
+          "name": "migrate",
+          "image": "example.com/migrate:v3",
+          "init": true
+        },
+        {
+          "name": "app",
+          "image": "example.com/app:1.2.3"
+        }
+      ]
+    },
+    {
+      "namespace": "shop",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "name": "web-849fbc77d",
+      "revision": 48,
+      "created_at": "2026-08-06T10:09:00Z",
+      "replicas": {
+        "desired": 1,
+        "current": 1,
+        "ready": 0
+      },
+      "containers": [
+        {
+          "name": "migrate",
+          "image": "example.com/migrate:v3",
+          "init": true
+        },
+        {
+          "name": "app",
+          "image": "example.com/app:1.2.4"
+        }
+      ]
+    }
+  ]
+}

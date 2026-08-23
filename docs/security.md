@@ -380,6 +380,7 @@ appearing here (ADR 0022).
 | `container_restarts` | Per (namespace, pod, container) and hour: restart count, breakdown by termination reason, how many restarts had no reason visible, last exit code | **yes** |
 | `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
+| `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
 | `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
@@ -398,6 +399,12 @@ section describes each in detail.
 - The agent **never reads Secrets or ConfigMaps** (no RBAC for them exists).
   Its own configuration is a different thing and arrives as a mounted file, not
   through the API.
+- From ReplicaSets, the agent keeps `metadata`, `spec.replicas`,
+  `status.replicas`, `status.readyReplicas`, and from `spec.template` **exactly
+  one field per container: the image reference**. Not `env`, not `args`, not
+  `command` — the same rule as for pods, and it is checked against the encoded
+  bytes rather than the struct, so a field added later that carries the template
+  through fails a test ([ADR 0030](adr/0030-deployment-revisions.md)).
 - From Jobs, the agent keeps `metadata`, the terminal condition's *type*,
   *reason* and *transition time*, `status.startTime`, `status.completionTime`,
   `status.succeeded`, `status.failed`, and three declared fields:
@@ -457,6 +464,15 @@ cluster, so that a stale snapshot can be recognized rather than assumed current
 ([ADR 0017](adr/0017-build-facts-keyed-by-digest.md)).
 
 ### Object history, and the one place pods are named (ADR 0020)
+
+`deployment_revisions` names ReplicaSets, which are objects your cluster
+created and named. It covers Deployments only — StatefulSet and DaemonSet
+revisions live in `controllerrevisions`, which the agent has no RBAC for — and a
+Deployment appears in it only while it has collected pods. That is not a second
+filter: the record set is read from the same admitted index everything else uses,
+so a workload excluded by any of the controls in
+[§11](#11-your-controls-and-what-the-agent-says-about-itself) cannot appear here
+by construction ([ADR 0030](adr/0030-deployment-revisions.md)).
 
 `job_runs` names the Job object, which for a scheduled job is a generated
 per-run name such as `rollup-29123456`, and the CronJob that scheduled it. The
