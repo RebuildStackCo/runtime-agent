@@ -94,11 +94,29 @@ key, and it is not to be nudged forward to keep a series monotonic — that woul
 corrupt an observation to serve a metadata concern. If a future need for a total
 order appears, it gets its own field and its own decision.
 
-**4. The window-keyed kinds gain nothing.** Adding `captured_at` to
-`usage_snapshot`, `container_restarts` and `pod_disruptions` would be defensible
-on its own merits — a snapshot taken five seconds into a window means something
-different from one taken fifty — but that is a different decision with a
-different justification, and it is not smuggled in under this one.
+**4. The window-keyed kinds gain nothing here, and `usage_snapshot` never
+will.** How much of a window a usage record covers is already in the record:
+`CoveredNanoseconds` is documented as answering "how much of this window did we
+see?", and it answers it *per record*, so a container that started mid-window is
+distinguishable from its neighbour in the same payload. `Observation` adds the
+payload-level scrape state. A `captured_at` would be a second, coarser answer to
+a question that already has a better one.
+
+The two journals are a different matter, and there the gap is real: neither
+`container_restarts` nor `pod_disruptions` has a coverage field, and neither has
+a separate closed-window kind the way usage has `usage_window`. A payload
+holding five restarts is byte-identical whether it is the window's final value
+or a slice taken five minutes in, and the backend's wall clock cannot settle it
+— after an outage the backlog arrives long after every window has passed.
+
+That is not fixed here. What the signal should be — a capture instant, an
+explicit `window_complete`, or a closed kind mirroring `usage_window` — depends
+on what the ingest wants to do with it, and there is no ingest to ask. Choosing
+now would be choosing blind, which is how `eligibleNamespaces` happened
+(ADR 0025). The field is additive and therefore cheap to add later; it belongs
+to the slice that builds shipping, and it must land before a backend ingests
+these payloads, because that is when the cost changes from a golden diff to a
+migration.
 
 ## Consequences
 
