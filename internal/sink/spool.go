@@ -245,6 +245,34 @@ type deploymentRevisionsPayload struct {
 	Records    []revisions.Record `json:"records"`
 }
 
+// workloadPolicyPayload is what bounds each collected workload from outside its
+// own spec: the disruption budgets covering it, the autoscalers driving it, and
+// the volume claims holding it in place (ADR 0032).
+//
+// A superseding snapshot under a fixed key. Every fact is on a live object, so
+// the snapshot holds no state and is loss-harmless by construction (ADR 0003),
+// and a workload nothing constrains contributes no record at all.
+type workloadPolicyPayload struct {
+	Kind       string                     `json:"kind"`
+	Source     string                     `json:"source"`
+	CapturedAt time.Time                  `json:"captured_at"`
+	Records    []collector.WorkloadPolicy `json:"records"`
+}
+
+// clusterPolicyPayload is the policy configuration of the cluster: what each
+// collected namespace imposes on the workloads inside it, and the two
+// cluster-scoped catalogs a workload's own fields point into by name (ADR 0032).
+//
+// One payload rather than three because it has one subject — the cluster's
+// policy — and the scopes inside it are visible in the structure rather than
+// flattened away, which is ADR 0014's nesting principle applied above the pod.
+type clusterPolicyPayload struct {
+	Kind       string                  `json:"kind"`
+	Source     string                  `json:"source"`
+	CapturedAt time.Time               `json:"captured_at"`
+	Policy     collector.ClusterPolicy `json:"policy"`
+}
+
 // profilePayload is one captured eBPF CPU profile: the allow-list-filtered,
 // symbolized pprof bytes (gzipped protobuf, base64 in JSON) plus the natural key
 // that identifies which workload and capture window it belongs to. Unlike
@@ -530,6 +558,29 @@ func (s *Spool) WriteDeploymentRevisions(capturedAt time.Time, records []revisio
 		Records:    records,
 	}
 	return s.write("deployment-revisions.json", payload)
+}
+
+// WriteWorkloadPolicy writes the workload-policy snapshot. It supersedes its
+// predecessor under a fixed name, like the other structural snapshots.
+func (s *Spool) WriteWorkloadPolicy(capturedAt time.Time, records []collector.WorkloadPolicy) error {
+	payload := workloadPolicyPayload{
+		Kind:       "workload_policy",
+		Source:     SourceStructural,
+		CapturedAt: capturedAt.UTC(),
+		Records:    records,
+	}
+	return s.write("workload-policy.json", payload)
+}
+
+// WriteClusterPolicy writes the cluster-policy snapshot.
+func (s *Spool) WriteClusterPolicy(capturedAt time.Time, policy collector.ClusterPolicy) error {
+	payload := clusterPolicyPayload{
+		Kind:       "cluster_policy",
+		Source:     SourceStructural,
+		CapturedAt: capturedAt.UTC(),
+		Policy:     policy,
+	}
+	return s.write("cluster-policy.json", payload)
 }
 
 // WriteProfile writes one captured eBPF CPU profile. Unlike the superseding

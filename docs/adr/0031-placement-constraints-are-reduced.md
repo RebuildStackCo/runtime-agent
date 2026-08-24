@@ -3,6 +3,7 @@
 Date: 2026-08-24
 
 Status: Accepted
+Amended by: 0032
 
 Adds a `placement` block to the pod scope of `workload_metadata`. No new payload
 kind, no new informer, no new RBAC.

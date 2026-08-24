@@ -380,11 +380,25 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if err := spool.WriteDeploymentRevisions(capturedAt, revisionRecords); err != nil {
 			logger.Error("spooling deployment revisions", "error", err)
 		}
+		// Policy rides the same instant for the same reason: what bounds a
+		// workload is only meaningful beside the shape it bounds, and two
+		// capture times would let a consumer pair a budget with a replica
+		// count from a different moment (ADR 0032).
+		policies := podWatcher.WorkloadPolicies()
+		if err := spool.WriteWorkloadPolicy(capturedAt, policies); err != nil {
+			logger.Error("spooling workload policy", "error", err)
+		}
+		clusterPolicy := podWatcher.ClusterPolicy()
+		if err := spool.WriteClusterPolicy(capturedAt, clusterPolicy); err != nil {
+			logger.Error("spooling cluster policy", "error", err)
+		}
 		logger.Info("metadata flushed",
 			"captured_at", capturedAt,
 			"workload_records", len(records),
 			"nodes", len(nodes),
 			"revisions", len(revisionRecords),
+			"policy_records", len(policies),
+			"policy_namespaces", len(clusterPolicy.Namespaces),
 		)
 	}
 
