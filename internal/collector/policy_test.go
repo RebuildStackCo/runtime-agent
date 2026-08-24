@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,12 +13,16 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 )
 
@@ -126,8 +131,8 @@ func collectPolicy(t *testing.T, filter *Filter, ready func([]WorkloadPolicy, Cl
 	var cluster ClusterPolicy
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		policies = watcher.WorkloadPolicies()
-		cluster = watcher.ClusterPolicy()
+		policies, _ = watcher.WorkloadPolicies()
+		cluster, _ = watcher.ClusterPolicy()
 		if ready(policies, cluster) {
 			break
 		}
@@ -372,5 +377,120 @@ func TestPolicyPayloadCarriesNoOperatorSecrets(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Errorf("policy payload contains %q:\n%s", forbidden, encoded)
 		}
+	}
+}
+
+// A denied permission must degrade one payload, not stop the agent. Before
+// ADR 0033 the policy caches were in the blocking sync list, so a customer who
+// removed one line from the ClusterRole lost the collection of everything —
+// usage included.
+func TestDeniedPolicySourceDegradesInsteadOfStoppingTheAgent(t *testing.T) {
+	clientset := fake.NewClientset(
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		budget("web-pdb", "web", "100%", 0),
+	)
+	forbid := func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(
+			schema.GroupResource{Group: "policy", Resource: "poddisruptionbudgets"},
+			"", errors.New("no permission"))
+	}
+	clientset.PrependReactor("list", "poddisruptionbudgets", forbid)
+	clientset.PrependWatchReactor("poddisruptionbudgets", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, nil, apierrors.NewForbidden(
+			schema.GroupResource{Group: "policy", Resource: "poddisruptionbudgets"},
+			"", errors.New("no permission"))
+	})
+
+	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher.SetFilter(NewFilter(nil, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	// The agent must reach the point of collecting pods at all — that is the
+	// property the old code destroyed.
+	var pods []PodInfo
+	var unavailable []string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pods = watcher.Pods()
+		_, unavailable = watcher.WorkloadPolicies()
+		if len(pods) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher stopped on a denied policy source: %v", err)
+	}
+	if len(pods) == 0 {
+		t.Fatal("no pods collected: the denied source stopped unrelated collection")
+	}
+	if len(unavailable) != 1 || unavailable[0] != "pod_disruption_budgets" {
+		t.Errorf("unavailable sources = %v, want the denied one named", unavailable)
+	}
+}
+
+// The distinction the whole mechanism rests on: a cluster that simply has no
+// budgets is not the same state as one that refused to show them. HasSynced
+// separates them because an empty list still syncs.
+func TestEmptyClusterReportsNoUnavailableSources(t *testing.T) {
+	_, unavailable := func() ([]WorkloadPolicy, []string) {
+		clientset := fake.NewClientset(
+			policyPod("web-1", "web"),
+			replicaSetOwnedBy("web-abc", "web"),
+		)
+		watcher := NewPodWatcher(clientset, func(PodInfo) {})
+		watcher.SetFilter(NewFilter(nil, nil))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- watcher.Run(ctx) }()
+
+		var out []WorkloadPolicy
+		var gaps []string
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			out, gaps = watcher.WorkloadPolicies()
+			if len(watcher.Pods()) > 0 {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("watcher returned error: %v", err)
+		}
+		return out, gaps
+	}()
+	if len(unavailable) != 0 {
+		t.Errorf("unavailable sources = %v, want none: every cache synced over an empty cluster", unavailable)
+	}
+}
+
+// Each payload declares its own sources. The storage-class catalog belongs to
+// cluster policy alone: a claim's storage_class is a name read from the
+// PersistentVolumeClaim, and the catalog only says what that name means.
+func TestEachPayloadDeclaresOnlyItsOwnSources(t *testing.T) {
+	w := &PodWatcher{policySources: []policySource{
+		{name: "pod_disruption_budgets", synced: func() bool { return false }},
+		{name: "horizontal_pod_autoscalers", synced: func() bool { return true }},
+		{name: "persistent_volume_claims", synced: func() bool { return true }},
+		{name: "limit_ranges", synced: func() bool { return true }},
+		{name: "resource_quotas", synced: func() bool { return true }},
+		{name: "priority_classes", synced: func() bool { return true }},
+		{name: "storage_classes", synced: func() bool { return false }},
+	}}
+	workload := w.unavailablePolicySources(workloadPolicySources...)
+	if len(workload) != 1 || workload[0] != "pod_disruption_budgets" {
+		t.Errorf("workload payload sources = %v", workload)
+	}
+	cluster := w.unavailablePolicySources(clusterPolicySources...)
+	if len(cluster) != 1 || cluster[0] != "storage_classes" {
+		t.Errorf("cluster payload sources = %v", cluster)
 	}
 }

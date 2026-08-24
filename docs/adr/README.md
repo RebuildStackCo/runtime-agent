@@ -90,3 +90,4 @@ line to paste.
 - [0030. Deployment revisions ship as current state, scoped by the pods already admitted](0030-deployment-revisions.md)
 - [0031. Placement constraints are collected, reduced rather than copied](0031-placement-constraints-are-reduced.md)
 - [0032. What bounds a workload from outside its own spec, and the first widening of read access](0032-cluster-policy.md)
+- [0033. A permission the agent was not given degrades one payload, and says so](0033-policy-sources-degrade.md)

@@ -125,6 +125,17 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
 | its own identity Secret **[planned]** | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret |
 
+**Declining any of the four grants above degrades one payload, not the agent.**
+The caches behind `poddisruptionbudgets`, `horizontalpodautoscalers`,
+`limitranges`, `resourcequotas`, `persistentvolumeclaims`, `priorityclasses` and
+`storageclasses` gate nothing else the agent does, so a permission you withhold
+costs you the corresponding facts and nothing more — usage collection, workload
+metadata and the journals continue. The payload then names the source it could
+not read in `unavailable_sources`, so the absence is legible rather than
+indistinguishable from "your cluster has none of those"
+([ADR 0033](adr/0033-policy-sources-degrade.md)). Granting a permission later
+takes effect at the next flush, without restarting the agent.
+
 **Authenticating node reports adds no RBAC.** When the node DaemonSet is
 installed (ADR 0010), the controller authenticates each node's projected
 ServiceAccount token by verifying its signature against the cluster's published
@@ -138,9 +149,11 @@ read, never a write.
 ### Cluster-wide vs. namespace-scoped installation
 
 - **Cluster-wide (default):** a single ClusterRole with the rules above.
-- **Namespace-scoped:** Role + RoleBinding only in namespaces you list;
-  no ClusterRole is created. This is a hard boundary enforced by the API
-  server, not by agent configuration.
+- **Namespace-scoped [planned]:** Role + RoleBinding only in namespaces you
+  list; no ClusterRole is created. This would be a hard boundary enforced by
+  the API server, not by agent configuration. Not built: the agent's informers
+  are cluster-wide today, so this mode has no implementation behind it, and the
+  trade-offs below describe what it would cost rather than what it costs.
 
   Honest trade-off: `nodes` and `namespaces` are cluster-scoped resources, so
   in this mode the agent cannot compute node idle capacity, cannot read
@@ -389,8 +402,8 @@ appearing here (ADR 0022).
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
 | `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
-| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032) | no |
-| `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032). StorageClass `parameters` are never read | no |
+| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032); plus `unavailable_sources`, naming any of those the agent could not read (ADR 0033) | no |
+| `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read (ADR 0033). StorageClass `parameters` are never read | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
 | `go_build` | Per image digest, written once: Go version, main module, dependency module **paths**, allow-listed build settings | no |

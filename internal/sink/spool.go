@@ -253,10 +253,20 @@ type deploymentRevisionsPayload struct {
 // the snapshot holds no state and is loss-harmless by construction (ADR 0003),
 // and a workload nothing constrains contributes no record at all.
 type workloadPolicyPayload struct {
-	Kind       string                     `json:"kind"`
-	Source     string                     `json:"source"`
-	CapturedAt time.Time                  `json:"captured_at"`
-	Records    []collector.WorkloadPolicy `json:"records"`
+	Kind       string    `json:"kind"`
+	Source     string    `json:"source"`
+	CapturedAt time.Time `json:"captured_at"`
+	// UnavailableSources names the caches this payload could not read at this
+	// capture — a denied permission, most often. It is what keeps every
+	// absence below conditional: without it, "this workload has no budget" and
+	// "we were not allowed to look for budgets" are the same silence, and a
+	// workload whose only constraint was a budget disappears from `records`
+	// entirely rather than appearing with a field missing (ADR 0033).
+	//
+	// Empty on an ordinary cluster, and empty is itself a statement: every
+	// source was read, so what is not here does not exist.
+	UnavailableSources []string                   `json:"unavailable_sources,omitempty"`
+	Records            []collector.WorkloadPolicy `json:"records"`
 }
 
 // clusterPolicyPayload is the policy configuration of the cluster: what each
@@ -267,10 +277,14 @@ type workloadPolicyPayload struct {
 // policy — and the scopes inside it are visible in the structure rather than
 // flattened away, which is ADR 0014's nesting principle applied above the pod.
 type clusterPolicyPayload struct {
-	Kind       string                  `json:"kind"`
-	Source     string                  `json:"source"`
-	CapturedAt time.Time               `json:"captured_at"`
-	Policy     collector.ClusterPolicy `json:"policy"`
+	Kind       string    `json:"kind"`
+	Source     string    `json:"source"`
+	CapturedAt time.Time `json:"captured_at"`
+	// UnavailableSources is this payload's own list, not a copy of the
+	// workload payload's: the two have distinct natural keys and are upserted
+	// independently, so each must be readable alone (ADR 0033).
+	UnavailableSources []string                `json:"unavailable_sources,omitempty"`
+	Policy             collector.ClusterPolicy `json:"policy"`
 }
 
 // profilePayload is one captured eBPF CPU profile: the allow-list-filtered,
@@ -562,23 +576,25 @@ func (s *Spool) WriteDeploymentRevisions(capturedAt time.Time, records []revisio
 
 // WriteWorkloadPolicy writes the workload-policy snapshot. It supersedes its
 // predecessor under a fixed name, like the other structural snapshots.
-func (s *Spool) WriteWorkloadPolicy(capturedAt time.Time, records []collector.WorkloadPolicy) error {
+func (s *Spool) WriteWorkloadPolicy(capturedAt time.Time, records []collector.WorkloadPolicy, unavailable []string) error {
 	payload := workloadPolicyPayload{
-		Kind:       "workload_policy",
-		Source:     SourceStructural,
-		CapturedAt: capturedAt.UTC(),
-		Records:    records,
+		Kind:               "workload_policy",
+		Source:             SourceStructural,
+		CapturedAt:         capturedAt.UTC(),
+		UnavailableSources: unavailable,
+		Records:            records,
 	}
 	return s.write("workload-policy.json", payload)
 }
 
 // WriteClusterPolicy writes the cluster-policy snapshot.
-func (s *Spool) WriteClusterPolicy(capturedAt time.Time, policy collector.ClusterPolicy) error {
+func (s *Spool) WriteClusterPolicy(capturedAt time.Time, policy collector.ClusterPolicy, unavailable []string) error {
 	payload := clusterPolicyPayload{
-		Kind:       "cluster_policy",
-		Source:     SourceStructural,
-		CapturedAt: capturedAt.UTC(),
-		Policy:     policy,
+		Kind:               "cluster_policy",
+		Source:             SourceStructural,
+		CapturedAt:         capturedAt.UTC(),
+		UnavailableSources: unavailable,
+		Policy:             policy,
 	}
 	return s.write("cluster-policy.json", payload)
 }

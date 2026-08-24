@@ -384,13 +384,20 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		// workload is only meaningful beside the shape it bounds, and two
 		// capture times would let a consumer pair a budget with a replica
 		// count from a different moment (ADR 0032).
-		policies := podWatcher.WorkloadPolicies()
-		if err := spool.WriteWorkloadPolicy(capturedAt, policies); err != nil {
+		policies, policyGaps := podWatcher.WorkloadPolicies()
+		if err := spool.WriteWorkloadPolicy(capturedAt, policies, policyGaps); err != nil {
 			logger.Error("spooling workload policy", "error", err)
 		}
-		clusterPolicy := podWatcher.ClusterPolicy()
-		if err := spool.WriteClusterPolicy(capturedAt, clusterPolicy); err != nil {
+		clusterPolicy, clusterGaps := podWatcher.ClusterPolicy()
+		if err := spool.WriteClusterPolicy(capturedAt, clusterPolicy, clusterGaps); err != nil {
 			logger.Error("spooling cluster policy", "error", err)
+		}
+		// A source the agent was not permitted to read is not an error it can
+		// fix, and not a reason to stop collecting everything else. It is
+		// logged once per flush and declared in the payload (ADR 0033).
+		if len(policyGaps) > 0 || len(clusterGaps) > 0 {
+			logger.Warn("policy sources unavailable at this capture",
+				"workload_policy", policyGaps, "cluster_policy", clusterGaps)
 		}
 		logger.Info("metadata flushed",
 			"captured_at", capturedAt,

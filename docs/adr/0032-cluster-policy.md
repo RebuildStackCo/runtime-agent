@@ -4,6 +4,7 @@ Date: 2026-08-24
 
 Status: Accepted
 Amends: 0031 §7
+Amended by: 0033
 
 Adds the payload kinds `workload_policy` and `cluster_policy`. Adds six resources
 to the ClusterRole — the first time the agent's read access has widened since it
