@@ -573,6 +573,21 @@ func fixedWorkloadMetadata() []metadata.Record {
 		Replicas: 2,
 		Phases:   map[string]int{"Running": 2},
 		Nodes:    map[string]int{"node-1": 1, "node-2": 1},
+		// A workload that cannot be packed: required anti-affinity on hostname
+		// puts one replica per node whatever spare capacity exists elsewhere,
+		// and DoNotSchedule across zones keeps it paying for every zone it
+		// spans (ADR 0031).
+		Placement: collector.Placement{
+			NodeSelector: map[string]string{"node.kubernetes.io/instance-type": "m6i.large"},
+			PodAntiAffinity: []collector.TopologyTerm{
+				{TopologyKey: "kubernetes.io/hostname", Required: true},
+			},
+			TopologySpread: []collector.SpreadTerm{
+				{TopologyKey: "topology.kubernetes.io/zone", MaxSkew: 1, WhenUnsatisfiable: "DoNotSchedule"},
+			},
+			PriorityClass:           "high",
+			TerminationGraceSeconds: ptr.To[int64](300),
+		},
 	}
 	return []metadata.Record{
 		{
@@ -609,6 +624,23 @@ func fixedWorkloadMetadata() []metadata.Record {
 				Replicas:    1,
 				Phases:      map[string]int{"Pending": 1},
 				Unscheduled: map[string]int{"Unschedulable": 1},
+				// The new build tightened its node affinity, and its replica is
+				// unschedulable. Because the record key carries the image
+				// digest, the two builds keep their own constraints instead of
+				// one overwriting the other — which is the whole reason a
+				// rollout's placement change is legible here at all.
+				Placement: collector.Placement{
+					NodeAffinity: []collector.NodeAffinityTerm{{
+						Key:      "topology.kubernetes.io/zone",
+						Operator: "In",
+						Values:   []string{"eu-west-1a"},
+						Required: true,
+					}},
+					PodAntiAffinity: []collector.TopologyTerm{
+						{TopologyKey: "kubernetes.io/hostname", Required: true},
+					},
+					PriorityClass: "high",
+				},
 			},
 		},
 		{

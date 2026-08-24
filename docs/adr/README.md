@@ -88,3 +88,4 @@ line to paste.
 - [0028. The opt-out annotation works on the workload, and the workload step fails open](0028-workload-level-opt-out.md)
 - [0029. Finished Job runs ship as a windowed journal, and are not baselined](0029-job-runs.md)
 - [0030. Deployment revisions ship as current state, scoped by the pods already admitted](0030-deployment-revisions.md)
+- [0031. Placement constraints are collected, reduced rather than copied](0031-placement-constraints-are-reduced.md)

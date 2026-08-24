@@ -463,6 +463,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"workload_not_cached", c.WorkloadNotCached,
 			"usage_signals", usagePoller.Signals(),
 		}
+		// Placement terms the reduction refused to carry (ADR 0031). Not an
+		// exclusion — the workload is collected — but it is something the
+		// customer's manifests contain and the payload does not, so it is
+		// counted here rather than left silent.
+		if pd := podWatcher.PlacementDrops(); pd.Values != 0 || pd.Terms != 0 {
+			attrs = append(attrs,
+				"placement_values_dropped", pd.Values,
+				"placement_terms_dropped", pd.Terms,
+			)
+		}
 		if goStore != nil {
 			ic := goStore.Counters()
 			attrs = append(attrs,

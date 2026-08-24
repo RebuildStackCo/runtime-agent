@@ -32,6 +32,26 @@
         "nodes": {
           "node-1": 1,
           "node-2": 1
+        },
+        "placement": {
+          "node_selector": {
+            "node.kubernetes.io/instance-type": "m6i.large"
+          },
+          "pod_anti_affinity": [
+            {
+              "topology_key": "kubernetes.io/hostname",
+              "required": true
+            }
+          ],
+          "topology_spread": [
+            {
+              "topology_key": "topology.kubernetes.io/zone",
+              "max_skew": 1,
+              "when_unsatisfiable": "DoNotSchedule"
+            }
+          ],
+          "priority_class": "high",
+          "termination_grace_seconds": 300
         }
       }
     },
@@ -53,6 +73,25 @@
         },
         "unscheduled": {
           "Unschedulable": 1
+        },
+        "placement": {
+          "node_affinity": [
+            {
+              "key": "topology.kubernetes.io/zone",
+              "operator": "In",
+              "values": [
+                "eu-west-1a"
+              ],
+              "required": true
+            }
+          ],
+          "pod_anti_affinity": [
+            {
+              "topology_key": "kubernetes.io/hostname",
+              "required": true
+            }
+          ],
+          "priority_class": "high"
         }
       }
     },
@@ -75,6 +114,26 @@
         "nodes": {
           "node-1": 1,
           "node-2": 1
+        },
+        "placement": {
+          "node_selector": {
+            "node.kubernetes.io/instance-type": "m6i.large"
+          },
+          "pod_anti_affinity": [
+            {
+              "topology_key": "kubernetes.io/hostname",
+              "required": true
+            }
+          ],
+          "topology_spread": [
+            {
+              "topology_key": "topology.kubernetes.io/zone",
+              "max_skew": 1,
+              "when_unsatisfiable": "DoNotSchedule"
+            }
+          ],
+          "priority_class": "high",
+          "termination_grace_seconds": 300
         }
       }
     }

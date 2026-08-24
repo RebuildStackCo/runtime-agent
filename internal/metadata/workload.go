@@ -81,6 +81,17 @@ type PodScope struct {
 	// is the scheduler failing on the pod's own spec. The agent reports which,
 	// and draws no conclusion (ADR 0004).
 	Unscheduled map[string]int `json:"unscheduled,omitempty"`
+	// Placement is what the pod spec says about where these replicas may run
+	// and what it costs to move them. Usage says what a workload consumes,
+	// resources say what it asked for, nodes say what machine it got — and
+	// none of them says why it cannot be put somewhere cheaper. This does.
+	//
+	// It is taken from the first pod seen under the key, the same way Image,
+	// Resources and Ports above are. The key carries the image digest, so a
+	// rollout that changes placement produces one record per build, each with
+	// its own constraints, rather than one record with whichever pod was seen
+	// first (ADR 0031).
+	Placement collector.Placement `json:"placement,omitzero"`
 }
 
 // Record is the declared shape of one workload container plus the placement of
@@ -134,6 +145,7 @@ func Aggregate(pods []collector.PodInfo) []Record {
 					Ports:     c.Ports,
 					Pod: PodScope{
 						QOSClass:    pod.QOSClass,
+						Placement:   pod.Placement,
 						Phases:      make(map[string]int),
 						Nodes:       make(map[string]int),
 						Unscheduled: make(map[string]int),

@@ -126,7 +126,7 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
-		ADR:        "0012, 0014, 0021",
+		ADR:        "0012, 0014, 0021, 0031",
 	},
 	{
 		// Current state, not history: Kubernetes keeps only
