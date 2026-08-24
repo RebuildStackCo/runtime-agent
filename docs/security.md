@@ -118,6 +118,10 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod; read each workload's own annotations to honor an opt-out written there ([ADR 0028](adr/0028-workload-level-opt-out.md)); and read finished Jobs' timings and outcomes for `job_runs` ([ADR 0029](adr/0029-job-runs.md)) |
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
+| `poddisruptionbudgets`, `horizontalpodautoscalers` | get/list/watch | Report what bounds a workload from outside its own spec ([ADR 0032](adr/0032-cluster-policy.md)): a budget can forbid eviction outright, so a node covered by one cannot be drained at all; an autoscaler targeting CPU *utilization* targets a percentage of the request, so the request cannot be read safely without it. A budget's selector is resolved against pods that passed your filters and never reported as such |
+| `limitranges`, `resourcequotas` | get/list/watch | Distinguish a request a team chose from one the namespace supplied on their behalf, and report the ceiling a namespace sits under and how much of it is spent (ADR 0032). Read only for namespaces that pass your filters |
+| `persistentvolumeclaims`, `storageclasses` | get/list/watch | A bound claim on a zonal volume pins its pod to that zone, which no field of the pod spec states (ADR 0032). A StorageClass's `parameters` are **not** read — that is the one field here carrying provider configuration (endpoints, key identifiers); what is read is how the class behaves: provisioner, reclaim policy, `volumeBindingMode`, expansion |
+| `priorityclasses` | get/list/watch | The value and preemption policy behind the `priorityClassName` already collected in the placement block ([ADR 0031](adr/0031-placement-constraints-are-reduced.md)), and the explanation for preemptions already reported in `pod_disruptions` |
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
 | its own identity Secret **[planned]** | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret |
 
@@ -142,7 +146,10 @@ read, never a write.
   in this mode the agent cannot compute node idle capacity, cannot read
   instance types for pricing, and cannot reconcile totals against your cloud
   invoice. It reports requests-vs-usage findings for the permitted namespaces
-  only.
+  only. `priorityclasses` and `storageclasses` are cluster-scoped for the same
+  reason, so in this mode `cluster_policy` carries namespace policy without the
+  two catalogs: a workload's priority class and a claim's storage class are
+  reported by name, and what those names mean is not.
 
 ---
 
@@ -382,6 +389,8 @@ appearing here (ADR 0022).
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
 | `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
+| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032) | no |
+| `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032). StorageClass `parameters` are never read | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
 | `go_build` | Per image digest, written once: Go version, main module, dependency module **paths**, allow-listed build settings | no |
@@ -440,8 +449,12 @@ section describes each in detail.
   is dropped whole rather than truncated — the same rule build settings follow
   ([ADR 0019](adr/0019-build-settings-by-allow-list.md)) and for the same
   reason. What was dropped is counted in the coverage report and never named.
-  `volumes` are **not** read, even for placement: a zonal volume does pin a pod,
-  but the list references Secrets and ConfigMaps by name.
+  From `volumes` the agent reads **only** the `persistentVolumeClaim` entries,
+  and only their claim names ([ADR 0032](adr/0032-cluster-policy.md), amending
+  ADR 0031): a bound claim on a zonal volume pins its pod to that zone, which no
+  field of the pod spec states. A Secret, ConfigMap or projected volume in the
+  same list is skipped without its name being touched, which is checked on the
+  encoded bytes.
 - From node objects, the agent keeps only size (`allocatable`/`capacity`), the
   instance-type and capacity-type labels, the topology labels
   (`topology.kubernetes.io/zone` and `/region`, with their deprecated

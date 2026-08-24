@@ -1,0 +1,65 @@
+{
+  "kind": "cluster_policy",
+  "source": "structural",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "policy": {
+    "namespaces": [
+      {
+        "namespace": "shop",
+        "limit_ranges": [
+          {
+            "name": "defaults",
+            "items": [
+              {
+                "type": "Container",
+                "default_request": {
+                  "cpu_milli": 100
+                },
+                "default": {
+                  "memory_bytes": 536870912
+                },
+                "max": {
+                  "cpu_milli": 4000
+                }
+              }
+            ]
+          }
+        ],
+        "quotas": [
+          {
+            "name": "team",
+            "hard": {
+              "requests.cpu": "40",
+              "requests.memory": "80Gi"
+            },
+            "used": {
+              "requests.cpu": "31",
+              "requests.memory": "62Gi"
+            }
+          }
+        ]
+      }
+    ],
+    "priority_classes": [
+      {
+        "name": "high",
+        "value": 1000,
+        "preemption_policy": "PreemptLowerPriority"
+      },
+      {
+        "name": "low",
+        "value": 100,
+        "preemption_policy": "Never"
+      }
+    ],
+    "storage_classes": [
+      {
+        "name": "gp3-zonal",
+        "provisioner": "ebs.csi.aws.com",
+        "reclaim_policy": "Delete",
+        "volume_binding_mode": "WaitForFirstConsumer",
+        "allow_volume_expansion": true
+      }
+    ]
+  }
+}

@@ -139,6 +139,25 @@ var registry = []PayloadKind{
 		ADR:        "0030",
 	},
 	{
+		// What bounds a workload from outside its own spec: budgets,
+		// autoscalers, claims. A workload nothing constrains has no record
+		// (ADR 0032).
+		Kind:       "workload_policy",
+		Source:     SourceStructural,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0032",
+	},
+	{
+		// Namespace policy for collected namespaces, plus the two
+		// cluster-scoped catalogs workloads point into by name (ADR 0032).
+		Kind:       "cluster_policy",
+		Source:     SourceStructural,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0032",
+	},
+	{
 		Kind:       "node_metadata",
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",

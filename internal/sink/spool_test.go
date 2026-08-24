@@ -1051,3 +1051,106 @@ func TestSweepDropsExpiredAndTempFiles(t *testing.T) {
 		t.Errorf("sweep removed the fresh snapshot: %v", err)
 	}
 }
+
+// fixedWorkloadPolicy is a workload held in place by all three mechanisms at
+// once: a budget that permits no disruption today, an autoscaler pinned at its
+// ceiling, and a bound zonal claim. Each alone changes what may be concluded
+// from the same usage numbers.
+func fixedWorkloadPolicy() []collector.WorkloadPolicy {
+	return []collector.WorkloadPolicy{
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Budgets: []collector.DisruptionBudget{{
+				Name: "web-pdb", MinAvailable: "100%",
+				DisruptionsAllowed: 0, CurrentHealthy: 3, DesiredHealthy: 3, ExpectedPods: 3,
+			}},
+			Autoscalers: []collector.Autoscaler{{
+				Name:        "web-hpa",
+				MinReplicas: ptr.To[int32](3),
+				MaxReplicas: 8, CurrentReplicas: 8, DesiredReplicas: 8,
+				Metrics: []collector.AutoscalerMetric{{
+					Type: "Resource", Name: "cpu",
+					TargetType: "Utilization", TargetValue: "80",
+				}},
+				LimitedReason: "TooManyReplicas",
+			}},
+		},
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "StatefulSet", Name: "db"},
+			Claims: []collector.VolumeClaim{{
+				Name: "data-db-0", StorageClass: "gp3-zonal",
+				AccessModes: []string{"ReadWriteOnce"}, RequestedBytes: 100 << 30, Phase: "Bound",
+			}},
+		},
+	}
+}
+
+// fixedClusterPolicy pairs a namespace that supplies defaults with the catalogs
+// the workload payloads point into by name.
+func fixedClusterPolicy() collector.ClusterPolicy {
+	return collector.ClusterPolicy{
+		Namespaces: []collector.NamespacePolicy{{
+			Namespace: "shop",
+			LimitRanges: []collector.LimitRangeInfo{{
+				Name: "defaults",
+				Items: []collector.LimitRangeItem{{
+					Type:           "Container",
+					DefaultRequest: collector.ResourceAmounts{CPUMilli: ptr.To[int64](100)},
+					Default:        collector.ResourceAmounts{MemoryBytes: ptr.To[int64](512 << 20)},
+					Max:            collector.ResourceAmounts{CPUMilli: ptr.To[int64](4000)},
+				}},
+			}},
+			Quotas: []collector.ResourceQuotaInfo{{
+				Name: "team",
+				Hard: map[string]string{"requests.cpu": "40", "requests.memory": "80Gi"},
+				Used: map[string]string{"requests.cpu": "31", "requests.memory": "62Gi"},
+			}},
+		}},
+		PriorityClasses: []collector.PriorityClassInfo{
+			{Name: "high", Value: 1000, PreemptionPolicy: "PreemptLowerPriority"},
+			{Name: "low", Value: 100, PreemptionPolicy: "Never"},
+		},
+		StorageClasses: []collector.StorageClassInfo{{
+			Name: "gp3-zonal", Provisioner: "ebs.csi.aws.com",
+			ReclaimPolicy: "Delete", VolumeBindingMode: "WaitForFirstConsumer",
+			AllowVolumeExpansion: true,
+		}},
+	}
+}
+
+func TestGoldenWorkloadPolicyPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteWorkloadPolicy(capturedAt, fixedWorkloadPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "workload-policy.json"), "workload-policy.golden.json")
+}
+
+func TestGoldenClusterPolicyPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteClusterPolicy(capturedAt, fixedClusterPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "cluster-policy.json"), "cluster-policy.golden.json")
+}
+
+// Both policy payloads supersede under a fixed key: a second write replaces the
+// first rather than accumulating a second version to rank (ADR 0027).
+func TestPolicySupersedesOnDisk(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteWorkloadPolicy(capturedAt, fixedWorkloadPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteWorkloadPolicy(capturedAt.Add(time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "workload-policy.json" {
+		t.Fatalf("spool holds %d files, want one superseding payload", len(entries))
+	}
+}

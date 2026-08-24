@@ -17,8 +17,12 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
+	autoscalinglisters "k8s.io/client-go/listers/autoscaling/v2"
 	batchlisters "k8s.io/client-go/listers/batch/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	policylisters "k8s.io/client-go/listers/policy/v1"
+	schedulinglisters "k8s.io/client-go/listers/scheduling/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
 )
@@ -83,7 +87,12 @@ type PodInfo struct {
 	// Placement is what the spec says about where this pod may run. It is a
 	// pod fact, not a container one, and it is what workload metadata and node
 	// metadata together cannot answer: why a workload cannot be moved.
-	Placement  Placement
+	Placement Placement
+	// Claims are the PersistentVolumeClaim names this pod mounts, and the only
+	// part of `spec.volumes` the agent reads (ADR 0032, amending ADR 0031). A
+	// bound claim on a zonal volume pins the pod to that zone, which no field
+	// of the placement block above states.
+	Claims     []string
 	Containers []Container
 }
 
@@ -91,7 +100,10 @@ type PodInfo struct {
 // new ones. Every observed pod is reported through the OnPod callback,
 // resolved to the workload that manages it.
 type PodWatcher struct {
-	clientset     kubernetes.Interface
+	clientset kubernetes.Interface
+	// factory owns every informer. It is created in the constructor so the
+	// listers below are set before any goroutine can read them.
+	factory       informers.SharedInformerFactory
 	onPod         func(PodInfo)
 	onOOM         func(OOMKill)
 	onRestart     func(ContainerRestart)
@@ -110,6 +122,19 @@ type PodWatcher struct {
 	dsLister     appslisters.DaemonSetLister
 	cronLister   batchlisters.CronJobLister
 	nsLister     corelisters.NamespaceLister
+
+	// Listers for the policy objects that bound a workload from outside its
+	// own spec (ADR 0032). podLister is here too: a PodDisruptionBudget names
+	// pods by label selector, so resolving one to a workload runs through
+	// pods rather than through an owner reference.
+	podLister          corelisters.PodLister
+	pdbLister          policylisters.PodDisruptionBudgetLister
+	hpaLister          autoscalinglisters.HorizontalPodAutoscalerLister
+	pvcLister          corelisters.PersistentVolumeClaimLister
+	limitRangeLister   corelisters.LimitRangeLister
+	quotaLister        corelisters.ResourceQuotaLister
+	priorityLister     schedulinglisters.PriorityClassLister
+	storageClassLister storagelisters.StorageClassLister
 
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
@@ -190,9 +215,16 @@ type containerIdentity struct {
 // start and for every pod created afterwards. onPod is called from the
 // informer goroutine and must not block.
 func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatcher {
-	return &PodWatcher{
+	// The factory and every lister are built here rather than in Run, and that
+	// is a correctness requirement, not a style choice: the metadata flush runs
+	// on its own goroutine and calls ReplicaSets, WorkloadPolicies and
+	// ClusterPolicy while Run is still starting. Assigning the lister fields
+	// inside Run would be a write racing those reads.
+	factory := informers.NewSharedInformerFactory(clientset, 0)
+	w := &PodWatcher{
 		clientset:           clientset,
 		onPod:               onPod,
+		factory:             factory,
 		filter:              NewFilter(nil, nil),
 		reportedOOMs:        make(map[string]struct{}),
 		restartCounts:       make(map[string]int32),
@@ -202,6 +234,22 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		index:               make(map[types.UID]podIndexEntry),
 		nameIndex:           make(map[string]types.UID),
 	}
+	w.rsLister = factory.Apps().V1().ReplicaSets().Lister()
+	w.jobLister = factory.Batch().V1().Jobs().Lister()
+	w.deployLister = factory.Apps().V1().Deployments().Lister()
+	w.stsLister = factory.Apps().V1().StatefulSets().Lister()
+	w.dsLister = factory.Apps().V1().DaemonSets().Lister()
+	w.cronLister = factory.Batch().V1().CronJobs().Lister()
+	w.nsLister = factory.Core().V1().Namespaces().Lister()
+	w.podLister = factory.Core().V1().Pods().Lister()
+	w.pdbLister = factory.Policy().V1().PodDisruptionBudgets().Lister()
+	w.hpaLister = factory.Autoscaling().V2().HorizontalPodAutoscalers().Lister()
+	w.pvcLister = factory.Core().V1().PersistentVolumeClaims().Lister()
+	w.limitRangeLister = factory.Core().V1().LimitRanges().Lister()
+	w.quotaLister = factory.Core().V1().ResourceQuotas().Lister()
+	w.priorityLister = factory.Scheduling().V1().PriorityClasses().Lister()
+	w.storageClassLister = factory.Storage().V1().StorageClasses().Lister()
+	return w
 }
 
 // SetFilter replaces the default collect-everything filter. Must be called
@@ -217,7 +265,7 @@ func (w *PodWatcher) SetFilter(filter *Filter) {
 // was cached would be admitted without the workload check, which is exactly
 // the blind spot the coverage counters exist to size.
 func (w *PodWatcher) Run(ctx context.Context) error {
-	factory := informers.NewSharedInformerFactory(w.clientset, 0)
+	factory := w.factory
 	rs := factory.Apps().V1().ReplicaSets()
 	jobs := factory.Batch().V1().Jobs()
 	deployments := factory.Apps().V1().Deployments()
@@ -226,14 +274,13 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	cronJobs := factory.Batch().V1().CronJobs()
 	namespaces := factory.Core().V1().Namespaces()
 	pods := factory.Core().V1().Pods()
-	w.rsLister = rs.Lister()
-	w.jobLister = jobs.Lister()
-	w.deployLister = deployments.Lister()
-	w.stsLister = statefulSets.Lister()
-	w.dsLister = daemonSets.Lister()
-	w.cronLister = cronJobs.Lister()
-	w.nsLister = namespaces.Lister()
-
+	budgets := factory.Policy().V1().PodDisruptionBudgets()
+	autoscalers := factory.Autoscaling().V2().HorizontalPodAutoscalers()
+	claims := factory.Core().V1().PersistentVolumeClaims()
+	limitRanges := factory.Core().V1().LimitRanges()
+	quotas := factory.Core().V1().ResourceQuotas()
+	priorityClasses := factory.Scheduling().V1().PriorityClasses()
+	storageClasses := factory.Storage().V1().StorageClasses()
 	// Informers must be instantiated before Start, or the factory won't
 	// run them.
 	podsInformer := pods.Informer()
@@ -246,6 +293,17 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		daemonSets.Informer().HasSynced,
 		cronJobs.Informer().HasSynced,
 		namespaces.Informer().HasSynced,
+		// The policy caches gate no pod event — a policy object missing at
+		// startup means one flush without it, not a pod admitted wrongly —
+		// but they are waited on all the same, so the first snapshot after
+		// startup is not a partial one that supersedes nothing (ADR 0032).
+		budgets.Informer().HasSynced,
+		autoscalers.Informer().HasSynced,
+		claims.Informer().HasSynced,
+		limitRanges.Informer().HasSynced,
+		quotas.Informer().HasSynced,
+		priorityClasses.Informer().HasSynced,
+		storageClasses.Informer().HasSynced,
 	}
 
 	factory.Start(ctx.Done())
@@ -650,6 +708,7 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 	}
 	placement, drops := reducePlacement(&pod.Spec)
 	info.Placement = placement
+	info.Claims = claimNames(&pod.Spec)
 	if !drops.empty() {
 		w.placementValuesDropped.Add(int64(drops.Values))
 		w.placementTermsDropped.Add(int64(drops.Terms))

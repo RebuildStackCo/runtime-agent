@@ -1,0 +1,60 @@
+{
+  "kind": "workload_policy",
+  "source": "structural",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "records": [
+    {
+      "namespace": "shop",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "budgets": [
+        {
+          "name": "web-pdb",
+          "min_available": "100%",
+          "disruptions_allowed": 0,
+          "current_healthy": 3,
+          "desired_healthy": 3,
+          "expected_pods": 3
+        }
+      ],
+      "autoscalers": [
+        {
+          "name": "web-hpa",
+          "min_replicas": 3,
+          "max_replicas": 8,
+          "current_replicas": 8,
+          "desired_replicas": 8,
+          "metrics": [
+            {
+              "type": "Resource",
+              "name": "cpu",
+              "target_type": "Utilization",
+              "target_value": "80"
+            }
+          ],
+          "limited_reason": "TooManyReplicas"
+        }
+      ]
+    },
+    {
+      "namespace": "shop",
+      "workload": {
+        "kind": "StatefulSet",
+        "name": "db"
+      },
+      "claims": [
+        {
+          "name": "data-db-0",
+          "storage_class": "gp3-zonal",
+          "access_modes": [
+            "ReadWriteOnce"
+          ],
+          "requested_bytes": 107374182400,
+          "phase": "Bound"
+        }
+      ]
+    }
+  ]
+}
