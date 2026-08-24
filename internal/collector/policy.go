@@ -201,10 +201,11 @@ type ClusterPolicy struct {
 // the same construction ADR 0030 used for revisions: a workload excluded by any
 // filter has no admitted pods and therefore cannot appear here, and there is no
 // second admission path to keep in step.
-func (w *PodWatcher) WorkloadPolicies() []WorkloadPolicy {
+func (w *PodWatcher) WorkloadPolicies() ([]WorkloadPolicy, []string) {
+	unavailable := w.unavailablePolicySources(workloadPolicySources...)
 	workloads, claimsByWorkload := w.collectedWorkloads()
 	if len(workloads) == 0 {
-		return nil
+		return nil, unavailable
 	}
 
 	byKey := make(map[workloadKey]*WorkloadPolicy, len(workloads))
@@ -235,8 +236,26 @@ func (w *PodWatcher) WorkloadPolicies() []WorkloadPolicy {
 		}
 		return out[i].Workload.Name < out[j].Workload.Name
 	})
-	return out
+	return out, unavailable
 }
+
+// The caches each policy payload reads. They are listed per payload rather than
+// pooled because each payload must be readable on its own: the two have distinct
+// natural keys, so the backend upserts them independently and one can arrive
+// without the other (ADR 0033).
+//
+// The storage-class catalog is deliberately absent from the workload list. A
+// claim's `storage_class` is a name read from the PersistentVolumeClaim, not
+// from the catalog; the catalog says what that name means, which is a
+// cluster-policy question.
+var (
+	workloadPolicySources = []string{
+		"pod_disruption_budgets", "horizontal_pod_autoscalers", "persistent_volume_claims",
+	}
+	clusterPolicySources = []string{
+		"limit_ranges", "resource_quotas", "priority_classes", "storage_classes",
+	}
+)
 
 // collectedWorkloads reads the admitted pod index once, returning every workload
 // with admitted pods and the claim names those pods mount.
@@ -381,7 +400,8 @@ func (w *PodWatcher) attachClaims(byKey map[workloadKey]*WorkloadPolicy, claimsB
 // cluster infrastructure rather than a customer workload, and the agent already
 // reports the whole node fleet on the same reasoning (ADR 0012). Their names are
 // what the placement block and the claims above point into.
-func (w *PodWatcher) ClusterPolicy() ClusterPolicy {
+func (w *PodWatcher) ClusterPolicy() (ClusterPolicy, []string) {
+	unavailable := w.unavailablePolicySources(clusterPolicySources...)
 	var out ClusterPolicy
 	for _, ns := range w.collectedNamespaces() {
 		policy := NamespacePolicy{Namespace: ns}
@@ -394,7 +414,7 @@ func (w *PodWatcher) ClusterPolicy() ClusterPolicy {
 	}
 	out.PriorityClasses = w.priorityClasses()
 	out.StorageClasses = w.storageClasses()
-	return out
+	return out, unavailable
 }
 
 func (w *PodWatcher) collectedNamespaces() []string {

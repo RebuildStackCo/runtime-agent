@@ -146,7 +146,7 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
-		ADR:        "0032",
+		ADR:        "0032, 0033",
 	},
 	{
 		// Namespace policy for collected namespaces, plus the two
@@ -155,7 +155,7 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
-		ADR:        "0032",
+		ADR:        "0032, 0033",
 	},
 	{
 		Kind:       "node_metadata",

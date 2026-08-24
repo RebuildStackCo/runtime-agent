@@ -1122,7 +1122,7 @@ func fixedClusterPolicy() collector.ClusterPolicy {
 
 func TestGoldenWorkloadPolicyPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteWorkloadPolicy(capturedAt, fixedWorkloadPolicy()); err != nil {
+	if err := s.WriteWorkloadPolicy(capturedAt, fixedWorkloadPolicy(), nil); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "workload-policy.json"), "workload-policy.golden.json")
@@ -1130,7 +1130,7 @@ func TestGoldenWorkloadPolicyPayload(t *testing.T) {
 
 func TestGoldenClusterPolicyPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteClusterPolicy(capturedAt, fixedClusterPolicy()); err != nil {
+	if err := s.WriteClusterPolicy(capturedAt, fixedClusterPolicy(), nil); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "cluster-policy.json"), "cluster-policy.golden.json")
@@ -1140,10 +1140,10 @@ func TestGoldenClusterPolicyPayload(t *testing.T) {
 // first rather than accumulating a second version to rank (ADR 0027).
 func TestPolicySupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteWorkloadPolicy(capturedAt, fixedWorkloadPolicy()); err != nil {
+	if err := s.WriteWorkloadPolicy(capturedAt, fixedWorkloadPolicy(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteWorkloadPolicy(capturedAt.Add(time.Minute), nil); err != nil {
+	if err := s.WriteWorkloadPolicy(capturedAt.Add(time.Minute), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -1152,5 +1152,47 @@ func TestPolicySupersedesOnDisk(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "workload-policy.json" {
 		t.Fatalf("spool holds %d files, want one superseding payload", len(entries))
+	}
+}
+
+// The declared-source line is behavior rather than shape: the field is a string
+// list, and both payloads keep their golden showing the healthy case so every
+// rich shape stays pinned. What matters is that the line is written, that each
+// payload declares only its own sources, and that a healthy capture writes
+// nothing — because empty is itself the statement "every source was read".
+func TestUnavailableSourcesAreDeclaredPerPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteWorkloadPolicy(capturedAt, fixedWorkloadPolicy(), []string{"pod_disruption_budgets"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteClusterPolicy(capturedAt, fixedClusterPolicy(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var workload struct {
+		UnavailableSources []string `json:"unavailable_sources"`
+	}
+	decodeSpooled(t, filepath.Join(dir, "workload-policy.json"), &workload)
+	if len(workload.UnavailableSources) != 1 || workload.UnavailableSources[0] != "pod_disruption_budgets" {
+		t.Errorf("workload policy sources = %v", workload.UnavailableSources)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "cluster-policy.json")) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "unavailable_sources") {
+		t.Errorf("a healthy capture wrote a sources line:\n%s", raw)
+	}
+}
+
+func decodeSpooled(t *testing.T, path string, into any) {
+	t.Helper()
+	raw, err := os.ReadFile(path) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -164,6 +164,12 @@ type PodWatcher struct {
 	index     map[types.UID]podIndexEntry
 	nameIndex map[string]types.UID
 
+	// policySources are the caches whose absence degrades a payload instead of
+	// stopping the agent (ADR 0033). Set once in the constructor and read
+	// without a lock, because the flush goroutine reads them while Run is
+	// still starting.
+	policySources []policySource
+
 	// Placement terms the reduction refused to carry, counted per pod
 	// description. Aggregate only: what was dropped is counted, never named
 	// (CLAUDE.md invariant 6). Both should sit at zero on an ordinary cluster;
@@ -249,7 +255,58 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	w.quotaLister = factory.Core().V1().ResourceQuotas().Lister()
 	w.priorityLister = factory.Scheduling().V1().PriorityClasses().Lister()
 	w.storageClassLister = factory.Storage().V1().StorageClasses().Lister()
+	// Readiness is captured as a function per source rather than waited on.
+	// Calling Lister() above already registered each informer with the
+	// factory, so Start runs them; what differs is that nothing blocks on
+	// them (ADR 0033).
+	w.policySources = []policySource{
+		{name: "pod_disruption_budgets", synced: factory.Policy().V1().PodDisruptionBudgets().Informer().HasSynced},
+		{name: "horizontal_pod_autoscalers", synced: factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer().HasSynced},
+		{name: "persistent_volume_claims", synced: factory.Core().V1().PersistentVolumeClaims().Informer().HasSynced},
+		{name: "limit_ranges", synced: factory.Core().V1().LimitRanges().Informer().HasSynced},
+		{name: "resource_quotas", synced: factory.Core().V1().ResourceQuotas().Informer().HasSynced},
+		{name: "priority_classes", synced: factory.Scheduling().V1().PriorityClasses().Informer().HasSynced},
+		{name: "storage_classes", synced: factory.Storage().V1().StorageClasses().Informer().HasSynced},
+	}
 	return w
+}
+
+// policySource is one cache a policy payload reads, paired with a way to ask
+// whether it ever filled.
+//
+// HasSynced is the whole signal, and choosing it over "the list came back
+// empty" is the point: a cluster with no PodDisruptionBudgets syncs fine and
+// lists zero objects, while a cluster that denied the permission never syncs at
+// all. An empty result and a refused read are therefore different states rather
+// than the same silence.
+type policySource struct {
+	name   string
+	synced cache.InformerSynced
+}
+
+// unavailablePolicySources returns the names of the caches that have not filled,
+// sorted, for the payload to declare.
+//
+// The names are resource classes, never customer objects, so nothing here can
+// identify a workload (CLAUDE.md invariant 6). The answer is about this capture
+// and no other: a cache that fills a minute later is simply present at the next
+// flush.
+func (w *PodWatcher) unavailablePolicySources(want ...string) []string {
+	wanted := make(map[string]bool, len(want))
+	for _, name := range want {
+		wanted[name] = true
+	}
+	var out []string
+	for _, source := range w.policySources {
+		if !wanted[source.name] {
+			continue
+		}
+		if source.synced == nil || !source.synced() {
+			out = append(out, source.name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // SetFilter replaces the default collect-everything filter. Must be called
@@ -274,13 +331,6 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	cronJobs := factory.Batch().V1().CronJobs()
 	namespaces := factory.Core().V1().Namespaces()
 	pods := factory.Core().V1().Pods()
-	budgets := factory.Policy().V1().PodDisruptionBudgets()
-	autoscalers := factory.Autoscaling().V2().HorizontalPodAutoscalers()
-	claims := factory.Core().V1().PersistentVolumeClaims()
-	limitRanges := factory.Core().V1().LimitRanges()
-	quotas := factory.Core().V1().ResourceQuotas()
-	priorityClasses := factory.Scheduling().V1().PriorityClasses()
-	storageClasses := factory.Storage().V1().StorageClasses()
 	// Informers must be instantiated before Start, or the factory won't
 	// run them.
 	podsInformer := pods.Informer()
@@ -293,18 +343,12 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		daemonSets.Informer().HasSynced,
 		cronJobs.Informer().HasSynced,
 		namespaces.Informer().HasSynced,
-		// The policy caches gate no pod event — a policy object missing at
-		// startup means one flush without it, not a pod admitted wrongly —
-		// but they are waited on all the same, so the first snapshot after
-		// startup is not a partial one that supersedes nothing (ADR 0032).
-		budgets.Informer().HasSynced,
-		autoscalers.Informer().HasSynced,
-		claims.Informer().HasSynced,
-		limitRanges.Informer().HasSynced,
-		quotas.Informer().HasSynced,
-		priorityClasses.Informer().HasSynced,
-		storageClasses.Informer().HasSynced,
 	}
+
+	// The policy caches are deliberately NOT in that list; see policySources,
+	// assembled in the constructor (ADR 0033). Their informers are already
+	// registered with the factory — every Lister() call instantiates one — so
+	// Start runs them like the rest.
 
 	factory.Start(ctx.Done())
 	defer factory.Shutdown()
