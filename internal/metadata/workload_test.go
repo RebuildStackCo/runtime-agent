@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"maps"
 	"reflect"
+	"strings"
 	"testing"
 
 	"k8s.io/utils/ptr"
@@ -259,5 +260,72 @@ func TestAggregateKeepsInitContainersDistinct(t *testing.T) {
 	}
 	if init == nil || !init.Init {
 		t.Fatalf("init container record = %+v, want Init true", init)
+	}
+}
+
+// Placement is a pod fact, so it lands in the pod block and repeats across the
+// pod's containers exactly as the counts do (ADR 0014). It is taken from the
+// pod, not derived here.
+func TestAggregateCarriesPlacementIntoThePodBlock(t *testing.T) {
+	p := pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable())
+	p.Placement = collector.Placement{
+		PodAntiAffinity: []collector.TopologyTerm{
+			{TopologyKey: "kubernetes.io/hostname", Required: true},
+		},
+		PriorityClass: "high",
+	}
+
+	got := Aggregate([]collector.PodInfo{p})
+	if len(got) != 1 {
+		t.Fatalf("records = %d, want 1", len(got))
+	}
+	if got[0].Pod.Placement.PriorityClass != "high" {
+		t.Errorf("priority class = %q", got[0].Pod.Placement.PriorityClass)
+	}
+	if len(got[0].Pod.Placement.PodAntiAffinity) != 1 {
+		t.Errorf("anti-affinity = %+v", got[0].Pod.Placement.PodAntiAffinity)
+	}
+}
+
+// A rollout that tightens placement must not have one build's constraints
+// overwrite the other's. The record key carries the image digest, so the two
+// builds are separate records and each keeps what it declared.
+func TestAggregateKeepsEachBuildsPlacementDuringRollout(t *testing.T) {
+	old := pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable())
+	old.Placement = collector.Placement{PriorityClass: "normal"}
+	fresh := pod("acme", "api-2", "node-b", "Running", "sha256:bbb", burstable())
+	fresh.Placement = collector.Placement{
+		PriorityClass: "high",
+		NodeSelector:  map[string]string{"pool": "reserved"},
+	}
+
+	got := Aggregate([]collector.PodInfo{old, fresh})
+	if len(got) != 2 {
+		t.Fatalf("records = %d, want one per build", len(got))
+	}
+	byDigest := map[string]collector.Placement{}
+	for _, r := range got {
+		byDigest[r.ImageDigest] = r.Pod.Placement
+	}
+	if byDigest["sha256:aaa"].PriorityClass != "normal" {
+		t.Errorf("old build placement = %+v", byDigest["sha256:aaa"])
+	}
+	if byDigest["sha256:bbb"].NodeSelector["pool"] != "reserved" {
+		t.Errorf("new build placement = %+v", byDigest["sha256:bbb"])
+	}
+}
+
+// A workload with no constraints contributes no placement bytes at all: the
+// block is omitted rather than written empty on every record.
+func TestAggregateOmitsPlacementForAnUnconstrainedWorkload(t *testing.T) {
+	got := Aggregate([]collector.PodInfo{
+		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
+	})
+	encoded, err := json.Marshal(got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes := string(encoded); strings.Contains(bytes, "placement") {
+		t.Errorf("unconstrained workload encoded a placement block:\n%s", bytes)
 	}
 }

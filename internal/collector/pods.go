@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -79,7 +80,11 @@ type PodInfo struct {
 	Unscheduled string
 	QOSClass    string
 	Workload    WorkloadRef
-	Containers  []Container
+	// Placement is what the spec says about where this pod may run. It is a
+	// pod fact, not a container one, and it is what workload metadata and node
+	// metadata together cannot answer: why a workload cannot be moved.
+	Placement  Placement
+	Containers []Container
 }
 
 // PodWatcher lists all pods in all namespaces and then keeps watching for
@@ -133,6 +138,29 @@ type PodWatcher struct {
 	indexMu   sync.RWMutex
 	index     map[types.UID]podIndexEntry
 	nameIndex map[string]types.UID
+
+	// Placement terms the reduction refused to carry, counted per pod
+	// description. Aggregate only: what was dropped is counted, never named
+	// (CLAUDE.md invariant 6). Both should sit at zero on an ordinary cluster;
+	// a number here means manifests that do not fit the bounds in
+	// placement.go, and the coverage report is where the customer is told.
+	placementValuesDropped atomic.Int64
+	placementTermsDropped  atomic.Int64
+}
+
+// PlacementDrops is what the placement reduction refused to carry, for the
+// coverage report.
+type PlacementDrops struct {
+	Values int64
+	Terms  int64
+}
+
+// PlacementDrops returns the running totals.
+func (w *PodWatcher) PlacementDrops() PlacementDrops {
+	return PlacementDrops{
+		Values: w.placementValuesDropped.Load(),
+		Terms:  w.placementTermsDropped.Load(),
+	}
 }
 
 type podIndexEntry struct {
@@ -619,6 +647,12 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 		QOSClass:    string(pod.Status.QOSClass),
 		Workload:    w.resolveWorkload(pod),
 		Unscheduled: unscheduledReason(pod),
+	}
+	placement, drops := reducePlacement(&pod.Spec)
+	info.Placement = placement
+	if !drops.empty() {
+		w.placementValuesDropped.Add(int64(drops.Values))
+		w.placementTermsDropped.Add(int64(drops.Terms))
 	}
 	digests := containerDigests(pod)
 	for _, c := range pod.Spec.InitContainers {

@@ -381,7 +381,7 @@ appearing here (ADR 0022).
 | `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
-| `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason | no |
+| `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
 | `go_build` | Per image digest, written once: Go version, main module, dependency module **paths**, allow-listed build settings | no |
@@ -413,7 +413,8 @@ section describes each in detail.
   there — never the `env`, `args` or `command` beneath it, on a Job no less than
   on a pod.
 - From pod specs, the agent keeps only `metadata`, `spec.containers[].resources`,
-  `spec.containers[].ports`, `ownerReferences`, and `status`. It explicitly
+  `spec.containers[].ports`, the nine placement fields listed below,
+  `ownerReferences`, and `status`. It explicitly
   discards `env`, `args`, and `command` before anything is stored or
   transported, because these fields frequently contain inline credentials.
   From `status` it reads the container image digest
@@ -427,6 +428,20 @@ section describes each in detail.
   and other teams' workloads. A scheduler message such as "0/12 nodes are
   available: 3 node(s) had untolerated taint {dedicated: payments-gpu}" never
   leaves the cluster; the reason `Unschedulable` does.
+- **Placement constraints.** Nine pod-spec fields say where a pod may run and
+  what it costs to move it, and they are what makes a usage number actionable:
+  `nodeSelector`, `affinity` (node, pod and pod-anti), `topologySpreadConstraints`,
+  `tolerations`, `priorityClassName`, `terminationGracePeriodSeconds`,
+  `hostNetwork` and `schedulerName`. They are **reduced, not copied**
+  ([ADR 0031](adr/0031-placement-constraints-are-reduced.md)): affinity keeps
+  keys, operators, values, topology keys and whether a term is required, and
+  the label selectors inside pod-affinity and spread terms are dropped. Values
+  are bounded at 128 bytes and lists at fixed counts, and anything past a bound
+  is dropped whole rather than truncated — the same rule build settings follow
+  ([ADR 0019](adr/0019-build-settings-by-allow-list.md)) and for the same
+  reason. What was dropped is counted in the coverage report and never named.
+  `volumes` are **not** read, even for placement: a zonal volume does pin a pod,
+  but the list references Secrets and ConfigMaps by name.
 - From node objects, the agent keeps only size (`allocatable`/`capacity`), the
   instance-type and capacity-type labels, the topology labels
   (`topology.kubernetes.io/zone` and `/region`, with their deprecated
