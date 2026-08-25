@@ -90,7 +90,8 @@ The agent ships, per cluster:
   counts per pod phase and per node; plus instance types, capacity type,
   allocatable, and node zone/region. These arrive as superseding snapshots of
   current state, not as a change log (ADR 0012)
-- OOM and restart events
+- OOM and restart events, plus the restart counter as it stands, which carries
+  the restarts that predate the agent and belong to no window (ADR 0034)
 - symbolized, allow-list-filtered profiles, keyed to image digest
 - a coverage report: **aggregate counts per filter type** (discovered /
   collected / excluded by namespace filter / by annotation / …). Identities
@@ -191,6 +192,35 @@ within the window's `reasons["OOMKilled"]`. This is not double counting to be
 reconciled away — `restarts` is the container's true total, and the OOM events
 carry the per-kill detail (memory limit, exit code, restart count at the time)
 that a window aggregate cannot.
+
+**`restart_counters` is a reading, and MUST NOT be added to the windows**
+([ADR 0034](adr/0034-restart-counter-readings.md)). It is a superseding snapshot
+of the kubelet's restart counter for every collected container that has ever
+restarted, keyed by the payload kind and carrying the same `captured_at` as the
+workload metadata of that flush.
+
+- `restarts` is the container's total since its pod was created, including
+  restarts that happened before the agent was installed. The windows of
+  `container_restarts` are a **subset** of it. A backend that sums the two
+  reports a cluster restarting roughly twice as often as it does.
+- `restarts_before_observation` is how much of that total the agent never
+  watched, and `observed_since` is when it started watching. Those restarts are
+  in no window and never will be: Kubernetes does not timestamp them.
+- `observed_since` and `pod_created_at` bound the interval those restarts are
+  spread over, and nothing narrows it further. The backend MAY derive a rate
+  over that interval; it MUST NOT place them at a point inside it.
+- `container_started_at` is how long the current incarnation has been running,
+  and is absent when the container is not running. A large `restarts` with a
+  long-running current incarnation is a workload that recovered, which the total
+  alone does not distinguish from one still failing.
+- `last_termination` is the single restart Kubernetes does date, with the
+  reason as the kubelet wrote it. Unlike the window's `reasons` keys this is a
+  free value from a set the backend does not control, so it MUST be tolerated
+  rather than matched against a fixed list.
+
+A container whose counter is zero has no record: the payload is a snapshot, so
+absence means zero rather than unknown. An empty record list means no collected
+container has ever restarted, and MUST NOT be read as a failed collection.
 
 **`pod_disruptions` is what the cluster took away, not what failed**
 ([ADR 0021](adr/0021-pod-lifecycle-journal.md)). One record per pod per

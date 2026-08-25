@@ -138,9 +138,11 @@ type PodWatcher struct {
 
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
-	// restartCounts is the last restart counter seen per container, the
-	// baseline every reported advance is measured against.
-	restartCounts map[string]int32
+	// restartCounts is what the agent remembers about each container's restart
+	// counter: the last value seen, which every reported advance is measured
+	// against, and the value it already stood at when this process first saw
+	// the container (ADR 0034).
+	restartCounts map[string]restartBaseline
 	// reportedDisruptions deduplicates disrupted pods across the many status
 	// updates one receives between being condemned and disappearing.
 	reportedDisruptions map[string]struct{}
@@ -233,7 +235,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		factory:             factory,
 		filter:              NewFilter(nil, nil),
 		reportedOOMs:        make(map[string]struct{}),
-		restartCounts:       make(map[string]int32),
+		restartCounts:       make(map[string]restartBaseline),
 		reportedDisruptions: make(map[string]struct{}),
 		reportedJobs:        make(map[types.UID]struct{}),
 		reportedSig:         make(map[types.UID]string),

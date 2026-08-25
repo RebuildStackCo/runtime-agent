@@ -91,6 +91,18 @@ var registry = []PayloadKind{
 		ADR:        "0020",
 	},
 	{
+		// The counter as the kubelet keeps it, not the advances the agent
+		// watched. It is the only payload that carries restarts which predate
+		// the agent, which is why it is keyed per cluster and superseding
+		// rather than windowed: an untimed total has no window to belong to
+		// (ADR 0034).
+		Kind:       "restart_counters",
+		Source:     SourceJournal,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0034",
+	},
+	{
 		Kind:       "pod_disruptions",
 		Source:     SourceJournal,
 		NaturalKey: "(window start, window length)",

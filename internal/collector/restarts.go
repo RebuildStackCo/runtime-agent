@@ -39,6 +39,20 @@ type ContainerRestart struct {
 	ExitCode *int32
 }
 
+// restartBaseline is what the agent remembers about one container's restart
+// counter: the value each reported advance is measured against, and the value
+// the counter already stood at when this process first saw the container.
+//
+// The two are different questions and only one of them changes. `last` tracks
+// the counter so an advance can be turned into a delta; `atFirstSight` and
+// `firstSeen` are fixed at the first observation and are what let the agent say
+// how much of a container's history it did not watch (ADR 0034).
+type restartBaseline struct {
+	last         int32
+	atFirstSight int32
+	firstSeen    time.Time
+}
+
 // OnContainerRestart registers fn to be called for every observed advance of a
 // container's restart counter. Must be called before Run. fn is called from the
 // informer goroutine and must not block.
@@ -49,20 +63,23 @@ func (w *PodWatcher) OnContainerRestart(fn func(ContainerRestart)) {
 // reportRestarts compares each container's restart counter against the last
 // value seen and reports the advance.
 //
-// A container seen for the first time is only baselined, never reported. Its
-// counter may already stand at 40, but those restarts happened at moments
-// Kubernetes does not record — placing them in the window that happens to be
-// open when the agent starts would invent a history. This is the one place
-// where the journal is deliberately incomplete, and it is bounded: it costs the
-// restarts that happened before the agent watched the pod, once.
+// A container seen for the first time is only baselined, never reported as an
+// advance. Its counter may already stand at 40, but those restarts happened at
+// moments Kubernetes does not record — placing them in the window that happens
+// to be open when the agent starts would invent a history.
+//
+// The number itself is not lost. It is kept here as `atFirstSight` and shipped
+// by `restart_counters` as a counter reading rather than as events in a window,
+// which is the shape that can carry an untimed total honestly (ADR 0034).
 //
 // A counter that does not advance reports nothing, and one that goes backwards
 // rebaselines silently — the same rule the usage poller applies to every
 // counter it reads (see usage.go, "Container restarted: rebaseline").
+//
+// The baseline is recorded whether or not anyone is listening for advances: it
+// is state about what the agent has seen, and `restart_counters` reads it
+// (ADR 0034). Only the callback is conditional.
 func (w *PodWatcher) reportRestarts(pod *corev1.Pod) {
-	if w.onRestart == nil {
-		return
-	}
 	observedAt := time.Now()
 	statuses := make([]corev1.ContainerStatus, 0, len(pod.Status.InitContainerStatuses)+len(pod.Status.ContainerStatuses))
 	statuses = append(statuses, pod.Status.InitContainerStatuses...)
@@ -70,10 +87,25 @@ func (w *PodWatcher) reportRestarts(pod *corev1.Pod) {
 	for _, status := range statuses {
 		key := restartKey(pod, status.Name)
 		w.mu.Lock()
-		previous, seen := w.restartCounts[key]
-		w.restartCounts[key] = status.RestartCount
+		base, seen := w.restartCounts[key]
+		// A counter below the baseline is a container the agent is meeting for
+		// the first time under a name it has seen before — a recreated pod
+		// keeping its name. Its history is its own, so the whole baseline is
+		// taken again rather than only the delta reference.
+		if !seen || status.RestartCount < base.last {
+			w.restartCounts[key] = restartBaseline{
+				last:         status.RestartCount,
+				atFirstSight: status.RestartCount,
+				firstSeen:    observedAt,
+			}
+			w.mu.Unlock()
+			continue
+		}
+		previous := base.last
+		base.last = status.RestartCount
+		w.restartCounts[key] = base
 		w.mu.Unlock()
-		if !seen || status.RestartCount <= previous {
+		if status.RestartCount == previous || w.onRestart == nil {
 			continue
 		}
 		reason, exitCode := lastTermination(status)
@@ -117,15 +149,27 @@ func restartKey(pod *corev1.Pod, container string) string {
 // is what the counter counted. State.Terminated is the fallback for a container
 // lying dead right now.
 func lastTermination(status corev1.ContainerStatus) (string, *int32) {
+	term := lastTerminationState(status)
+	if term == nil {
+		return "", nil
+	}
+	code := term.ExitCode
+	return term.Reason, &code
+}
+
+// lastTerminationState returns the terminated state behind the most recent
+// restart, or nil when the container has never died. It is the whole struct
+// rather than a pair because `restart_counters` also reports when that
+// termination finished — the one instant Kubernetes does record about a restart
+// (ADR 0034).
+func lastTerminationState(status corev1.ContainerStatus) *corev1.ContainerStateTerminated {
 	for _, term := range []*corev1.ContainerStateTerminated{
 		status.LastTerminationState.Terminated,
 		status.State.Terminated,
 	} {
-		if term == nil {
-			continue
+		if term != nil {
+			return term
 		}
-		code := term.ExitCode
-		return term.Reason, &code
 	}
-	return "", nil
+	return nil
 }

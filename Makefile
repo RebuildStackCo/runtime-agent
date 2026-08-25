@@ -113,7 +113,7 @@ profile-capture-e2e: kind-load ## Deploy controller + ebpf node + CPU-hot sample
 	go test -tags e2e -count=1 -timeout 20m -v ./test/e2e/ -run TestEBPFCaptureEndToEnd 2>&1 \
 		| tee test/e2e/logs/profile-capture-e2e-$$(date +%Y%m%d-%H%M%S).log
 
-restarts-e2e: kind-load ## Deploy the controller in kind next to a crash-looping workload and assert the container_restarts payload in its spool (ADR 0020); log goes to test/e2e/logs/
+restarts-e2e: kind-load ## Deploy the controller in kind next to a crash-looping workload and assert both the container_restarts windows (ADR 0020) and the restart_counters reading a late-arriving agent recovers (ADR 0034); log goes to test/e2e/logs/
 	@mkdir -p test/e2e/logs
 	docker pull $(SPOOL_READER_IMAGE)
 	go tool kind load docker-image $(SPOOL_READER_IMAGE) --name $(E2E_CLUSTER)
@@ -121,7 +121,8 @@ restarts-e2e: kind-load ## Deploy the controller in kind next to a crash-looping
 	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
 	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
 	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
-	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestContainerRestartsEndToEnd 2>&1 \
+	go test -tags e2e -count=1 -timeout 25m -v ./test/e2e/ \
+		-run 'TestContainerRestartsEndToEnd|TestRestartCountersCarryTheHistoryTheAgentDidNotWatch' 2>&1 \
 		| tee test/e2e/logs/restarts-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 lifecycle-e2e: kind-load ## Deploy the controller in kind, stage an unschedulable pod and a scheduler preemption, and assert both reach the payloads (ADR 0021); log goes to test/e2e/logs/

@@ -398,6 +398,7 @@ appearing here (ADR 0022).
 | `usage_window` | The same shape, final, when the hour closes | no |
 | `oom_kill` | One out-of-memory kill: namespace, pod, container, workload, when it finished, exit code, restart count, and the memory limit in force | **yes** |
 | `container_restarts` | Per (namespace, pod, container) and hour: restart count, breakdown by termination reason, how many restarts had no reason visible, last exit code | **yes** |
+| `restart_counters` | Per flush: for each collected container that has ever restarted, the kubelet's restart counter as it stands, how much of it the agent has watched and since when, when the pod was created, how long the current incarnation has been running, and the reason, exit code and instant of the most recent termination | **yes** |
 | `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
@@ -522,13 +523,24 @@ generated, never workload content — the same line `container_restarts` draws
 ([ADR 0029](adr/0029-job-runs.md)). A run whose Job, CronJob, namespace or pod
 template carries the opt-out annotation produces no record at all.
 
-`oom_kill`, `container_restarts` and `pod_disruptions` report what the cluster's
-own object status records about a container's history — see the table above for
-what each carries. All three are `journal` provenance, and all three name the
-**pod**. The line between the last two is that `pod_disruptions` is what the
-*cluster* did to a pod (preempted, evicted under pressure, drained, removed via
-the eviction API); a pod that failed on its own, its container exiting non-zero,
-belongs to the restart journal instead.
+`oom_kill`, `container_restarts`, `restart_counters` and `pod_disruptions`
+report what the cluster's own object status records about a container's history
+— see the table above for what each carries. All four are `journal` provenance,
+and all four name the **pod**. The line between the last two is that
+`pod_disruptions` is what the *cluster* did to a pod (preempted, evicted under
+pressure, drained, removed via the eviction API); a pod that failed on its own,
+its container exiting non-zero, belongs to the restart journal instead.
+
+`restart_counters` is the restart counter itself rather than a record of
+restarts, and the distinction is what it exists for. The journal reports the
+restarts the agent watched happen, in the hour it watched them; the counter is
+the kubelet's running total, which includes restarts from before the agent was
+installed. Those have no instants — Kubernetes records only the most recent
+termination — so they can be reported as a total or not at all, and the payload
+says explicitly how many of them the agent watched
+([ADR 0034](adr/0034-restart-counter-readings.md)). Nothing here is a new read:
+the counter arrives in the same pod status the agent has always watched, and no
+RBAC changed to collect it.
 
 **Why the pod is named here and nowhere else.** Every other payload counts
 replicas instead of listing them, because a workload-level number answers the
@@ -548,8 +560,12 @@ The reason breakdown uses a fixed set of names (`OOMKilled`, `Error`,
 `Completed`, `ContainerCannotRun`, `ContainerStatusUnknown`, `DeadlineExceeded`,
 `StartError`, `Evicted`); anything else your container runtime reports is
 counted under `other` rather than passed through, so the payload's shape stays
-bounded. Disruption reasons are bounded the same way. Termination and condition
-*messages* are never read (see field minimization above).
+bounded. Disruption reasons are bounded the same way. Where a reason is a single
+*value* rather than one of a payload's field names — the `last_termination` of
+`restart_counters`, an autoscaler's `limited_reason` — it is carried as your
+kubelet wrote it, because a value cannot change the payload's shape. Termination
+and condition *messages* are never read in either case (see field minimization
+above).
 
 ### What the agent says about its own collection (ADR 0013)
 
