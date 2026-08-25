@@ -200,6 +200,86 @@ func TestGoldenContainerRestartsPayload(t *testing.T) {
 	checkGolden(t, filepath.Join(dir, name), "container-restarts.golden.json")
 }
 
+// fixedRestartCounters is the pair the counter payload exists to tell apart.
+//
+// `index-0` is the day-one case: forty restarts already on the counter when the
+// agent first looked, none of them in any window the agent will ever write.
+// `web-7f8d9-abcde` is the ordinary one — the agent has watched every restart it
+// has, so the reading and the windows agree. Nothing but this payload can state
+// the difference.
+func fixedRestartCounters() []collector.RestartCounter {
+	observedSince := capturedAt.Add(-30 * time.Minute)
+	return []collector.RestartCounter{
+		{
+			Namespace:                 "search",
+			Pod:                       "index-0",
+			Container:                 "app",
+			Workload:                  collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			Restarts:                  42,
+			RestartsBeforeObservation: 40,
+			ObservedSince:             observedSince,
+			PodCreatedAt:              windowStart.Add(-72 * time.Hour),
+			ContainerStartedAt:        ptr.To(capturedAt.Add(-3 * time.Minute)),
+			LastTermination: &collector.RestartTermination{
+				Reason:     "OOMKilled",
+				ExitCode:   137,
+				FinishedAt: capturedAt.Add(-3*time.Minute - time.Second),
+			},
+		},
+		{
+			Namespace:                 "shop",
+			Pod:                       "web-7f8d9-abcde",
+			Container:                 "app",
+			Workload:                  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Restarts:                  12,
+			RestartsBeforeObservation: 0,
+			ObservedSince:             observedSince,
+			PodCreatedAt:              observedSince.Add(-5 * time.Minute),
+			LastTermination: &collector.RestartTermination{
+				Reason:     "Error",
+				ExitCode:   1,
+				FinishedAt: capturedAt.Add(-20 * time.Second),
+			},
+		},
+	}
+}
+
+func TestGoldenRestartCountersPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteRestartCounters(capturedAt, fixedRestartCounters()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "restart-counters.json"), "restart-counters.golden.json")
+}
+
+// A cluster where nothing has ever restarted still writes the payload, with an
+// empty record list. The journals stay silent in the same situation, and the
+// difference is what the two shapes claim: a snapshot's empty list says "no
+// container's counter is above zero", while an empty window would say only that
+// the agent was running (ADR 0034).
+func TestRestartCountersWriteEvenWhenNothingRestarted(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteRestartCounters(capturedAt, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "restart-counters.json")) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("a cluster with no restarts must still write the reading: %v", err)
+	}
+	var payload struct {
+		Records []collector.RestartCounter `json:"records"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Records == nil {
+		t.Error("records must be an empty list, not null: absence is the claim being made")
+	}
+	if len(payload.Records) != 0 {
+		t.Errorf("records = %d, want 0", len(payload.Records))
+	}
+}
+
 // One file per window, not per restart: the crash loop must not decide how many
 // files the spool holds (ADR 0020).
 func TestContainerRestartsAreOneFilePerWindow(t *testing.T) {

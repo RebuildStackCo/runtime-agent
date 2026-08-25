@@ -1,0 +1,44 @@
+{
+  "kind": "restart_counters",
+  "source": "journal",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "records": [
+    {
+      "namespace": "search",
+      "pod": "index-0",
+      "container": "app",
+      "workload": {
+        "kind": "StatefulSet",
+        "name": "index"
+      },
+      "restarts": 42,
+      "restarts_before_observation": 40,
+      "observed_since": "2026-08-06T09:42:00Z",
+      "pod_created_at": "2026-08-03T10:00:00Z",
+      "container_started_at": "2026-08-06T10:09:00Z",
+      "last_termination": {
+        "reason": "OOMKilled",
+        "exit_code": 137,
+        "finished_at": "2026-08-06T10:08:59Z"
+      }
+    },
+    {
+      "namespace": "shop",
+      "pod": "web-7f8d9-abcde",
+      "container": "app",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "restarts": 12,
+      "restarts_before_observation": 0,
+      "observed_since": "2026-08-06T09:42:00Z",
+      "pod_created_at": "2026-08-06T09:37:00Z",
+      "last_termination": {
+        "reason": "Error",
+        "exit_code": 1,
+        "finished_at": "2026-08-06T10:11:40Z"
+      }
+    }
+  ]
+}

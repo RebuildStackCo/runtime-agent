@@ -3,7 +3,7 @@
 Date: 2026-08-22
 Status: Accepted
 Amends: 0012 §1
-Amended by: 0024
+Amended by: 0024, 0034
 
 Amends [ADR 0012](0012-payload-registry-and-provenance.md): the payload registry
 gains `container_restarts`. ADR 0012 requires a new kind to be added by

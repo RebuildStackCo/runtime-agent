@@ -91,3 +91,4 @@ line to paste.
 - [0031. Placement constraints are collected, reduced rather than copied](0031-placement-constraints-are-reduced.md)
 - [0032. What bounds a workload from outside its own spec, and the first widening of read access](0032-cluster-policy.md)
 - [0033. A permission the agent was not given degrades one payload, and says so](0033-policy-sources-degrade.md)
+- [0034. The restart counter is shipped as a reading, so the day-one history is not lost](0034-restart-counter-readings.md)

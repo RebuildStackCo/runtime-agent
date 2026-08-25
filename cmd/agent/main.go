@@ -392,6 +392,15 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if err := spool.WriteClusterPolicy(capturedAt, clusterPolicy, clusterGaps); err != nil {
 			logger.Error("spooling cluster policy", "error", err)
 		}
+		// The restart counters ride the metadata flush rather than the journal
+		// one, because they are a snapshot and not a window: they are read from
+		// the live pod index at an instant, exactly as workload metadata is, and
+		// they carry that same instant so a reading can be laid beside the
+		// replica counts it belongs to (ADR 0034).
+		restartCounters := podWatcher.RestartCounters()
+		if err := spool.WriteRestartCounters(capturedAt, restartCounters); err != nil {
+			logger.Error("spooling restart counters", "error", err)
+		}
 		// A source the agent was not permitted to read is not an error it can
 		// fix, and not a reason to stop collecting everything else. It is
 		// logged once per flush and declared in the payload (ADR 0033).
@@ -406,6 +415,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"revisions", len(revisionRecords),
 			"policy_records", len(policies),
 			"policy_namespaces", len(clusterPolicy.Namespaces),
+			"restart_counters", len(restartCounters),
 		)
 	}
 

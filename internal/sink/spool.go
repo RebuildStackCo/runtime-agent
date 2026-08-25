@@ -162,6 +162,29 @@ type containerRestartsPayload struct {
 	Records       []journal.RestartRecord `json:"records"`
 }
 
+// restartCountersPayload is the restart counter of every collected container
+// that has ever restarted, as it stands at this capture (ADR 0034).
+//
+// It is journal provenance like the restart windows beside it, and the opposite
+// shape. A window says what the agent watched happen between two instants; this
+// says what the counter reads, including the restarts that happened before the
+// agent was watching and therefore belong to no window at all. That is the fact
+// a freshly installed agent can state and a journal cannot.
+//
+// The two must never be added. `restarts` is the total; the windows are a
+// subset of it, and `restarts_before_observation` is the part of the total that
+// no window will ever hold.
+//
+// Superseding batch under a fixed key, like the structural snapshots: it
+// describes the counter's current value, so the newest reading replaces its
+// predecessor rather than accumulating.
+type restartCountersPayload struct {
+	Kind       string                     `json:"kind"`
+	Source     string                     `json:"source"`
+	CapturedAt time.Time                  `json:"captured_at"`
+	Records    []collector.RestartCounter `json:"records"`
+}
+
 // podDisruptionsPayload is every pod the cluster removed within one window:
 // preempted to make room, evicted under node pressure, drained, or deleted
 // through the eviction API (ADR 0021). One file per window holding many
@@ -447,6 +470,29 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 	name := fmt.Sprintf("oom-%d-%s-%s-%s-%d.json",
 		e.FinishedAt.Unix(), e.Namespace, e.Pod, e.Container, e.RestartCount)
 	return s.write(name, oomPayload{Kind: "oom_kill", Source: SourceJournal, Event: e})
+}
+
+// WriteRestartCounters writes the current restart-counter reading of every
+// collected container as one superseding batch. records must already be in a
+// deterministic order (PodWatcher.RestartCounters sorts them) so the payload
+// bytes are stable — the golden contract.
+//
+// A cluster where nothing has ever restarted writes an empty record list rather
+// than nothing at all, unlike the journals: the reading is a snapshot, and for a
+// snapshot "no container has restarted" is an answer worth stating. A journal
+// window with no events says only that the agent was watching, which the open
+// usage window already says.
+func (s *Spool) WriteRestartCounters(capturedAt time.Time, records []collector.RestartCounter) error {
+	if records == nil {
+		records = []collector.RestartCounter{}
+	}
+	payload := restartCountersPayload{
+		Kind:       "restart_counters",
+		Source:     SourceJournal,
+		CapturedAt: capturedAt.UTC(),
+		Records:    records,
+	}
+	return s.write("restart-counters.json", payload)
 }
 
 // WriteJobRuns writes the finished Job runs of each window they belong to, one
