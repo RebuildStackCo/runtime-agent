@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e profile-gate-e2e profile-capture-e2e
+.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e profile-gate-e2e profile-capture-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -81,6 +81,17 @@ inventory-e2e: kind-load ## Deploy controller + node DaemonSet + sample in kind 
 	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
 	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestGoInventoryEndToEnd 2>&1 \
 		| tee test/e2e/logs/inventory-e2e-$$(date +%Y%m%d-%H%M%S).log
+
+policy-e2e: kind-load ## Deploy the controller in kind and assert job_runs, deployment_revisions, workload_policy and cluster_policy in the spool — including that the widened ClusterRole grants what ADR 0032 says; log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	docker pull $(SPOOL_READER_IMAGE)
+	go tool kind load docker-image $(SPOOL_READER_IMAGE) --name $(E2E_CLUSTER)
+	set -o pipefail; \
+	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
+	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
+	go test -tags e2e -count=1 -timeout 20m -v ./test/e2e/ -run TestPolicyAndJournalsEndToEnd 2>&1 \
+		| tee test/e2e/logs/policy-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 profile-gate-e2e: kind-load ## Deploy the ebpf node variant in kind and assert the eBPF gate refuses gracefully while the scanner keeps running; log goes to test/e2e/logs/
 	@mkdir -p test/e2e/logs
