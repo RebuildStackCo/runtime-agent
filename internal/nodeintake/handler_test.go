@@ -27,15 +27,28 @@ func (f fakeVerifier) Verify(_ context.Context, token string) (nodeauth.Identity
 	return f.identity, nil
 }
 
-const goodToken = "good-token"
+const (
+	goodToken = "good-token"
+	// tokenNode is the node the accepted token establishes. Every request body
+	// in these tests must name it, because a caller may only speak for the node
+	// its token says it runs on (ADR 0040).
+	tokenNode = "kind-worker"
+)
 
-func testHandler(t *testing.T, onReport func(nodeauth.Identity, nodescan.Report)) *Handler {
-	t.Helper()
-	v := fakeVerifier{accept: goodToken, identity: nodeauth.Identity{
+// nodeIdentity is what a verified node token yields: one shared role subject,
+// and the node claim that distinguishes one DaemonSet pod from another.
+func nodeIdentity() nodeauth.Identity {
+	return nodeauth.Identity{
 		Subject:        "system:serviceaccount:runtime-agent:runtime-agent-node",
 		Namespace:      "runtime-agent",
 		ServiceAccount: "runtime-agent-node",
-	}}
+		Node:           tokenNode,
+	}
+}
+
+func testHandler(t *testing.T, onReport func(nodeauth.Identity, nodescan.Report)) *Handler {
+	t.Helper()
+	v := fakeVerifier{accept: goodToken, identity: nodeIdentity()}
 	return NewHandler(v, slog.New(slog.NewTextHandler(io.Discard, nil)), onReport)
 }
 
@@ -161,7 +174,8 @@ func TestHandlerRejectsWrongMethod(t *testing.T) {
 }
 
 func TestHandlerNilOnReportStillAccepts(t *testing.T) {
-	h := NewHandler(fakeVerifier{accept: goodToken}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	h := NewHandler(fakeVerifier{accept: goodToken, identity: nodeIdentity()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	rec := post(t, h, goodToken, validBody)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 with a nil onReport", rec.Code)

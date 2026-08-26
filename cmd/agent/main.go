@@ -555,13 +555,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// node tokens locally against the cluster JWKS (ADR 0010) and joining each
 	// report into the Go inventory.
 	if cfg.NodeIntake.Enabled {
-		resolver := podContainerResolver{pw: podWatcher}
 		onReport := func(id nodeauth.Identity, report nodescan.Report) {
-			goStore.Ingest(report, resolver)
+			// The resolver is bound to the node the token names, not to the
+			// node the report names — the handler has already required the two
+			// to agree, and this is the half that survives if that check is
+			// ever loosened (ADR 0040).
+			goStore.Ingest(report, podContainerResolver{pw: podWatcher, node: id.Node})
 			ic := goStore.Counters()
 			logger.Info("node report received",
 				"from_subject", id.Subject,
-				"node", report.Node,
+				"node", id.Node,
 				"binaries", len(report.Binaries),
 				"go_found", report.Counters.GoFound,
 				"filtered_infra", report.Counters.FilteredInfra,
@@ -579,11 +582,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		// §5, ADR 0011 §6).
 		var profilesReceived, profilesUnjoined atomic.Uint64
 		onProfile := func(id nodeauth.Identity, report nodeintake.ProfileReport) {
-			ns, workload, container, digest, ok := podWatcher.LookupContainer(types.UID(report.PodUID), report.ContainerID)
+			ns, workload, container, digest, ok := podWatcher.LookupContainerOnNode(types.UID(report.PodUID), report.ContainerID, id.Node)
 			if !ok {
 				n := profilesUnjoined.Add(1)
-				logger.Warn("profile dropped: pod/container not in inventory",
-					"from_subject", id.Subject, "node", report.Node, "profiles_unjoined", n)
+				logger.Warn("profile dropped: pod/container not in inventory for the reporting node",
+					"from_subject", id.Subject, "node", id.Node, "profiles_unjoined", n)
 				return
 			}
 			key := sink.ProfileKey{
@@ -603,7 +606,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			}
 			n := profilesReceived.Add(1)
 			logger.Info("profile received",
-				"from_subject", id.Subject, "node", report.Node,
+				"from_subject", id.Subject, "node", id.Node,
 				"namespace", ns, "workload", workload.Name, "container", container,
 				"profiles_received", n)
 		}
@@ -667,6 +670,18 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 	if audience == "" {
 		audience = config.DefaultNodeIntakeAudience
 	}
+	// No default for the subject, and no starting without it (ADR 0040). The
+	// two fields above degrade safely when unset; this one degraded to "accept
+	// any subject that satisfies the audience", and the audience is not a
+	// secret — the kubelet mints a token for any audience a pod asks for, with
+	// no RBAC on serviceaccounts/token. So an unset subject meant any pod in
+	// the cluster could speak as the node role. The chart has always rendered
+	// it; what changes is that an install which does not is a startup failure
+	// rather than a silently open door.
+	if cfg.ExpectedSubject == "" {
+		return nil, fmt.Errorf("nodeIntake.expectedSubject is required when nodeIntake.enabled is true: " +
+			"without it any token bearing the audience is accepted, and any pod can obtain one")
+	}
 
 	httpClient, err := rest.HTTPClientFor(restConfig)
 	if err != nil {
@@ -724,13 +739,16 @@ func (t nodeTargeter) ContainersForNode(node string) []string {
 }
 
 // podContainerResolver adapts PodWatcher's container lookup to the inventory
-// join's resolver interface (ADR 0010).
+// join's resolver interface (ADR 0010). It is built per report and carries the
+// reporting node, taken from that report's verified token, so a fact can only
+// join to a pod on the node that sent it (ADR 0040).
 type podContainerResolver struct {
-	pw *collector.PodWatcher
+	pw   *collector.PodWatcher
+	node string
 }
 
 func (r podContainerResolver) LookupContainer(podUID types.UID, containerID string) (inventory.Resolved, bool) {
-	ns, workload, container, digest, ok := r.pw.LookupContainer(podUID, containerID)
+	ns, workload, container, digest, ok := r.pw.LookupContainerOnNode(podUID, containerID, r.node)
 	if !ok {
 		return inventory.Resolved{}, false
 	}

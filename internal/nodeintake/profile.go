@@ -93,6 +93,9 @@ func (h *ProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed profile", http.StatusBadRequest)
 		return
 	}
+	if !authorizeNode(w, h.logger, "node profile", identity, report.Node) {
+		return
+	}
 
 	if h.onProfile != nil {
 		h.onProfile(identity, report)

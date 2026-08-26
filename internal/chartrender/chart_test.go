@@ -4,11 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -364,6 +366,108 @@ func TestMetricsOnlyInstallsNoNodeAndOpensNoPort(t *testing.T) {
 	if sa := decode[corev1.ServiceAccount](t, docs, "ServiceAccount"); len(sa) != 1 {
 		t.Errorf("metrics-only rendered %d ServiceAccounts, want only the controller's", len(sa))
 	}
+	if np := decode[networkingv1.NetworkPolicy](t, docs, "NetworkPolicy"); len(np) != 0 {
+		t.Error("metrics-only rendered a NetworkPolicy; there is no port to restrict")
+	}
+}
+
+// NOTES.txt is a template Helm prints rather than applies. It reached the
+// manifest list once and every decode in this file failed on it with a YAML
+// parse error, which is a confusing way to learn that a non-manifest is being
+// treated as one. Say it directly instead.
+func TestTheInstallNotesAreNotAManifest(t *testing.T) {
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			for _, doc := range render(t, values) {
+				if strings.Contains(doc, "runtime-agent is installed in namespace") {
+					t.Fatalf("NOTES.txt is in the manifest list; it is printed to the installer, not applied:\n%s", doc)
+				}
+			}
+		})
+	}
+}
+
+// TestTheReceiverIsRestrictedToTheNodeDaemonSet is the policy ADR 0010, 0011
+// and 0015 described as shipped for months while it did not exist (ADR 0039).
+// It is asserted rather than reviewed for exactly that reason: the failure mode
+// was not that someone wrote the wrong policy, it was that everyone believed
+// there was one.
+//
+// What the assertions insist on, and why each would be a silent hole:
+//   - `policyTypes: [Ingress]` with a non-empty rule — an absent policyTypes on
+//     an object with no ingress rules allows everything;
+//   - exactly one `from` peer, and it a podSelector — a second peer, or an
+//     empty `from: [{}]`, re-opens the port to the cluster;
+//   - the peer selects the node component of this release — a selector that
+//     matches nothing denies the node itself, and a broader one admits
+//     strangers;
+//   - the port is the receiver's — a policy on the wrong port is a policy on
+//     nothing.
+func TestTheReceiverIsRestrictedToTheNodeDaemonSet(t *testing.T) {
+	for name, values := range profiles() {
+		if name == "metrics-only" {
+			continue // no node, no port, no policy — covered above
+		}
+		t.Run(name, func(t *testing.T) {
+			docs := render(t, values)
+			np := only(t, decode[networkingv1.NetworkPolicy](t, docs, "NetworkPolicy"), "NetworkPolicy")
+
+			if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+				t.Errorf("policyTypes = %v, want exactly [Ingress]", np.Spec.PolicyTypes)
+			}
+			// The policy must select the controller, or it restricts a pod that
+			// does not exist and the receiver stays open.
+			deploy := only(t, decode[appsv1.Deployment](t, docs, "Deployment"), "Deployment")
+			if !selects(np.Spec.PodSelector.MatchLabels, deploy.Spec.Template.Labels) {
+				t.Errorf("podSelector %v does not select the controller pod %v",
+					np.Spec.PodSelector.MatchLabels, deploy.Spec.Template.Labels)
+			}
+
+			if len(np.Spec.Ingress) != 1 {
+				t.Fatalf("ingress has %d rules, want exactly 1 — every extra rule is another way in", len(np.Spec.Ingress))
+			}
+			rule := np.Spec.Ingress[0]
+			if len(rule.From) != 1 {
+				t.Fatalf("ingress rule has %d peers, want exactly 1; an empty or extra peer opens the port", len(rule.From))
+			}
+			peer := rule.From[0]
+			if peer.PodSelector == nil || peer.NamespaceSelector != nil || peer.IPBlock != nil {
+				t.Fatalf("ingress peer = %+v, want a bare podSelector in the release namespace", peer)
+			}
+			if len(peer.PodSelector.MatchLabels) == 0 {
+				t.Fatal("ingress peer selects on no labels, which admits every pod in the namespace")
+			}
+			ds := only(t, decode[appsv1.DaemonSet](t, docs, "DaemonSet"), "DaemonSet")
+			if !selects(peer.PodSelector.MatchLabels, ds.Spec.Template.Labels) {
+				t.Errorf("ingress peer %v does not select the node pod %v — the node would be denied its own channel",
+					peer.PodSelector.MatchLabels, ds.Spec.Template.Labels)
+			}
+			// And it must not select the controller: a selector loose enough to
+			// match both components is loose enough to match a stranger.
+			if selects(peer.PodSelector.MatchLabels, deploy.Spec.Template.Labels) {
+				t.Error("ingress peer also selects the controller; the selector is too broad to mean anything")
+			}
+
+			if len(rule.Ports) != 1 {
+				t.Fatalf("ingress rule names %d ports, want exactly 1", len(rule.Ports))
+			}
+			port := deploy.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort
+			if rule.Ports[0].Port == nil || rule.Ports[0].Port.String() != strconv.Itoa(int(port)) {
+				t.Errorf("ingress port = %v, want the receiver's %d", rule.Ports[0].Port, port)
+			}
+		})
+	}
+}
+
+// selects reports whether every label in selector is present, with the same
+// value, in labels.
+func selects(selector, labels map[string]string) bool {
+	for k, v := range selector {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return len(selector) > 0
 }
 
 // The profiler is off unless the profile asks for it, in both halves: the node

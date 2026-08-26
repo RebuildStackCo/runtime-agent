@@ -4,7 +4,7 @@ Date: 2026-08-10
 
 Status: Accepted
 Amends: 0008, 0009
-Amended by: 0011, 0039
+Amended by: 0011, 0039, 0040
 
 Realizes the promise in 0008 §4 point 4; extends 0009, whose node role was
 log-only. The one-way boundary of 0001 and the identity model of 0005/0008 are

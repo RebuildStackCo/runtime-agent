@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 )
 
 type fakeTargeter struct{ containers []string }
@@ -17,7 +15,7 @@ func (f fakeTargeter) ContainersForNode(string) []string { return f.containers }
 
 func testTargetsHandler(t *testing.T, tg NodeTargeter) *TargetsHandler {
 	t.Helper()
-	v := fakeVerifier{accept: goodToken, identity: nodeauth.Identity{Subject: "sub"}}
+	v := fakeVerifier{accept: goodToken, identity: nodeIdentity()}
 	return NewTargetsHandler(v, slog.New(slog.NewTextHandler(io.Discard, nil)), tg)
 }
 

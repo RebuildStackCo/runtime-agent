@@ -93,6 +93,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed report", http.StatusBadRequest)
 		return
 	}
+	if !authorizeNode(w, h.logger, "node report", identity, report.Node) {
+		return
+	}
 
 	if h.onReport != nil {
 		h.onReport(identity, report)

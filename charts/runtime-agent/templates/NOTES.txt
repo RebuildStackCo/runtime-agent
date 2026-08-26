@@ -1,0 +1,34 @@
+runtime-agent is installed in namespace {{ .Release.Namespace }}, profile {{ .Values.profile | quote }}.
+
+The agent collects into its local spool and ships nothing: backend transport is
+not built yet. Read charts/runtime-agent/values.yaml for what you can change,
+and docs/security.md for what the agent can reach.
+{{- if include "runtime-agent.nodeEnabled" . }}
+
+CHECK ONE THING: the NetworkPolicy needs a CNI that enforces it.
+
+This release created a NetworkPolicy restricting the controller's node-report
+receiver to the node DaemonSet. Kubernetes accepts that object on every cluster,
+including clusters whose CNI ignores it — there is no error and no warning, so
+an unenforced policy looks exactly like an enforced one.
+
+Verify it rather than assume it. Calico, Cilium, Antrea and GKE Dataplane V2
+enforce policies; EKS does so only with the VPC CNI's network-policy agent
+enabled, and kind's default CNI does not enforce them at all.
+
+  kubectl -n {{ .Release.Namespace }} get networkpolicy {{ include "runtime-agent.controllerName" . }}
+
+What this changes if it is not enforced: the receiver on port 8080 is reachable
+by any pod in the cluster. What it does not change: what a caller may say. Every
+request is authenticated by audience, signature against your cluster's JWKS, a
+pinned ServiceAccount subject, and the node named in the caller's own token, and
+none of those depend on your CNI (ADR 0040).
+{{- end }}
+{{- if or (eq .Values.profile "inventory") (eq .Values.profile "ebpf") }}
+
+This profile installs the node DaemonSet, which runs as root with hostPID and
+CAP_SYS_PTRACE. That is a decision to trust this image with each node it runs
+on. docs/security.md section 7.1 states exactly what the privilege permits —
+read it before rolling this out widely, and note that the default tolerations
+put the DaemonSet on control-plane nodes too.
+{{- end }}

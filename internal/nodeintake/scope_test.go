@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 )
 
 type fakeScoper struct {
@@ -23,7 +21,7 @@ func (f *fakeScoper) AdmittedPodsOnNode(node string) []string {
 
 func testScopeHandler(t *testing.T, sc NodeScoper) *ScopeHandler {
 	t.Helper()
-	v := fakeVerifier{accept: goodToken, identity: nodeauth.Identity{Subject: "sub"}}
+	v := fakeVerifier{accept: goodToken, identity: nodeIdentity()}
 	return NewScopeHandler(v, slog.New(slog.NewTextHandler(io.Discard, nil)), sc)
 }
 
@@ -51,7 +49,7 @@ func TestScopeHandlerReturnsAdmittedPodsOfTheQueryingNode(t *testing.T) {
 // A node with no admitted pods gets an empty answer and scans nothing — the
 // same outcome as an unreachable controller, reached honestly.
 func TestScopeHandlerReturnsEmptyForNodeWithNoAdmittedPods(t *testing.T) {
-	rec := post(t, testScopeHandler(t, &fakeScoper{}), goodToken, `{"node":"empty-node"}`)
+	rec := post(t, testScopeHandler(t, &fakeScoper{}), goodToken, `{"node":"`+tokenNode+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}

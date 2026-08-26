@@ -1,0 +1,57 @@
+{{- include "runtime-agent.validate" . -}}
+{{- if include "runtime-agent.nodeEnabled" . }}
+# Only the node DaemonSet may reach the controller's receiver (ADR 0040).
+#
+# Three decision records and a code comment described this policy as shipping
+# with the chart while it did not exist, so the receiver was reachable by every
+# pod in the cluster and the only thing between a caller and the endpoints was
+# the token (ADR 0039). The token is still the control that decides what a
+# caller may say; this decides who may be listened to at all.
+#
+# Rendered only alongside a node DaemonSet, for the same reason the Service is:
+# a controller-only install opens no port, so there is nothing to restrict and a
+# policy naming a workload that was not installed would select nothing.
+#
+# Two honest limits. A NetworkPolicy is enforced by the CNI, so on a cluster
+# whose CNI does not implement them this object is inert — it is not a boundary
+# the API server keeps for you. And it restricts reachability, not identity: a
+# pod that can spoof its way past the CNI still faces the audience, the
+# signature, the pinned subject and the node claim.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "runtime-agent.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-agent
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: controller
+  # Ingress only. The controller's egress is the API server today and a backend
+  # later; restricting it belongs with the change that gives it something to
+  # egress to, and a policy written now would have to be rewritten then.
+  policyTypes:
+    - Ingress
+  ingress:
+    # One rule, and no second: naming a single source is what makes everything
+    # else denied. An empty `ingress:` would deny all, and an absent one would
+    # allow all — this is the middle case and it is the one that has to be
+    # written exactly.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: runtime-agent
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: node
+      ports:
+        # The container's port, numerically. A named port would resolve to the
+        # same thing and read better; not every CNI implements named ports in
+        # policies, and a policy that silently selects nothing is worse than a
+        # number that has to stay in step with the Deployment.
+        - protocol: TCP
+          port: 8080
+{{- end }}
