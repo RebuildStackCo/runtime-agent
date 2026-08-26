@@ -118,5 +118,13 @@ spec:
         # unshipped payloads are loss-harmless, so there is no durability option
         # to offer. An operator who wants that span to survive mounts something
         # else at this path — their decision, not a setting the agent carries.
+        #
+        # sizeLimit is the node's protection from this pod, and it is deliberately
+        # larger than the agent's own 512Mi spool budget (ADR 0042): the agent's
+        # bound is the one meant to act, and this is what holds if that ever
+        # fails. Without it an emptyDir draws on the node's whole ephemeral
+        # storage, and a full node makes the kubelet evict pods — other people's
+        # pods, on a node this agent is a guest of.
         - name: spool
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 1Gi

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,29 @@ import (
 // extended outage degrades to memory-only behavior instead of filling the
 // volume (ADR 0007).
 const DefaultMaxAge = 24 * time.Hour
+
+// The spool's hard bounds, enforced oldest-first after the age cutoff
+// (ADR 0042). Age alone bounds nothing an adversary controls: the number of
+// payloads is driven by cluster events, and a pod restarting in a tight loop
+// produces a file per restart. Without these the spool grows until the node's
+// ephemeral storage is gone, at which point the kubelet starts evicting pods —
+// other people's pods, on a node this agent is a guest of.
+//
+// Both are constants rather than values. The spool is always an emptyDir and no
+// setting changes that (ADR 0026), so a knob here would be a promise about a
+// volume the operator does not choose.
+const (
+	// DefaultMaxBytes is the total size of payload files the spool will hold.
+	// Sized to be comfortably larger than an active cluster's day and
+	// comfortably smaller than the emptyDir's own sizeLimit, so the agent's
+	// bound is the one that acts and the kubelet's is the backstop.
+	DefaultMaxBytes = 512 << 20 // 512 MiB
+	// DefaultMaxFiles bounds the count independently, because bytes do not.
+	// The smallest payload is a few hundred bytes, so a byte budget alone
+	// permits millions of files — enough to exhaust inodes and to make every
+	// sweep's directory listing expensive.
+	DefaultMaxFiles = 20000
+)
 
 // Provenance classes. Every payload declares how its facts were obtained, so
 // the backend can never merge epistemically different data under one natural
@@ -61,8 +85,10 @@ const (
 // key — which the agent's wiring guarantees (one usage poller, one OOM
 // reporter).
 type Spool struct {
-	dir    string
-	maxAge time.Duration
+	dir      string
+	maxAge   time.Duration
+	maxBytes int64
+	maxFiles int
 }
 
 // NewSpool opens (creating if needed) the spool directory. maxAge ≤ 0
@@ -74,7 +100,7 @@ func NewSpool(dir string, maxAge time.Duration) (*Spool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating spool directory: %w", err)
 	}
-	return &Spool{dir: dir, maxAge: maxAge}, nil
+	return &Spool{dir: dir, maxAge: maxAge, maxBytes: DefaultMaxBytes, maxFiles: DefaultMaxFiles}, nil
 }
 
 // usagePayload is one shippable batch: every record of one wall-clock
@@ -363,8 +389,12 @@ func (w windowKey) name() string {
 
 // WriteUsageSnapshot writes open-window snapshots, one file per window,
 // atomically replacing that window's previous snapshot — the on-disk mirror
-// of the backend's supersede-by-key ingest. It also sweeps expired files,
-// riding the snapshot cadence so no extra timer exists.
+// of the backend's supersede-by-key ingest.
+//
+// It no longer sweeps. Sweeping rode this cadence to avoid a second timer, and
+// this function runs only when there are usage records — so on a cluster where
+// the kubelet cannot be polled the spool was never bounded at all. Sweep is now
+// the agent's own periodic call (ADR 0042).
 func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs collector.Observation) error {
 	for k, group := range groupByWindow(records) {
 		payload := usagePayload{
@@ -379,7 +409,7 @@ func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs collector.Obser
 			return err
 		}
 	}
-	return s.sweep(time.Now())
+	return nil
 }
 
 // WriteClosedWindows writes final closed-window records, one file per
@@ -468,7 +498,7 @@ func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
 // duplicates.
 func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 	name := fmt.Sprintf("oom-%d-%s-%s-%s-%d.json",
-		e.FinishedAt.Unix(), e.Namespace, e.Pod, e.Container, e.RestartCount)
+		e.FinishedAt.Unix(), fileToken(e.Namespace), fileToken(e.Pod), fileToken(e.Container), e.RestartCount)
 	return s.write(name, oomPayload{Kind: "oom_kill", Source: SourceJournal, Event: e})
 }
 
@@ -668,8 +698,8 @@ func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
 		Pprof:        pprof,
 	}
 	name := fmt.Sprintf("profile-%s-%s-%s-%s-%d-%d.json",
-		key.Namespace, key.Workload, key.Container, shortDigest(key.ImageDigest),
-		key.CaptureStart.Unix(), key.CaptureEnd.Unix())
+		fileToken(key.Namespace), fileToken(key.Workload), fileToken(key.Container),
+		shortDigest(key.ImageDigest), key.CaptureStart.Unix(), key.CaptureEnd.Unix())
 	return s.write(name, payload)
 }
 
@@ -710,10 +740,68 @@ func shortDigest(digest string) string {
 	return short.String()
 }
 
+// fileTokenMax bounds one filename component. Names are assembled from several,
+// and a filesystem's own limit is on the whole name, so each has to be bounded
+// for the total to be. Sixty-three is the DNS label length, which is what most
+// of these components already are.
+const fileTokenMax = 63
+
+// unnamed stands in for a component that sanitizes to nothing. A literal keeps
+// a directory listing legible where an empty segment would read as a bug.
+const unnamed = "unnamed"
+
+// fileToken reduces a caller-supplied string to something safe to put in a
+// filename (ADR 0042).
+//
+// The one that made this necessary is the workload name, which comes from
+// `ownerReferences[].name` — and the API server validates that field only for
+// non-emptiness, no DNS-1123, no character set. So a pod created with an owner
+// reference named "x/../../../../etc/cron.d/evil" put that straight into a path
+// that filepath.Join then resolved. The namespace, pod and container names
+// beside it happen to be DNS-1123 and were safe by luck rather than by
+// anything this package did.
+//
+// Rather than sanitize the one field that is known to be attacker-controlled,
+// every component goes through here: which Kubernetes fields are validated is
+// not this package's business to track.
+func fileToken(s string) string {
+	var b strings.Builder
+	allDots := true
+	for _, r := range s {
+		switch {
+		case (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '-' || r == '_':
+			allDots = false
+			b.WriteRune(r)
+		case r == '.':
+			b.WriteRune(r)
+		default:
+			allDots = false
+			b.WriteRune('-')
+		}
+		if b.Len() >= fileTokenMax {
+			break
+		}
+	}
+	// "." and ".." are directories, not names: a component of only dots would
+	// make filepath.Join climb rather than descend.
+	if b.Len() == 0 || allDots {
+		return unnamed
+	}
+	return b.String()
+}
+
 // write marshals the payload and lands it atomically: temp file in the same
 // directory, then rename. A crash mid-write leaves a *.tmp file that the
 // sweep collects; readers never observe a partial payload.
+//
+// It also refuses a name that is not a plain filename. Callers already build
+// their names from fileToken, so this catches nothing today — it is here for
+// the next caller, because every path this package writes goes through this one
+// function and that makes it the only place worth checking (ADR 0042).
 func (s *Spool) write(name string, payload any) error {
+	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
+		return fmt.Errorf("refusing to write payload under %q: a spool payload name is a plain filename", name)
+	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding payload %s: %w", name, err)
@@ -729,14 +817,37 @@ func (s *Spool) write(name string, payload any) error {
 	return nil
 }
 
-// sweep deletes payloads older than the maximum age, and any temp files a
-// crash left behind.
-func (s *Spool) sweep(now time.Time) error {
+// Sweep enforces the spool's bounds: payloads older than the maximum age go,
+// temp files a crash left behind go, and whatever still exceeds the size or
+// count budget goes oldest-first.
+//
+// It is exported and called on the agent's own cadence (ADR 0042). It used to
+// be private and called from WriteUsageSnapshot, which rode the snapshot
+// cadence "so no extra timer exists" — a saving that quietly made the whole
+// bound conditional. WriteUsageSnapshot runs only when there are usage records
+// to write, so on a cluster where the kubelet cannot be polled — the
+// nodes/proxy grant withheld, or every kubelet unreachable — nothing swept at
+// all, and the spool grew without any limit while the agent looked healthy.
+//
+// Oldest-first is the right loss. The oldest payload is the one most likely to
+// have been superseded, and every payload here is loss-harmless by design
+// (ADR 0007): what the spool holds is a convenience, never a fact that exists
+// nowhere else.
+func (s *Spool) Sweep(now time.Time) error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return fmt.Errorf("listing spool: %w", err)
 	}
+
+	type file struct {
+		name    string
+		size    int64
+		modTime time.Time
+	}
+	var kept []file
+	var total int64
 	cutoff := now.Add(-s.maxAge)
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -745,11 +856,47 @@ func (s *Spool) sweep(now time.Time) error {
 		if err != nil {
 			continue // raced with a rename or delete — the next sweep sees the truth
 		}
-		if info.ModTime().Before(cutoff) || (strings.HasSuffix(entry.Name(), ".tmp") && info.ModTime().Before(now.Add(-time.Minute))) {
-			if err := os.Remove(filepath.Join(s.dir, entry.Name())); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("sweeping spool: %w", err)
+		expired := info.ModTime().Before(cutoff)
+		orphanTmp := strings.HasSuffix(entry.Name(), ".tmp") && info.ModTime().Before(now.Add(-time.Minute))
+		if expired || orphanTmp {
+			if err := s.remove(entry.Name()); err != nil {
+				return err
 			}
+			continue
 		}
+		kept = append(kept, file{name: entry.Name(), size: info.Size(), modTime: info.ModTime()})
+		total += info.Size()
+	}
+
+	if total <= s.maxBytes && len(kept) <= s.maxFiles {
+		return nil
+	}
+
+	// Oldest first, and by name where the timestamps tie so the order is
+	// deterministic — a directory listing's order is not.
+	sort.Slice(kept, func(i, j int) bool {
+		if kept[i].modTime.Equal(kept[j].modTime) {
+			return kept[i].name < kept[j].name
+		}
+		return kept[i].modTime.Before(kept[j].modTime)
+	})
+	count := len(kept)
+	for _, f := range kept {
+		if total <= s.maxBytes && count <= s.maxFiles {
+			break
+		}
+		if err := s.remove(f.name); err != nil {
+			return err
+		}
+		total -= f.size
+		count--
+	}
+	return nil
+}
+
+func (s *Spool) remove(name string) error {
+	if err := os.Remove(filepath.Join(s.dir, name)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("sweeping spool: %w", err)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1113,8 +1114,12 @@ func TestSweepDropsExpiredAndTempFiles(t *testing.T) {
 		}
 	}
 
-	// The sweep rides the snapshot cadence.
 	if err := s.WriteUsageSnapshot(fixedRecords(), fixedObservation()); err != nil {
+		t.Fatal(err)
+	}
+	// Sweeping is the agent's own periodic call, not a side effect of writing
+	// a snapshot (ADR 0042).
+	if err := s.Sweep(time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1274,5 +1279,224 @@ func decodeSpooled(t *testing.T, path string, into any) {
 	}
 	if err := json.Unmarshal(raw, into); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestAnOwnerReferenceNameCannotEscapeTheSpool is the traversal this slice
+// closes (ADR 0042).
+//
+// A profile's filename is built from the workload name, which comes from
+// `ownerReferences[].name`. The API server validates that field for
+// non-emptiness and nothing else — no DNS-1123, no character set — so a pod
+// created with a crafted owner reference put an arbitrary path into a name that
+// filepath.Join then resolved. In the shipped chart a readOnlyRootFilesystem
+// made most targets fail with EROFS, which is luck rather than a design.
+func TestAnOwnerReferenceNameCannotEscapeTheSpool(t *testing.T) {
+	hostile := []string{
+		"../../../../tmp/pwn",
+		"x/../../../../etc/cron.d/evil",
+		"..",
+		".",
+		"../",
+		`..\..\windows`,
+		"a/b",
+		"",
+	}
+
+	for _, name := range hostile {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			s, dir := newTestSpool(t)
+			key := ProfileKey{
+				Namespace:    "acme",
+				Workload:     name,
+				Container:    "server",
+				ImageDigest:  "sha256:deadbeef",
+				CaptureStart: time.Unix(100, 0).UTC(),
+				CaptureEnd:   time.Unix(160, 0).UTC(),
+			}
+			if err := s.WriteProfile(key, []byte{1, 2, 3}); err != nil {
+				t.Fatalf("writing a profile for a hostile workload name failed: %v", err)
+			}
+
+			// Every file the write produced must be directly inside the spool.
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("wrote %d entries, want exactly 1 inside the spool", len(entries))
+			}
+			got := entries[0].Name()
+			if strings.ContainsAny(got, `/\`) || got == "." || got == ".." {
+				t.Errorf("payload landed at %q, which is not a plain filename", got)
+			}
+			// And the payload still carries the real name: this is a filename
+			// rule, not a redaction of what the backend receives.
+			body, err := os.ReadFile(filepath.Join(dir, got)) // #nosec G304 -- the path is the temp dir this test created
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload struct {
+				Workload string `json:"workload"`
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Workload != name {
+				t.Errorf("payload workload = %q, want the unmodified %q", payload.Workload, name)
+			}
+		})
+	}
+}
+
+// TestWriteRefusesANameThatIsNotAPlainFilename guards the choke point rather
+// than the callers. Every payload this package writes goes through write(), so
+// a future caller that forgets fileToken is stopped here.
+func TestWriteRefusesANameThatIsNotAPlainFilename(t *testing.T) {
+	s, dir := newTestSpool(t)
+	for _, name := range []string{"../escape.json", "sub/dir.json", `..\escape.json`, ".", ".."} {
+		if err := s.write(name, struct{}{}); err == nil {
+			t.Errorf("write(%q) was allowed", name)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("refused writes still left %d entries behind", len(entries))
+	}
+}
+
+// TestTheSpoolIsBoundedByBytesOldestFirst: a crash-looping pod produces one OOM
+// payload per restart, and nothing acknowledges payloads yet, so without a size
+// bound the spool grows until the node's ephemeral storage is gone and the
+// kubelet begins evicting other workloads.
+func TestTheSpoolIsBoundedByBytesOldestFirst(t *testing.T) {
+	s, dir := newTestSpool(t)
+	s.maxBytes = 400 // a handful of the files written below
+	s.maxFiles = 1000
+
+	base := time.Now().Add(-time.Hour)
+	for i := range 20 {
+		name := fmt.Sprintf("payload-%02d.json", i)
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, make([]byte, 100), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Ascending mtimes, so "oldest" is unambiguous.
+		stamp := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.Sweep(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	var names []string
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += info.Size()
+		names = append(names, e.Name())
+	}
+	if total > s.maxBytes {
+		t.Errorf("spool holds %d bytes after the sweep, over the %d budget", total, s.maxBytes)
+	}
+	if len(names) == 0 {
+		t.Fatal("the sweep emptied the spool; it must drop the oldest, not everything")
+	}
+	sort.Strings(names)
+	// The survivors are the newest, so the lowest-numbered file must be gone.
+	if names[0] == "payload-00.json" {
+		t.Errorf("the oldest payload survived while newer ones were dropped: %v", names)
+	}
+}
+
+// TestTheSpoolIsBoundedByFileCount: bytes alone do not bound the count. The
+// smallest payload is a few hundred bytes, so a byte budget permits millions of
+// files — enough to exhaust inodes and to make every sweep's listing expensive.
+func TestTheSpoolIsBoundedByFileCount(t *testing.T) {
+	s, dir := newTestSpool(t)
+	s.maxBytes = 1 << 30 // effectively unbounded
+	s.maxFiles = 5
+
+	base := time.Now().Add(-time.Hour)
+	for i := range 20 {
+		path := filepath.Join(dir, fmt.Sprintf("payload-%02d.json", i))
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stamp := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.Sweep(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > s.maxFiles {
+		t.Errorf("spool holds %d files after the sweep, over the %d budget", len(entries), s.maxFiles)
+	}
+}
+
+// TestTheSpoolIsBoundedOnAClusterThatWritesNoUsage is the reachability half of
+// the fix, stated as the cluster it was broken on.
+//
+// The sweep used to run only from WriteUsageSnapshot, which runs only when there
+// are usage records. On a cluster where the kubelet cannot be polled — the
+// nodes/proxy grant withheld, or every kubelet unreachable — there are none, so
+// the 24h age cap was never applied and the spool grew without bound while the
+// agent looked healthy.
+func TestTheSpoolIsBoundedOnAClusterThatWritesNoUsage(t *testing.T) {
+	s, dir := newTestSpool(t)
+
+	// A day of OOM kills from a crash-looping pod, and not one usage record.
+	for i := range 50 {
+		e := collector.OOMKill{
+			Namespace: "acme", Pod: "worker-0", Container: "app",
+			RestartCount: int32(i),
+			FinishedAt:   time.Now().Add(-48 * time.Hour),
+		}
+		if err := s.WriteOOMKill(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Age them past the cap the way an outage would.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-48 * time.Hour)
+	for _, e := range entries {
+		if err := os.Chtimes(filepath.Join(dir, e.Name()), stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.Sweep(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err = os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("%d expired payloads survived on a cluster with no usage records", len(entries))
 	}
 }
