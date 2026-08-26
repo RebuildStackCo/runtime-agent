@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -172,6 +173,19 @@ type PodWatcher struct {
 	// still starting.
 	policySources []policySource
 
+	// gating holds the health record of every cache the collected view is
+	// assembled from: the pod index, the owner chain, the namespaces the
+	// opt-out is read from. A sustained failure in any of them stops the agent
+	// rather than degrading a payload, because there is no payload left to
+	// degrade — the same split ADR 0033 §1 drew between caches that gate a
+	// signal and caches that add one, applied to the running agent and not only
+	// to its start (ADR 0035).
+	gating map[string]*watchHealth
+	// limits and now are the watchdog's constants and clock, fields so tests can
+	// compress five minutes into milliseconds.
+	limits watchLimits
+	now    func() time.Time
+
 	// Placement terms the reduction refused to carry, counted per pod
 	// description. Aggregate only: what was dropped is counted, never named
 	// (CLAUDE.md invariant 6). Both should sit at zero on an ordinary cluster;
@@ -233,6 +247,8 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		clientset:           clientset,
 		onPod:               onPod,
 		factory:             factory,
+		limits:              defaultWatchLimits(),
+		now:                 time.Now,
 		filter:              NewFilter(nil, nil),
 		reportedOOMs:        make(map[string]struct{}),
 		restartCounts:       make(map[string]restartBaseline),
@@ -261,6 +277,19 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	// Calling Lister() above already registered each informer with the
 	// factory, so Start runs them; what differs is that nothing blocks on
 	// them (ADR 0033).
+	//
+	// Each also gets a health record, because HasSynced answers only half the
+	// question: it says whether the cache ever filled, never whether it is
+	// still being fed (ADR 0035).
+	policyInformers := map[string]watchInformer{
+		"pod_disruption_budgets":     factory.Policy().V1().PodDisruptionBudgets().Informer(),
+		"horizontal_pod_autoscalers": factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer(),
+		"persistent_volume_claims":   factory.Core().V1().PersistentVolumeClaims().Informer(),
+		"limit_ranges":               factory.Core().V1().LimitRanges().Informer(),
+		"resource_quotas":            factory.Core().V1().ResourceQuotas().Informer(),
+		"priority_classes":           factory.Scheduling().V1().PriorityClasses().Informer(),
+		"storage_classes":            factory.Storage().V1().StorageClasses().Informer(),
+	}
 	w.policySources = []policySource{
 		{name: "pod_disruption_budgets", synced: factory.Policy().V1().PodDisruptionBudgets().Informer().HasSynced},
 		{name: "horizontal_pod_autoscalers", synced: factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer().HasSynced},
@@ -270,40 +299,85 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		{name: "priority_classes", synced: factory.Scheduling().V1().PriorityClasses().Informer().HasSynced},
 		{name: "storage_classes", synced: factory.Storage().V1().StorageClasses().Informer().HasSynced},
 	}
+	for i, source := range w.policySources {
+		w.policySources[i].health = trackWatch(policyInformers[source.name], w.limits.streakGap, w.clock)
+	}
+
+	// The gating caches. Every one of them is instantiated here — the listers
+	// above did it — so the handlers are all registered before the factory
+	// starts, which is the only time SetWatchErrorHandler is allowed to be
+	// called. The names are the resource classes as the ClusterRole spells
+	// them, so a failure reads as the grant it concerns.
+	w.gating = map[string]*watchHealth{
+		"pods":         trackWatch(factory.Core().V1().Pods().Informer(), w.limits.streakGap, w.clock),
+		"replicasets":  trackWatch(factory.Apps().V1().ReplicaSets().Informer(), w.limits.streakGap, w.clock),
+		"jobs":         trackWatch(factory.Batch().V1().Jobs().Informer(), w.limits.streakGap, w.clock),
+		"deployments":  trackWatch(factory.Apps().V1().Deployments().Informer(), w.limits.streakGap, w.clock),
+		"statefulsets": trackWatch(factory.Apps().V1().StatefulSets().Informer(), w.limits.streakGap, w.clock),
+		"daemonsets":   trackWatch(factory.Apps().V1().DaemonSets().Informer(), w.limits.streakGap, w.clock),
+		"cronjobs":     trackWatch(factory.Batch().V1().CronJobs().Informer(), w.limits.streakGap, w.clock),
+		"namespaces":   trackWatch(factory.Core().V1().Namespaces().Informer(), w.limits.streakGap, w.clock),
+	}
 	return w
 }
 
-// policySource is one cache a policy payload reads, paired with a way to ask
-// whether it ever filled.
+// policySource is one cache a policy payload reads, paired with two ways to ask
+// about it: whether it ever filled, and whether it is still being fed.
 //
-// HasSynced is the whole signal, and choosing it over "the list came back
-// empty" is the point: a cluster with no PodDisruptionBudgets syncs fine and
-// lists zero objects, while a cluster that denied the permission never syncs at
-// all. An empty result and a refused read are therefore different states rather
-// than the same silence.
+// HasSynced answers the first, and choosing it over "the list came back empty"
+// is the point: a cluster with no PodDisruptionBudgets syncs fine and lists zero
+// objects, while a cluster that denied the permission never syncs at all. An
+// empty result and a refused read are therefore different states rather than the
+// same silence.
+//
+// It cannot answer the second, because it is a one-way latch — a cache that
+// filled and then lost its watch keeps saying yes while serving what it last
+// held. The health record covers that half (ADR 0035).
 type policySource struct {
 	name   string
 	synced cache.InformerSynced
+	health *watchHealth
 }
 
-// unavailablePolicySources returns the names of the caches that have not filled,
-// sorted, for the payload to declare.
+// clock is the watchdog's time source, defaulting to the wall clock for a
+// watcher assembled by hand in a test.
+func (w *PodWatcher) clock() time.Time {
+	if w.now == nil {
+		return time.Now()
+	}
+	return w.now()
+}
+
+// unavailablePolicySources returns the names of the caches this payload cannot
+// be assembled from, sorted, for the payload to declare.
+//
+// A source is unavailable if it never filled or if it is failing now. The two
+// are one statement to a consumer — "not available at this capture" — and
+// deliberately not distinguished in the payload, for the same reason ADR 0033 §2
+// refused to distinguish the causes: neither the shape nor the reader has a use
+// for the difference.
 //
 // The names are resource classes, never customer objects, so nothing here can
 // identify a workload (CLAUDE.md invariant 6). The answer is about this capture
 // and no other: a cache that fills a minute later is simply present at the next
-// flush.
+// flush, and a permission restored is declared unavailable for a capture or two
+// more, which is the direction to be wrong in.
 func (w *PodWatcher) unavailablePolicySources(want ...string) []string {
 	wanted := make(map[string]bool, len(want))
 	for _, name := range want {
 		wanted[name] = true
+	}
+	now := w.clock()
+	window := w.limits.unavailableFor
+	if window == 0 {
+		window = watchUnavailableFor
 	}
 	var out []string
 	for _, source := range w.policySources {
 		if !wanted[source.name] {
 			continue
 		}
-		if source.synced == nil || !source.synced() {
+		if source.synced == nil || !source.synced() || source.health.failedWithin(now, window) {
 			out = append(out, source.name)
 		}
 	}
@@ -352,10 +426,36 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	// registered with the factory — every Lister() call instantiates one — so
 	// Start runs them like the rest.
 
-	factory.Start(ctx.Done())
+	// The watchdog starts before the wait, not after it, and that ordering is
+	// the point. A gating cache that is refused from the first LIST never syncs,
+	// and WaitForCacheSync has no timeout — the agent would sit there
+	// indefinitely, holding no data and reporting no error. Watching the
+	// failures makes the two cases one: a cache that never filled and a cache
+	// that stopped being fed both end the same way, with an error naming the
+	// resource (ADR 0035).
+	//
+	// The informers run on runCtx rather than on ctx, because Shutdown below
+	// waits for every one of them: started on the outer context they would
+	// outlive the watchdog's verdict and hold the agent up until the process
+	// was signalled — which is the shutdown this decision exists to avoid
+	// waiting for.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	fatal := make(chan error, 1)
+	go func() {
+		if err := watchdog(runCtx, w.clock, w.limits, w.gating); err != nil {
+			fatal <- err
+			cancelRun()
+		}
+	}()
+
+	factory.Start(runCtx.Done())
 	defer factory.Shutdown()
 
-	if !cache.WaitForCacheSync(ctx.Done(), append(ownerSynced, podsInformer.HasSynced)...) {
+	if !cache.WaitForCacheSync(runCtx.Done(), append(ownerSynced, podsInformer.HasSynced)...) {
+		if err := takeWatchFailure(fatal); err != nil {
+			return err
+		}
 		if ctx.Err() != nil {
 			return nil // canceled during sync — a normal shutdown, not a failure
 		}
@@ -447,8 +547,8 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	}
 	defer func() { _ = jobsInformer.RemoveEventHandler(jobReg) }()
 
-	<-ctx.Done()
-	return nil
+	<-runCtx.Done()
+	return takeWatchFailure(fatal)
 }
 
 // indexPod records an admitted pod for sample attribution. info is the pod's

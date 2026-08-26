@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -51,13 +52,35 @@ type NodeWatcher struct {
 
 	mu    sync.RWMutex
 	nodes map[string]NodeInfo
+
+	// The node list gates a signal rather than adding one: the usage poller
+	// takes its target list from it, so a frozen cache stops new nodes from ever
+	// being polled while the old ones are polled forever. A sustained failure
+	// stops the agent (ADR 0035).
+	limits watchLimits
+	now    func() time.Time
 }
 
 // NewNodeWatcher returns a watcher that calls onNode for every node present
 // at start and for every node added afterwards. onNode is called from the
 // informer goroutine and must not block.
 func NewNodeWatcher(clientset kubernetes.Interface, onNode func(NodeInfo)) *NodeWatcher {
-	return &NodeWatcher{clientset: clientset, onNode: onNode, nodes: make(map[string]NodeInfo)}
+	return &NodeWatcher{
+		clientset: clientset,
+		onNode:    onNode,
+		nodes:     make(map[string]NodeInfo),
+		limits:    defaultWatchLimits(),
+		now:       time.Now,
+	}
+}
+
+// clock is the watchdog's time source, defaulting to the wall clock for a
+// watcher assembled by hand in a test.
+func (w *NodeWatcher) clock() time.Time {
+	if w.now == nil {
+		return time.Now()
+	}
+	return w.now()
 }
 
 // Names returns the currently known node names, sorted. The usage poller
@@ -96,11 +119,31 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 	// Informers must be instantiated before Start, or the factory won't
 	// run them.
 	nodesInformer := factory.Core().V1().Nodes().Informer()
+	gating := map[string]*watchHealth{
+		"nodes": trackWatch(nodesInformer, w.limits.streakGap, w.clock),
+	}
 
-	factory.Start(ctx.Done())
+	// Started before the wait, and the informers run on runCtx, for the two
+	// reasons spelled out in PodWatcher.Run: a cache refused from the first LIST
+	// never syncs and the wait has no timeout, and Shutdown waits for every
+	// informer it started.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	fatal := make(chan error, 1)
+	go func() {
+		if err := watchdog(runCtx, w.clock, w.limits, gating); err != nil {
+			fatal <- err
+			cancelRun()
+		}
+	}()
+
+	factory.Start(runCtx.Done())
 	defer factory.Shutdown()
 
-	if !cache.WaitForCacheSync(ctx.Done(), nodesInformer.HasSynced) {
+	if !cache.WaitForCacheSync(runCtx.Done(), nodesInformer.HasSynced) {
+		if err := takeWatchFailure(fatal); err != nil {
+			return err
+		}
 		if ctx.Err() != nil {
 			return nil // canceled during sync — a normal shutdown, not a failure
 		}
@@ -139,8 +182,8 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 	}
 	defer func() { _ = nodesInformer.RemoveEventHandler(reg) }()
 
-	<-ctx.Done()
-	return nil
+	<-runCtx.Done()
+	return takeWatchFailure(fatal)
 }
 
 // upsert stores the node's current collected view and reports it through
