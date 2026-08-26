@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e profile-gate-e2e profile-capture-e2e
+.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -124,6 +124,18 @@ restarts-e2e: kind-load ## Deploy the controller in kind next to a crash-looping
 	go test -tags e2e -count=1 -timeout 25m -v ./test/e2e/ \
 		-run 'TestContainerRestartsEndToEnd|TestRestartCountersCarryTheHistoryTheAgentDidNotWatch' 2>&1 \
 		| tee test/e2e/logs/restarts-e2e-$$(date +%Y%m%d-%H%M%S).log
+
+watch-e2e: kind-load ## Deny the pods grant, then revoke a policy grant from a running agent, and assert the first stops the agent while the second only degrades its payload (ADR 0035); slow by nature — an established watch is re-authorized only when client-go re-establishes it, every 5–10 minutes; log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	docker pull $(SPOOL_READER_IMAGE)
+	go tool kind load docker-image $(SPOOL_READER_IMAGE) --name $(E2E_CLUSTER)
+	set -o pipefail; \
+	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
+	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
+	go test -tags e2e -count=1 -timeout 45m -v ./test/e2e/ \
+		-run 'TestAnAgentDeniedAGatingPermissionStopsInsteadOfWaitingForever|TestAPermissionRevokedFromTheRunningAgentReachesThePayload' 2>&1 \
+		| tee test/e2e/logs/watch-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 lifecycle-e2e: kind-load ## Deploy the controller in kind, stage an unschedulable pod and a scheduler preemption, and assert both reach the payloads (ADR 0021); log goes to test/e2e/logs/
 	@mkdir -p test/e2e/logs

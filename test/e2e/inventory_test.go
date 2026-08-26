@@ -436,11 +436,25 @@ func deploySampleWorkload(ctx context.Context, t *testing.T, cs kubernetes.Inter
 // test can read the payload the controller writes.
 func deployController(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, configYAML string) {
 	t.Helper()
+	deployControllerWithRole(ctx, t, cs, ns, image, configYAML, nil)
+}
+
+// controllerClusterRoleName is the per-run name deployController gives the
+// cluster-scoped role, so a test can narrow the grant it was installed with.
+func controllerClusterRoleName(ns string) string {
+	return "runtime-agent-controller-" + ns
+}
+
+// deployControllerWithRole is deployController with a hook that rewrites the
+// ClusterRole before it is created — the only way to start an agent that was
+// never given a grant, since patching afterwards races the pod's first LIST.
+func deployControllerWithRole(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, configYAML string, narrow func(*rbacv1.ClusterRole)) {
+	t.Helper()
 	data, err := os.ReadFile(controllerManifestPath)
 	if err != nil {
 		t.Fatalf("reading manifest %s: %v", controllerManifestPath, err)
 	}
-	clusterRoleName := "runtime-agent-controller-" + ns
+	clusterRoleName := controllerClusterRoleName(ns)
 	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
 	for {
 		doc, err := reader.Read()
@@ -472,6 +486,9 @@ func deployController(ctx context.Context, t *testing.T, cs kubernetes.Interface
 			var cr rbacv1.ClusterRole
 			mustUnmarshal(t, doc, &cr)
 			cr.Name = clusterRoleName
+			if narrow != nil {
+				narrow(&cr)
+			}
 			create(ctx, t, "ClusterRole", func() error {
 				_, err := cs.RbacV1().ClusterRoles().Create(ctx, &cr, metav1.CreateOptions{})
 				return err

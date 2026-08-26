@@ -136,6 +136,23 @@ indistinguishable from "your cluster has none of those"
 ([ADR 0033](adr/0033-policy-sources-degrade.md)). Granting a permission later
 takes effect at the next flush, without restarting the agent.
 
+**This holds for a permission you narrow later, not only for one you never
+granted.** A grant removed from a running agent is noticed and declared the same
+way, which it was not before
+([ADR 0035](adr/0035-watch-failures-are-noticed.md)); detection lags the change
+by up to ten minutes, because an established watch is not re-authorized by the
+API server until the client re-opens it. What the payload names is the resource
+class, never an object.
+
+**Withdrawing a grant the agent cannot work without stops the agent, visibly.**
+`pods`, `namespaces`, `nodes` and the owner-chain resources are what every
+payload is assembled from, so there is no single payload left to degrade. If one
+of those becomes unreadable — before the first sync or five minutes into a
+refusal that started later — the agent exits with a message naming the resource
+and its pod enters `CrashLoopBackOff`. It does not keep answering from a frozen
+cache, and it does not sit silently waiting, which is what it used to do when a
+grant was missing at install (ADR 0035).
+
 **Authenticating node reports adds no RBAC.** When the node DaemonSet is
 installed (ADR 0010), the controller authenticates each node's projected
 ServiceAccount token by verifying its signature against the cluster's published
@@ -403,8 +420,8 @@ appearing here (ADR 0022).
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
 | `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
-| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032); plus `unavailable_sources`, naming any of those the agent could not read (ADR 0033) | no |
-| `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read (ADR 0033). StorageClass `parameters` are never read | no |
+| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032); plus `unavailable_sources`, naming any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035) | no |
+| `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035). StorageClass `parameters` are never read | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
 | `go_build` | Per image digest, written once: Go version, main module, dependency module **paths**, allow-listed build settings | no |
@@ -584,6 +601,14 @@ throttled and a container whose node could not be scraped produce identical
 records, and the distinction is unrecoverable once the moment has passed
 ([ADR 0013](adr/0013-observation-completeness.md)). No pod, node, or workload is
 named in this data; the failure counts are cluster-wide totals.
+
+The same honesty applies to the API server rather than the kubelet. A cache the
+agent cannot read is declared in `unavailable_sources` on the payload that reads
+it — whether the permission was never granted or was taken away from the running
+agent — and a cache the agent cannot work without stops the agent instead
+([ADR 0035](adr/0035-watch-failures-are-noticed.md)). Both name a resource class
+and nothing else; the underlying error, which names the agent's own
+ServiceAccount, stays in the agent's log and is never part of a payload.
 
 ### Profile filtering (applies on the node, before egress — ADR 0011)
 

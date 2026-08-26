@@ -4,6 +4,7 @@ Date: 2026-08-24
 
 Status: Accepted
 Amends: 0032 §1
+Amended by: 0035
 
 Changes how the agent behaves when it cannot read a policy source, and adds an
 `unavailable_sources` line to `workload_policy` and `cluster_policy`. No new

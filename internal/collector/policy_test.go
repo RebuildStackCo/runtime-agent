@@ -67,15 +67,17 @@ func replicaSetOwnedBy(name, deployment string) runtime.Object {
 	return replicaSet(name, deployment, "1", "example.com/app:1", 1, 1)
 }
 
-func budget(name, app, minAvailable string, allowed int32) *policyv1.PodDisruptionBudget {
+// budget is the fixture every policy test wants: a budget covering the `web`
+// workload that forbids eviction outright, which is the case worth reporting.
+func budget() *policyv1.PodDisruptionBudget {
 	return &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: name},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web-pdb"},
 		Spec: policyv1.PodDisruptionBudgetSpec{
-			Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": app}},
-			MinAvailable: ptr.To(intstr.Parse(minAvailable)),
+			Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+			MinAvailable: ptr.To(intstr.Parse("100%")),
 		},
 		Status: policyv1.PodDisruptionBudgetStatus{
-			DisruptionsAllowed: allowed, CurrentHealthy: 2, DesiredHealthy: 2, ExpectedPods: 2,
+			DisruptionsAllowed: 0, CurrentHealthy: 2, DesiredHealthy: 2, ExpectedPods: 2,
 		},
 	}
 }
@@ -154,7 +156,7 @@ func TestBudgetAttachesToTheWorkloadOfTheSelectedPods(t *testing.T) {
 	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
 		policyPod("web-1", "web"),
 		replicaSetOwnedBy("web-abc", "web"),
-		budget("web-pdb", "web", "100%", 0),
+		budget(),
 	)
 	if len(got) != 1 {
 		t.Fatalf("records = %d, want 1: %+v", len(got), got)
@@ -184,7 +186,7 @@ func TestBudgetOverExcludedPodsNamesNothing(t *testing.T) {
 		func([]WorkloadPolicy, ClusterPolicy) bool { return filter.Snapshot().PodsObserved > 0 },
 		policyPod("web-1", "web"),
 		replicaSetOwnedBy("web-abc", "web"),
-		budget("web-pdb", "web", "100%", 0),
+		budget(),
 		&corev1.LimitRange{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "defaults"}},
 	)
 	if len(got) != 0 {
@@ -388,7 +390,7 @@ func TestDeniedPolicySourceDegradesInsteadOfStoppingTheAgent(t *testing.T) {
 	clientset := fake.NewClientset(
 		policyPod("web-1", "web"),
 		replicaSetOwnedBy("web-abc", "web"),
-		budget("web-pdb", "web", "100%", 0),
+		budget(),
 	)
 	forbid := func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(

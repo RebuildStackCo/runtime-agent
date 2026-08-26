@@ -222,6 +222,32 @@ A container whose counter is zero has no record: the payload is a snapshot, so
 absence means zero rather than unknown. An empty record list means no collected
 container has ever restarted, and MUST NOT be read as a failed collection.
 
+**`unavailable_sources` disqualifies the payload's absences, and says nothing
+about why** ([ADR 0033](adr/0033-policy-sources-degrade.md),
+[ADR 0035](adr/0035-watch-failures-are-noticed.md)). `workload_policy` and
+`cluster_policy` each declare the sources they could not read at that capture.
+The field names resource classes, is omitted when every source was read, and
+each payload declares only its own sources.
+
+- The rule it exists for: in these payloads an absent record is a positive
+  statement — "nothing constrains this workload". When a source is listed, that
+  statement is void for anything that source would have supplied, including
+  workloads that vanish from the payload entirely rather than appearing with a
+  field missing. The backend MUST NOT treat the payload as a complete picture of
+  what it declares unreadable.
+- One list means one thing: not available at this capture. It does **not** say
+  whether the permission was never granted, was taken away from the running
+  agent, or was lost to a webhook or an unreachable API server, and the backend
+  MUST NOT infer a cause from it.
+- It is about that capture and no other. A source listed once and not again was
+  readable again; a source that is readable again may still be listed for a
+  capture or two, because the agent errs toward declaring a gap. Neither is a
+  claim that the source is permanently gone, and the backend MUST NOT latch it.
+- A missing grant the agent cannot work without produces no payload at all — the
+  agent exits (ADR 0035). Absence of deliveries and a declared source are
+  therefore different signals, and the backend SHOULD alert on the first through
+  whatever it uses for a silent cluster.
+
 **`pod_disruptions` is what the cluster took away, not what failed**
 ([ADR 0021](adr/0021-pod-lifecycle-journal.md)). One record per pod per
 hour-aligned window: preempted, evicted under node pressure, drained by a taint,
