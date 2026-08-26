@@ -4,6 +4,7 @@ Date: 2026-08-25
 
 Status: Accepted
 Amends: 0020 §5
+Amended by: 0043
 
 Adds the payload kind `restart_counters`. Nothing existing changes shape.
 

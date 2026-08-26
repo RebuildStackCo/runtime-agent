@@ -23,8 +23,12 @@ type RestartCounter struct {
 	Pod       string      `json:"pod"`
 	Container string      `json:"container"`
 	Workload  WorkloadRef `json:"workload"`
-	// Restarts is the counter's value now: every restart of this container
-	// since the pod was created, as Kubernetes counts them.
+	// Restarts is the kubelet's counter as the agent last observed it: every
+	// restart of this container since the pod was created, as Kubernetes counts
+	// them. "As last observed" rather than "now" is deliberate and is what
+	// keeps it consistent with the field below — both are read from one record
+	// of what the agent saw, so their difference is never negative (ADR 0043).
+	// The lag is one informer dispatch; the payload flushes once a minute.
 	Restarts int64 `json:"restarts"`
 	// RestartsBeforeObservation is what the counter already stood at when this
 	// agent process first saw the container. It is the number that is missing
@@ -106,11 +110,24 @@ func (w *PodWatcher) RestartCounters() []RestartCounter {
 				continue
 			}
 			out = append(out, RestartCounter{
-				Namespace:                 pod.Namespace,
-				Pod:                       pod.Name,
-				Container:                 status.Name,
-				Workload:                  workload,
-				Restarts:                  int64(status.RestartCount),
+				Namespace: pod.Namespace,
+				Pod:       pod.Name,
+				Container: status.Name,
+				Workload:  workload,
+				// Both counter values come from the one baseline read above,
+				// never one from the baseline and one from the lister (ADR
+				// 0043). The lister is the informer's shared store, which
+				// client-go updates *before* it dispatches to the handler that
+				// maintains this baseline, so for the span of one dispatch the
+				// store holds a counter the baseline has not seen. Reading them
+				// from different places produced a payload asserting that forty
+				// restarts predate an observation of a counter now standing at
+				// two — the pair ADR 0034 §2–3 tells a consumer to subtract.
+				//
+				// Taking both from one struct makes the ordering hold by
+				// construction: a rebaseline sets last and atFirstSight
+				// together, and an advance only ever raises last.
+				Restarts:                  int64(base.last),
 				RestartsBeforeObservation: int64(base.atFirstSight),
 				ObservedSince:             base.firstSeen.UTC(),
 				PodCreatedAt:              pod.CreationTimestamp.UTC(),
