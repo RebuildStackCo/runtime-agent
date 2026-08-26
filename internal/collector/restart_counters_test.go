@@ -7,8 +7,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/utils/ptr"
 )
 
@@ -241,5 +243,76 @@ func TestExcludedPodsHaveNoReading(t *testing.T) {
 
 	if _, ok := counterFor(records, "checkout-1", "app"); ok {
 		t.Error("an excluded pod produced a restart reading")
+	}
+}
+
+// stubPodLister serves a fixed pod list, so a test can hold the informer's
+// shared store at a chosen moment instead of racing it.
+type stubPodLister struct {
+	corelisters.PodLister
+	pods []*corev1.Pod
+}
+
+func (s stubPodLister) List(labels.Selector) ([]*corev1.Pod, error) { return s.pods, nil }
+
+// TestTheReadingNeverClaimsMoreHistoryThanItCounts reproduces the interleaving
+// deterministically instead of waiting for it (ADR 0043).
+//
+// client-go updates the informer's shared store *before* dispatching to the
+// event handler that maintains the restart baseline. So for the span of one
+// dispatch, the store holds a pod whose counter the baseline has not seen — and
+// the reading used to take `restarts` from the store and
+// `restarts_before_observation` from the baseline.
+//
+// A StatefulSet replacing a pod under the same name is where that becomes
+// visible: the store already says 2, the baseline still says 40, and the
+// payload asserts that forty restarts predate an observation of a counter
+// standing at two. ADR 0034 §2–3 tell a consumer to subtract those, so the
+// answer they get is negative.
+//
+// This test sets the two apart by hand, which is what the informer does for a
+// moment on every counter change.
+func TestTheReadingNeverClaimsMoreHistoryThanItCounts(t *testing.T) {
+	w := NewPodWatcher(fake.NewClientset(), func(PodInfo) {})
+
+	p := pod("checkout-1", ptr.To(controllerRef("StatefulSet", "checkout")))
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 40}}
+
+	// The agent has seen the old incarnation: baseline 40.
+	w.reportRestarts(p)
+
+	// Make the pod resolvable without running an informer.
+	w.index[p.UID] = podIndexEntry{
+		namespace: p.Namespace,
+		name:      p.Name,
+		workload:  WorkloadRef{Kind: "StatefulSet", Name: "checkout"},
+	}
+
+	// The store now holds the replacement — same name, fresh counter — and the
+	// handler that would rebaseline has not run yet.
+	recreated := p.DeepCopy()
+	recreated.Status.ContainerStatuses[0].RestartCount = 2
+	w.podLister = stubPodLister{pods: []*corev1.Pod{recreated}}
+
+	got, ok := counterFor(w.RestartCounters(), "checkout-1", "app")
+	if !ok {
+		t.Fatal("no reading for the recreated pod")
+	}
+	if got.RestartsBeforeObservation > got.Restarts {
+		t.Errorf("reading claims %d restarts predate observation of a counter at %d; "+
+			"ADR 0034 tells a consumer to subtract these and they would get %d",
+			got.RestartsBeforeObservation, got.Restarts,
+			got.Restarts-got.RestartsBeforeObservation)
+	}
+
+	// And once the handler catches up, the reading is the new incarnation's.
+	w.reportRestarts(recreated)
+	got, ok = counterFor(w.RestartCounters(), "checkout-1", "app")
+	if !ok {
+		t.Fatal("no reading after the rebaseline")
+	}
+	if got.Restarts != 2 || got.RestartsBeforeObservation != 2 {
+		t.Errorf("after the rebaseline: restarts=%d before_observation=%d, want 2 and 2 — "+
+			"the old pod's history is not this pod's", got.Restarts, got.RestartsBeforeObservation)
 	}
 }

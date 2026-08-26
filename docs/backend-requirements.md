@@ -206,6 +206,14 @@ workload metadata of that flush.
 - `restarts_before_observation` is how much of that total the agent never
   watched, and `observed_since` is when it started watching. Those restarts are
   in no window and never will be: Kubernetes does not timestamp them.
+- **`restarts - restarts_before_observation` is never negative.** Both are read
+  from one observation, so the subtraction this section prescribes is always
+  defined ([ADR 0043](adr/0043-the-counter-reading-comes-from-one-observation.md)).
+  It was not always so: the agent briefly reported a counter fresher than the
+  history it had recorded against it, which for a pod recreated under its old
+  name — a StatefulSet replacing a replica — produced a negative difference for
+  one flush. A backend that carries a defensive clamp for that no longer needs
+  one, and one that does not is no longer wrong.
 - `observed_since` and `pod_created_at` bound the interval those restarts are
   spread over, and nothing narrows it further. The backend MAY derive a rate
   over that interval; it MUST NOT place them at a point inside it.
