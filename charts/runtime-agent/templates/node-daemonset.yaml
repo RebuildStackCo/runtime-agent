@@ -1,0 +1,231 @@
+{{- include "runtime-agent.validate" . -}}
+{{- if include "runtime-agent.nodeEnabled" . }}
+{{- $ebpf := include "runtime-agent.ebpfEnabled" . }}
+{{- $endpoint := include "runtime-agent.controllerEndpoint" . }}
+# Zero-RBAC identity, and the defining property of the node role: this
+# ServiceAccount is named by no Role, RoleBinding, ClusterRole or
+# ClusterRoleBinding anywhere in this chart — not one rule — and its API token is
+# not mounted. The node never calls the Kubernetes API; everything it reads is
+# under /proc (ADR 0009).
+#
+# The `ebpf` profile changes nothing about this. Capabilities are a kernel
+# concept and RBAC is an API-server concept: CAP_BPF grants no API access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "runtime-agent.nodeName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "runtime-agent.nodeName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-agent
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      {{- if $ebpf }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/node-configmap.yaml") . | sha256sum }}
+        {{- with .Values.node.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.node.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      labels:
+        {{- include "runtime-agent.commonLabels" . | nindent 8 }}
+        app.kubernetes.io/component: node
+        {{- with .Values.node.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "runtime-agent.nodeName" . }}
+      # No *API* credential in the container: the default ServiceAccount token
+      # (audience = the API server) is never mounted, so the node role cannot
+      # call the API server. The projected token below is a different token,
+      # audience-bound to the controller (ADR 0010): it authenticates only to
+      # the controller and is rejected by the API server. Zero RBAC still holds.
+      automountServiceAccountToken: false
+      # Share the host PID namespace so the node sees every process and can open
+      # its /proc/<pid>/exe (ADR 0009). With the capabilities below this is the
+      # whole of the node's host-level privilege: no privileged flag, and no
+      # writable host path in any profile.
+      hostPID: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        # Reading root-owned /proc/<pid>/exe requires matching credentials; the
+        # node runs as root and drops every capability but the ones named below.
+        runAsUser: 0
+        runAsNonRoot: false
+      containers:
+        - name: node
+          image: {{ include "runtime-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - node
+            - -proc
+            - /host/proc
+            - -interval
+            - {{ .Values.node.scanInterval | quote }}
+            # Deliver findings to the controller over the cluster network only
+            # (ADR 0010). The node always initiates; the controller Service is
+            # the single in-cluster target.
+            - -controller-endpoint
+            - {{ printf "%s/v1/node-inventory" $endpoint | quote }}
+            # Which pods on this node passed the customer's namespace filters
+            # and opt-out annotations (ADR 0015). The node has no API access and
+            # its cgroup yields a pod UID, never a namespace, so it must ask.
+            # Without this it fails closed and scans nothing.
+            - -scope-endpoint
+            - {{ printf "%s/v1/node-scope" $endpoint | quote }}
+            {{- if $ebpf }}
+            # The master switch for the eBPF CPU profiler (ADR 0011). On a
+            # kernel below 5.8 or without BTF the profiler refuses gracefully
+            # and the node keeps running the scanner.
+            - -enable-ebpf
+            # The node's own half of the profiling policy: the symbol allow-list
+            # and the ceilings it enforces on its own samples (ADR 0025).
+            - -config
+            - /etc/runtime-agent/config.yaml
+            # sysfs root for the BTF readiness check, served by the read-only
+            # /sys/kernel mount below.
+            - -sys
+            - /sys
+            # Where to ask which containers to profile, and where to ship the
+            # captured, filtered profiles (ADR 0011 §3, §6). Same Service, same
+            # projected-token auth, different paths.
+            - -targets-endpoint
+            - {{ printf "%s/v1/node-targets" $endpoint | quote }}
+            - -profile-endpoint
+            - {{ printf "%s/v1/node-profile" $endpoint | quote }}
+            {{- end }}
+          env:
+            # The node name for the report; the controller keys facts by pod UID
+            # and container ID, so this is for observability, not attribution.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                # Scanner capability (ADR 0009): read another container's
+                # /proc/<pid>/exe past the kernel's ptrace access check. It is
+                # not an eBPF capability — the scanner loads no eBPF programs.
+                - SYS_PTRACE
+                {{- if $ebpf }}
+                # The eBPF profiler's two capabilities (ADR 0011, kernel 5.8+):
+                # load eBPF programs, and perform perf sampling. These two — and
+                # only these two — are what the `ebpf` profile adds over the
+                # scanner, and there is still no privileged flag.
+                - BPF
+                - PERFMON
+                {{- end }}
+          resources:
+            {{- if .Values.node.resources }}
+            {{- toYaml .Values.node.resources | nindent 12 }}
+            {{- else }}
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              {{- if $ebpf }}
+              # Higher than the scanner's 100m: perf sampling and on-node
+              # symbolization cost more than reading buildinfo.
+              cpu: 250m
+              memory: 256Mi
+              {{- else }}
+              cpu: 100m
+              memory: 128Mi
+              {{- end }}
+            {{- end }}
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+              # Pick up mounts that appear on the host after the pod starts.
+              mountPropagation: HostToContainer
+            - name: controller-token
+              mountPath: /var/run/secrets/rebuildstack.co/controller-token
+              readOnly: true
+            {{- if $ebpf }}
+            - name: host-sys-kernel
+              mountPath: /sys/kernel
+              readOnly: true
+            - name: config
+              mountPath: /etc/runtime-agent
+              readOnly: true
+            {{- end }}
+      {{- with .Values.node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.node.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        # The one credential the node holds (ADR 0010): a projected
+        # ServiceAccount token, audience-bound to the controller, kubelet-issued
+        # and rotated on this tmpfs path. It is not the API-server token — the
+        # API server rejects this audience — so the node still cannot reach the
+        # API. Nothing is persisted: the token lives only here, for this pod's
+        # lifetime. The audience is the same value the controller was configured
+        # with, because both come from nodeIntake.audience.
+        - name: controller-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.nodeIntake.audience | quote }}
+                  expirationSeconds: 3600
+                  path: token
+        {{- if $ebpf }}
+        # Kernel BTF, read-only, for the profiler's CO-RE eBPF programs
+        # (ADR 0011, docs/security.md §7.2). The always-present parent
+        # /sys/kernel is mounted rather than /sys/kernel/btf: on a kernel
+        # without BTF that directory does not exist, and a hostPath of a missing
+        # directory blocks the pod from starting — which would defeat the
+        # graceful refusal whose whole point is that the node still runs as the
+        # scanner.
+        - name: host-sys-kernel
+          hostPath:
+            path: /sys/kernel
+            type: Directory
+        - name: config
+          configMap:
+            name: {{ include "runtime-agent.nodeName" . }}
+        {{- end }}
+{{- end }}

@@ -2,6 +2,7 @@
 
 Date: 2026-08-23
 Status: Accepted
+Amended by: 0036
 Amends: 0011 §3, §4, 0022 §5
 
 Removes the profiling eligible set introduced by ADR 0011 §3, corrects what that

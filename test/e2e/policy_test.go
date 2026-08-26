@@ -76,7 +76,7 @@ func TestPolicyAndJournalsEndToEnd(t *testing.T) {
 
 	createPolicyFixtures(ctx, t, clientset, fixtureNS)
 
-	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns))
+	deployController(ctx, t, clientset, ns, agentImage)
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
 

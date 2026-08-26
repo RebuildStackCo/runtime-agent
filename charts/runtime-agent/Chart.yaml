@@ -1,0 +1,21 @@
+apiVersion: v2
+name: runtime-agent
+description: RebuildStack runtime agent — collects resource-usage rollups, workload metadata and allow-list-filtered profiles inside your cluster, and ships them one way.
+type: application
+# The chart version moves with the repository; appVersion is the agent image tag
+# this chart was written against and the default for image.tag.
+version: 0.1.0
+appVersion: "0.1.0"
+# The floor is the baseline README states, and internal/chartrender/chart_test.go
+# checks that the two still agree. A chart that installs where the product does
+# not promise to work is a support statement nobody made.
+kubeVersion: ">=1.33.0"
+home: https://github.com/RebuildStackCo/runtime-agent
+sources:
+  - https://github.com/RebuildStackCo/runtime-agent
+keywords:
+  - cost
+  - efficiency
+  - profiling
+annotations:
+  rebuildstack.co/install-profiles: "metrics-only, inventory, ebpf"

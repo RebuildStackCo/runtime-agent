@@ -1,0 +1,103 @@
+{{- include "runtime-agent.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "runtime-agent.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  # One replica, and not a value. The controller is the one writer of the
+  # identity Secret and the one holder of the cluster's backend identity
+  # (ADR 0008); a second replica would double every payload and contend for
+  # that write.
+  replicas: 1
+  # Terminate the old controller before starting the new one. A Deployment's
+  # default rolling update rounds maxSurge up to one, so `replicas: 1` would
+  # still run two controllers on every upgrade; Recreate is what makes the
+  # single replica mean at-most-one. Not a StatefulSet: nothing here claims a
+  # volume or needs a stable name, and a StatefulSet buys the node-partition
+  # case with cluster-wide collection downtime (ADR 0026).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-agent
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      annotations:
+        # Roll the controller when its configuration changes. The agent reads
+        # the file once at startup, so without this a changed ConfigMap would
+        # sit unread until something else happened to restart the pod.
+        checksum/config: {{ include (print $.Template.BasePath "/controller-configmap.yaml") . | sha256sum }}
+        {{- with .Values.controller.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "runtime-agent.commonLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+        {{- with .Values.controller.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "runtime-agent.controllerName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: {{ include "runtime-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - -config
+            - /etc/runtime-agent/config.yaml
+          {{- if include "runtime-agent.nodeEnabled" . }}
+          ports:
+            - name: node-intake
+              containerPort: 8080
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/runtime-agent
+              readOnly: true
+            - name: spool
+              mountPath: /var/spool/runtime-agent
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "runtime-agent.controllerName" . }}
+        # Always an emptyDir, and no value changes it (ADR 0007, ADR 0026):
+        # unshipped payloads are loss-harmless, so there is no durability option
+        # to offer. An operator who wants that span to survive mounts something
+        # else at this path — their decision, not a setting the agent carries.
+        - name: spool
+          emptyDir: {}

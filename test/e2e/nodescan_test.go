@@ -4,23 +4,17 @@ package e2e
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
-	k8syaml "sigs.k8s.io/yaml"
 )
 
 // The module path baked into test/e2e/sample: neither infrastructure nor this
@@ -30,8 +24,6 @@ const sampleModulePath = "example.com/rebuildstack-e2e/goworkload"
 // A module the sample really depends on (test/e2e/sample/go.mod), used to assert
 // the dependency set survives the node→controller join.
 const sampleDependency = "github.com/cespare/xxhash/v2"
-
-const nodeManifestPath = "../../deploy/node-daemonset.yaml"
 
 // TestNodeScannerFailsClosedWithoutScope deploys the node-role DaemonSet from
 // the shipped manifest into kind alongside a known Go workload, with no scope
@@ -93,7 +85,7 @@ func TestNodeScannerFailsClosedWithoutScope(t *testing.T) {
 	// Deploy the node role from the shipped manifest, retargeted at this
 	// namespace and the kind-loaded image, with neither a controller nor a scope
 	// endpoint — the misconfiguration this test is about.
-	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage, "", "")
+	deployNodeWithoutScope(ctx, t, clientset, ns, agentImage)
 
 	nodePod := waitDaemonSetPod(ctx, t, clientset, ns)
 	t.Logf("node pod: %s", nodePod)
@@ -181,78 +173,22 @@ func scanLog(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, pod
 	return detected, coverage
 }
 
-// deployNodeDaemonSet decodes the shipped manifest and applies its
-// ServiceAccount and DaemonSet into ns, overriding only the namespace, the
-// image, the pull policy, and the scan interval. When controllerEndpoint is
-// non-empty, the -controller-endpoint arg is added so the node ships its
-// findings there (ADR 0010); empty runs the node log-only. The zero-RBAC
-// ServiceAccount (no Role/RoleBinding is created anywhere), the projected
-// controller-audience token volume, and the securityContext are applied exactly
-// as written.
-func deployNodeDaemonSet(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, controllerEndpoint, scopeEndpoint string) {
+// deployNodeWithoutScope installs the node half of the `inventory` profile with
+// no controller and no scope endpoint.
+//
+// Stripping the flag is the scenario: without a scope the node cannot know which
+// pods passed the customer's filters, and must scan nothing rather than guess
+// (ADR 0015). Every other argument is the chart's own.
+func deployNodeWithoutScope(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image string) {
 	t.Helper()
-	data, err := os.ReadFile(nodeManifestPath)
-	if err != nil {
-		t.Fatalf("reading manifest %s: %v", nodeManifestPath, err)
-	}
-	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
-	for {
-		doc, err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("reading manifest doc: %v", err)
-		}
-		if strings.TrimSpace(string(doc)) == "" {
-			continue
-		}
-		var tm metav1.TypeMeta
-		if err := k8syaml.Unmarshal(doc, &tm); err != nil {
-			t.Fatalf("decoding doc TypeMeta: %v", err)
-		}
-		if tm.Kind == "" {
-			continue // a comment-only section between --- separators
-		}
-		switch tm.Kind {
-		case "ServiceAccount":
-			var sa corev1.ServiceAccount
-			if err := k8syaml.Unmarshal(doc, &sa); err != nil {
-				t.Fatalf("decoding ServiceAccount: %v", err)
-			}
-			sa.Namespace = ns
-			if _, err := cs.CoreV1().ServiceAccounts(ns).Create(ctx, &sa, metav1.CreateOptions{}); err != nil {
-				t.Fatalf("creating ServiceAccount: %v", err)
-			}
-		case "DaemonSet":
-			var ds appsv1.DaemonSet
-			if err := k8syaml.Unmarshal(doc, &ds); err != nil {
-				t.Fatalf("decoding DaemonSet: %v", err)
-			}
-			ds.Namespace = ns
-			c := &ds.Spec.Template.Spec.Containers[0]
-			c.Image = image
-			c.ImagePullPolicy = corev1.PullNever
-			// Shorten the interval so the test observes repeated passes quickly;
-			// the first pass runs at startup regardless.
-			c.Args = []string{"node", "-proc", "/host/proc", "-interval", "15s"}
-			if controllerEndpoint != "" {
-				c.Args = append(c.Args, "-controller-endpoint", controllerEndpoint)
-			}
-			// Without a scope endpoint the node fails closed and scans nothing
-			// (ADR 0015); passing "" is how a test exercises that path.
-			if scopeEndpoint != "" {
-				c.Args = append(c.Args, "-scope-endpoint", scopeEndpoint)
-			}
-			if _, err := cs.AppsV1().DaemonSets(ns).Create(ctx, &ds, metav1.CreateOptions{}); err != nil {
-				t.Fatalf("creating DaemonSet: %v", err)
-			}
-		case "Namespace":
-			// The test manages its own namespace; ignore the manifest's.
-		default:
-			t.Fatalf("unexpected manifest kind %q", tm.Kind)
-		}
-	}
+	installChart(ctx, t, cs, ns, image, installOptions{
+		profile:        "inventory",
+		skipController: true,
+		values:         map[string]any{"node": map[string]any{"scanInterval": "15s"}},
+		mutateNode: func(ds *appsv1.DaemonSet) {
+			setNodeArgs(ds, "node", "-proc", "/host/proc", "-interval", "15s")
+		},
+	})
 }
 
 func waitPodRunning(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, name string) {

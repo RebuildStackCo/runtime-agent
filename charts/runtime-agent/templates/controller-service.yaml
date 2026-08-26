@@ -1,0 +1,27 @@
+{{- include "runtime-agent.validate" . -}}
+{{- if include "runtime-agent.nodeEnabled" . }}
+# The receiver for node reports (ADR 0010). In-cluster only — no Ingress, no
+# NodePort, no LoadBalancer, and no value that would make one: the node role
+# talks to the controller over the cluster network and nothing else reaches it.
+#
+# Rendered only when a node DaemonSet is installed. A controller-only install
+# has nothing to receive and therefore no Service and no open port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "runtime-agent.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: runtime-agent
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: node-intake
+      port: 8080
+      targetPort: node-intake
+{{- end }}

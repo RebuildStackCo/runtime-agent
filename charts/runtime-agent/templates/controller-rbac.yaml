@@ -1,0 +1,81 @@
+{{- include "runtime-agent.validate" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "runtime-agent.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+---
+# The controller's access is read-only. Every rule here is get/list/watch, and
+# there is no create, update, patch, delete or deletecollection anywhere — a
+# property docs/security.md §1 promises and charts/runtime-agent/render_test.go
+# enforces mechanically rather than by review.
+#
+# The two nonResourceURL GETs are OIDC discovery and JWKS, used to validate node
+# tokens locally (ADR 0010). They are reads, and specifically NOT
+# `create tokenreviews`.
+#
+# Since ADR 0035 a grant missing from this list is loud rather than silent: the
+# caches that gate collection stop the agent instead of serving a frozen store,
+# and the seven policy caches name themselves in the payload they feed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "runtime-agent.clusterRoleName" . }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes/proxy]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [replicasets, deployments, statefulsets, daemonsets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [limitranges, resourcequotas, persistentvolumeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [scheduling.k8s.io]
+    resources: [priorityclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+{{- if include "runtime-agent.nodeEnabled" . }}
+  - nonResourceURLs: ["/openid/v1/jwks", "/.well-known/openid-configuration"]
+    verbs: [get]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "runtime-agent.clusterRoleName" . }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "runtime-agent.clusterRoleName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "runtime-agent.controllerName" . }}
+    namespace: {{ .Release.Namespace }}

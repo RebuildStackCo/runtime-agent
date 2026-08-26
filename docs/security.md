@@ -84,8 +84,13 @@ your goals; profiles can be upgraded later.
 | Profile | Components | Node privileges | What you get |
 |---|---|---|---|
 | `metrics-only` | controller | none | Cost and efficiency findings from usage metrics (kubelet counters via the API server, ADR 0006) and workload metadata |
-| `pprof` **[planned]** | controller | none | Above + CPU/heap profiles pulled from services that already expose `/debug/pprof`. No pprof puller exists yet; nothing in the agent opens a `/debug/pprof` endpoint today |
-| `ebpf` | controller + node DaemonSet | see [§7](#7-node-privileges) | Above + CPU profiles for services without pprof endpoints |
+| `inventory` | controller + node DaemonSet | host PID, `CAP_SYS_PTRACE` (see [§7.1](#71-the-go-binary-scanner-the-current-node-role)) | Above + which of your binaries are Go, their version and module path (ADR 0009) |
+| `pprof` **[planned]** | controller | none | Above + CPU/heap profiles pulled from services that already expose `/debug/pprof`. No pprof puller exists yet; nothing in the agent opens a `/debug/pprof` endpoint today, and the chart refuses to install this profile rather than pretend |
+| `ebpf` | controller + node DaemonSet | adds `CAP_BPF`, `CAP_PERFMON` (see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011)) | Above + CPU profiles for services without pprof endpoints |
+
+The profile is the whole of the choice: `helm install --set profile=...`. There
+is no second setting that half-enables a component, and each profile is a
+superset of the one above it (ADR 0036).
 
 The node DaemonSet has two functions with very different privilege needs, kept
 deliberately separate (ADR 0009): a **Go-binary scanner** (reads build info
@@ -189,7 +194,7 @@ read, never a write.
 |---|---|---|---|
 | Pod pprof endpoints **[planned]** | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only. Not built: the agent opens no connection to a pod today |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
-| Backend egress **[planned]** | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system, and it does not exist yet: the controller writes payloads to its local spool and ships nothing. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets ships with the chart **[planned]** — no chart exists yet either (`deploy/` holds raw manifests) |
+| Backend egress **[planned]** | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system, and it does not exist yet: the controller writes payloads to its local spool and ships nothing. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets ships with the chart **[planned]** — the chart exists ([`charts/runtime-agent`](../charts/runtime-agent)), the policy does not |
 | Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings and captured profiles for aggregation (ADR 0010, ADR 0011), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only. The **scope** query answers from the controller's already-filtered pod index, so it can only narrow what the node scans — it cannot name a pod your filters exclude. The **profiling-target** query is the one reply the node acts on; see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011) for what bounds it. The receiver is not reachable from outside the cluster; a NetworkPolicy restricting it to the DaemonSet ships with the chart **[planned]**. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster; a party that can already sniff pod traffic could replay the short-lived token to post fabricated inventory facts for this one cluster — bounded, one-way, no read or control capability (ADR 0010) |
 
 ---
@@ -307,8 +312,8 @@ What it reads, and only that: `/proc/<pid>/exe` (build info) and
 cgroup path). See [§8](#8-data-collected-and-data-leaving-the-cluster) for the
 data and the on-node filter.
 
-Compensating controls, all set in the shipped manifest
-(`deploy/node-daemonset.yaml`):
+Compensating controls, all set by the chart in the `inventory` profile and
+asserted against its rendered output by `internal/chartrender/chart_test.go`:
 
 - `privileged: false`, `allowPrivilegeEscalation: false`.
 - Read-only root filesystem.

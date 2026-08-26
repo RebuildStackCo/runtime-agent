@@ -7,24 +7,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/pprof/profile"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
-	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 )
@@ -77,15 +72,16 @@ func TestEBPFCaptureEndToEnd(t *testing.T) {
 	// workload (Pod → ReplicaSet → Deployment) and the profiler has a busy target.
 	deploySampleWorkload(ctx, t, clientset, ns, sampleImage)
 
-	// The controller with profiling enabled and only this sample eligible, so the
-	// targets reply names exactly the sample's containers on the querying node.
-	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfigProfiling(ns))
+	// The `ebpf` profile: the controller with profiling enabled and only this
+	// sample eligible, and the node carrying the symbol allow-list and the short
+	// capture cadence. One install, because that is how a customer gets them.
+	installChart(ctx, t, clientset, ns, agentImage, installOptions{
+		profile:     "ebpf",
+		spoolReader: true,
+		values:      captureValues(ns),
+	})
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
-
-	// The eBPF node DaemonSet, pointed at the controller Service and carrying the
-	// node-side profiling config (symbol allow-list, short capture cadence).
-	deployNodeDaemonSetEBPFCapture(ctx, t, clientset, ns, agentImage)
 	nodePod := waitDaemonSetPod(ctx, t, clientset, ns)
 	t.Logf("node pod: %s", nodePod)
 
@@ -321,120 +317,32 @@ func execSpoolReader(ctx context.Context, t *testing.T, config *rest.Config, cs 
 	return stdout.String(), true
 }
 
-// renderControllerConfigProfiling is renderControllerConfig plus an enabled
-// profiling block. Scope comes from the collection filter and nothing else
-// (ADR 0025): allowing only this test's namespace is what confines both the
-// rollups and the profiling targets to the sample workload. The agent's own pods
-// live in that namespace too and are ranked alongside it; their frames do not
-// survive the node's symbol allow-list, so their profiles fail validation and
-// are never shipped — the filters doing their job rather than a second knob.
-func renderControllerConfigProfiling(ns string) string {
-	return fmt.Sprintf(`filters:
-  namespaces:
-    allow:
-      - %s
-spool:
-  dir: /var/spool/runtime-agent
-nodeIntake:
-  enabled: true
-  listenAddress: ":8080"
-  audience: rebuildstack-controller
-  expectedSubject: "system:serviceaccount:%s:runtime-agent-node"
-profiling:
-  enabled: true
-  topN: 5
-`, ns, ns)
-}
-
-// renderNodeProfilingConfig is the node-side profiling config: the symbol
-// allow-list is exactly the sample's own module (so its frames survive and every
-// third-party frame is redacted), third-party symbols drop, and a short capture
-// cadence so the test sees a profile quickly. A higher overhead ceiling raises the
-// sampling rate, which shortens time-to-signal in the test.
+// captureValues is the whole of what this test configures, and every line of it
+// is a value a customer could set.
 //
-// It carries no eligible set and no target count: since ADR 0025 the node's
-// schema rejects both outright — a node given a setting it cannot enforce fails
-// to start rather than parsing and ignoring it.
-func renderNodeProfilingConfig() string {
-	return fmt.Sprintf(`profiling:
-  allowedModulePrefixes:
-    - %s
-  thirdPartySymbols: drop
-  captureDurationSeconds: 30
-  intervalSeconds: 60
-  overheadCeilingPercent: 20
-`, sampleModulePath)
-}
-
-// deployNodeDaemonSetEBPFCapture applies the ebpf node variant into ns for the
-// capture path: it installs the node-side profiling config, points the node at
-// this namespace's controller Service (inventory, targets, and profile
-// endpoints), and shortens the scan interval. Unlike the gate-refusal deploy
-// (log-only), this one wires the endpoints so a ready node actually queries and
-// ships.
-func deployNodeDaemonSetEBPFCapture(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image string) {
-	t.Helper()
-	data, err := os.ReadFile(nodeEBPFManifestPath)
-	if err != nil {
-		t.Fatalf("reading manifest %s: %v", nodeEBPFManifestPath, err)
-	}
-	base := fmt.Sprintf("http://runtime-agent-controller.%s.svc.cluster.local:8080", ns)
-	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
-	for {
-		doc, err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("reading manifest doc: %v", err)
-		}
-		if strings.TrimSpace(string(doc)) == "" {
-			continue
-		}
-		var tm metav1.TypeMeta
-		if err := k8syaml.Unmarshal(doc, &tm); err != nil {
-			t.Fatalf("decoding doc TypeMeta: %v", err)
-		}
-		switch tm.Kind {
-		case "", "Namespace":
-			// The test manages its own namespace.
-		case "ServiceAccount":
-			var sa corev1.ServiceAccount
-			mustUnmarshal(t, doc, &sa)
-			sa.Namespace = ns
-			create(ctx, t, "ServiceAccount", func() error {
-				_, err := cs.CoreV1().ServiceAccounts(ns).Create(ctx, &sa, metav1.CreateOptions{})
-				return err
-			})
-		case "ConfigMap":
-			var cm corev1.ConfigMap
-			mustUnmarshal(t, doc, &cm)
-			cm.Namespace = ns
-			cm.Data["config.yaml"] = renderNodeProfilingConfig()
-			create(ctx, t, "ConfigMap", func() error {
-				_, err := cs.CoreV1().ConfigMaps(ns).Create(ctx, &cm, metav1.CreateOptions{})
-				return err
-			})
-		case "DaemonSet":
-			var ds appsv1.DaemonSet
-			mustUnmarshal(t, doc, &ds)
-			ds.Namespace = ns
-			c := &ds.Spec.Template.Spec.Containers[0]
-			c.Image = image
-			c.ImagePullPolicy = corev1.PullNever
-			c.Args = []string{
-				"node", "-proc", "/host/proc", "-interval", "30s",
-				"-enable-ebpf", "-config", "/etc/runtime-agent/config.yaml", "-sys", "/sys",
-				"-controller-endpoint", base + "/v1/node-inventory",
-				"-targets-endpoint", base + "/v1/node-targets",
-				"-profile-endpoint", base + "/v1/node-profile",
-			}
-			create(ctx, t, "DaemonSet", func() error {
-				_, err := cs.AppsV1().DaemonSets(ns).Create(ctx, &ds, metav1.CreateOptions{})
-				return err
-			})
-		default:
-			t.Fatalf("unexpected manifest kind %q", tm.Kind)
-		}
+// Scope comes from the collection filter and nothing else (ADR 0025): allowing
+// only this test's namespace is what confines both the rollups and the profiling
+// targets to the sample workload. The agent's own pods live in that namespace too
+// and are ranked alongside it; their frames do not survive the node's symbol
+// allow-list, so their profiles fail validation and are never shipped — the
+// filters doing their job rather than a second knob.
+//
+// The allow-list is exactly the sample's own module, so its frames survive and
+// every third-party frame is redacted. The short cadence shortens time-to-signal,
+// and the raised overhead ceiling raises the sampling rate that produces it.
+func captureValues(ns string) map[string]any {
+	return map[string]any{
+		"filters": map[string]any{
+			"namespaces": map[string]any{"allow": []any{ns}},
+		},
+		"profiling": map[string]any{
+			"topN":                   5,
+			"allowedModulePrefixes":  []any{sampleModulePath},
+			"thirdPartySymbols":      "drop",
+			"captureDurationSeconds": 30,
+			"intervalSeconds":        60,
+			"overheadCeilingPercent": 20,
+		},
+		"node": map[string]any{"scanInterval": "30s"},
 	}
 }

@@ -1,0 +1,129 @@
+# RebuildStack runtime agent.
+#
+# Everything the agent does is decided by this file. There is no control channel
+# and nothing the backend sends can change agent behaviour (ADR 0001), so what
+# you write here — and can diff in your GitOps history — is the whole of it.
+#
+# Unknown keys are rejected (values.schema.json), for the same reason the agent's
+# own config parser is strict: a typo must not silently disable a filter.
+
+# Which installation profile to install. Each is a superset of the one above it,
+# and the profile is the only place the choice is made — there is no second knob
+# that half-enables a component (docs/security.md §3).
+#
+#   metrics-only  the controller alone. No DaemonSet, no node privileges, no
+#                 port opened for node reports. Usage rollups, workload and node
+#                 metadata, the journals and the policy payloads.
+#   inventory     the above plus the node DaemonSet running the Go-binary
+#                 scanner (ADR 0009): which of your binaries are Go, their
+#                 version and module path. Host PID and CAP_SYS_PTRACE, no eBPF.
+#   ebpf          the above plus the on-node eBPF CPU profiler (ADR 0011). Adds
+#                 exactly CAP_BPF and CAP_PERFMON and a read-only /sys/kernel
+#                 mount. Requires profiling.allowedModulePrefixes to be set.
+#
+# The `pprof` profile named in docs/security.md §3 is not installable: no puller
+# exists yet, and a value the agent cannot honour must fail rather than look
+# honoured (ADR 0025).
+profile: metrics-only
+
+image:
+  repository: runtime-agent
+  # Empty selects the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# What the agent collects. Anything not excluded here can still opt out per
+# namespace or per workload with the collect annotation (ADR 0028).
+filters:
+  namespaces:
+    # Empty admits every namespace; a non-empty list admits only what matches.
+    # Entries may use "*" as a wildcard.
+    allow: []
+    # Applied on top of allow, and wins on conflict.
+    deny: []
+
+spool:
+  # How long unshipped payloads are kept. 0 selects the agent's built-in
+  # default (24h) — the default lives in the agent, not here, so the two cannot
+  # disagree.
+  #
+  # There is deliberately no persistence setting. The spool is always an
+  # emptyDir: unshipped payloads are loss-harmless and a reschedule loses at
+  # most the span the backend had not acknowledged (ADR 0007, ADR 0026). If you
+  # want that span to survive a reschedule, mount something durable at the
+  # spool path yourself — that is your decision, not a knob the agent carries.
+  maxAgeHours: 0
+
+nodeIntake:
+  # The audience the node's projected token requests and the controller
+  # requires. One value: the chart writes it into both the DaemonSet's token
+  # projection and the controller's config, and derives the expected subject
+  # from the node ServiceAccount in this release's namespace. Those three
+  # strings had to agree by hand before this chart existed.
+  audience: rebuildstack-controller
+
+# Profiling. Split across the two roles on purpose: the controller decides how
+# many workloads may be named, the node decides what may leave it, and the node
+# enforces its half from its own file with no help from anyone (ADR 0025).
+#
+# Which workloads may be profiled is which workloads are collected — filters
+# above, and nothing else. There is no second namespace list.
+profiling:
+  # Controller: how many top-consuming workloads an answer may name. 0 selects
+  # the agent's built-in default.
+  topN: 0
+
+  # Node: the Go module-path prefixes of your own code whose stack frames may
+  # leave the node. Everything else is redacted before anything is sent.
+  #
+  # This is the load-bearing control of the whole profiling path (ADR 0011 §4).
+  # It is enforced on the node, from the node's own file, and no reply from the
+  # controller can widen it — which is why it lives here rather than arriving
+  # over the wire.
+  #
+  # Required by profile `ebpf`, and required to be non-empty: an empty list
+  # admits nothing, so profiling would run and produce nothing, forever and
+  # silently. The chart refuses to render that rather than install it.
+  allowedModulePrefixes: []
+  # "drop" (default) or "keep": whether third-party dependency frames survive
+  # the filter. Empty selects the agent's default.
+  thirdPartySymbols: ""
+
+  # Node: what profiling is allowed to cost this node. 0 selects the agent's
+  # built-in defaults (60s captures, every 300s, 5% duty cycle).
+  captureDurationSeconds: 0
+  intervalSeconds: 0
+  overheadCeilingPercent: 0
+
+controller:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Extra labels and annotations on the controller pod, for your own tooling.
+  podAnnotations: {}
+  podLabels: {}
+
+node:
+  # How often the node scans its processes.
+  scanInterval: 60s
+  # Empty selects per-profile defaults: 100m CPU for the scanner, 250m for the
+  # profiler, which samples and symbolizes and therefore costs more.
+  resources: {}
+  # A node agent runs on every node, control-plane nodes included. Replace this
+  # if you mean to exclude some — and note that an excluded node contributes no
+  # inventory and no profiles, silently, because nothing there is running.
+  tolerations:
+    - operator: Exists
+  nodeSelector: {}
+  affinity: {}
+  podAnnotations: {}
+  podLabels: {}
