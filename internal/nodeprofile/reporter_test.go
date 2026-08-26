@@ -72,3 +72,90 @@ func TestProgressLogsCountsNotSymbols(t *testing.T) {
 		t.Errorf("progress line leaked a symbol: %s", s)
 	}
 }
+
+// traceWithSourceFile builds a trace whose frames carry a given source path,
+// the way the compiler recorded it in the binary.
+func traceWithSourceFile(fn, sourceFile string) *libpf.Trace {
+	tr := &libpf.Trace{}
+	f := libpf.Frame{
+		FunctionName: libpf.Intern(fn),
+		SourceFile:   libpf.Intern(sourceFile),
+		SourceLine:   412,
+	}
+	tr.Frames.Append(&f)
+	return tr
+}
+
+// TestTheBuildMachinesPathNeverEntersTheBuffer is the leak this slice closes
+// (ADR 0041).
+//
+// A Go binary built without -trimpath — the default — records absolute paths
+// from whatever machine compiled it. Those reached the shipped profile
+// verbatim: the CI workspace, the internal VCS host, the layout of the
+// customer's source tree. None of it is the customer's code structure, which is
+// what a profile is for; it is our build machine leaking through their profile.
+//
+// The assertion is on the buffer rather than on the wire, because the point is
+// that the path is cut at the seam and the agent never holds it.
+func TestTheBuildMachinesPathNeverEntersTheBuffer(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "a CI absolute path",
+			path: "/home/jenkins/workspace/acme-payments/src/git.acme-internal.example/payments/api/server.go",
+			want: "server.go",
+		},
+		{
+			name: "a trimpath-style module path",
+			path: "github.com/acme/app/api/server.go",
+			want: "server.go",
+		},
+		{
+			name: "a Windows build path",
+			path: `C:\build\acme\internal\billing\ledger.go`,
+			want: "ledger.go",
+		},
+		{
+			name: "already a base name",
+			path: "hot.go",
+			want: "hot.go",
+		},
+		{
+			name: "no source file at all",
+			path: "",
+			want: "",
+		},
+		{
+			name: "a path that is nothing but a separator",
+			path: "/",
+			want: "",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			buf := &Buffer{}
+			rep := newTraceReporter(buf)
+			trace := traceWithSourceFile("main.(*Server).handleCharge", c.path)
+			if err := rep.ReportTraceEvent(trace, &samples.TraceEventMeta{Value: 1, PID: 7}); err != nil {
+				t.Fatal(err)
+			}
+
+			got := buf.Samples()[0].Frames[0]
+			if got.File != c.want {
+				t.Errorf("File = %q, want %q", got.File, c.want)
+			}
+			if strings.ContainsAny(got.File, `/\`) {
+				t.Errorf("File %q still carries a directory; the build machine's path must not reach the buffer", got.File)
+			}
+			// The line number stays: it is a bare integer and says nothing
+			// about the machine that compiled the binary.
+			if got.Line != 412 {
+				t.Errorf("Line = %d, want 412", got.Line)
+			}
+		})
+	}
+}
