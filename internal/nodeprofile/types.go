@@ -16,6 +16,11 @@ import "sync"
 // Frame is one symbolized stack frame, decoupled from the upstream profiler
 // types so the filter and serializer stay testable and stable. Function and
 // File are the symbol identity that MUST NOT leave the node before filtering.
+//
+// File is a base name — "server.go", never a directory (ADR 0041). The
+// reporter cuts it at the seam, so the compiler-recorded path, which on a
+// binary built without -trimpath is the build machine's absolute path, is never
+// held here at all.
 type Frame struct {
 	Function string
 	File     string

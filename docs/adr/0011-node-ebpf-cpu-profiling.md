@@ -4,7 +4,7 @@ Date: 2026-08-11
 
 Status: Accepted
 Amends: 0009, 0010
-Amended by: 0022, 0023, 0025, 0039
+Amended by: 0022, 0023, 0025, 0039, 0041
 
 Extends the node role of 0009 and the node→controller channel of 0010; scopes a
 narrow, config-bounded exception to 0010 §1's "one level down" reply discipline

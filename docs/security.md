@@ -497,26 +497,33 @@ controller cannot reach past them, however hostile — and the symbol allow-list
 is the load-bearing one: it is the reason a stack trace is defensible to ship at
 all, and it is enforced on the node from a file your Helm release owns.
 
-**Two things get past the allow-list today, and they are gaps rather than
-design** (ADR 0039; the fix is a separate change and will carry its own
-decision record):
+**What the allow-list bounds is dependencies, not your own code** (ADR 0041).
+Your `main` package is kept without consulting it, and so is any module whose
+path has no dot in its first segment — `module acmecorp` rather than
+`module github.com/acme/…`. That is deliberate: a public Go module path must
+begin with a domain or it could not be fetched, so "no domain" means the
+standard library or code you did not publish, and you installed the profiler to
+see the latter.
 
-- **The workload's own `main` package is kept unconditionally**, before the
-  allow-list is consulted, along with any module whose path has no dot in its
-  first segment — `module acmecorp` rather than `module github.com/acme/…`. The
-  code treats "no domain" as "standard library or runtime, carries no structure
-  of your code"; for `main` that is wrong, since a Go service's handlers, jobs
-  and business functions live there. So `main.(*Server).handleCharge` ships even
-  with an empty allow-list.
-- **Source file paths and line numbers ship alongside function names.** The
-  filter classifies a frame on its function and never inspects its file, and the
-  file is written into the pprof as `Function.Filename`. In a binary built
-  without `-trimpath` — the Go default — that path carries the build machine's
-  directory layout and often an internal VCS hostname.
+The alternative was to make you list your own module paths before your own hot
+functions appeared, which is the second list ADR 0025 removed — profiling scope
+is collection scope, and what you exclude, you exclude with namespace filters
+and opt-out annotations
+([§11](#11-your-controls-and-what-the-agent-says-about-itself)), not here.
 
-Until both are closed, treat the allow-list as bounding *dependency and
-third-party* frames, which it does exactly, and not as bounding your own
-application's identifiers.
+This does not widen what a hostile controller could extract. Profiling targets
+come from the controller's already-filtered pod index, so it can only aim at
+workloads your filters admitted; keeping `main` exposes the function names of
+those workloads and nothing else, which is what the profile is.
+
+**Source paths do not leave the node.** A frame carries the file's *base name*
+only — `server.go`, never a directory — and the base name is taken at the point
+the profiler hands the frame over, so the full path is never held anywhere in
+the agent. This matters because a Go binary built without `-trimpath`, which is
+the default, records the absolute path of the machine that compiled it: without
+this, a profile would carry your CI workspace, your internal VCS hostname and
+the layout of your source tree. Line numbers are kept; they say nothing about
+that machine.
 
 ---
 
@@ -764,23 +771,25 @@ ServiceAccount, stays in the agent's log and is never part of a payload.
 ### Profile filtering (applies on the node, before egress — ADR 0011)
 
 - Stack frames are filtered by Go module path on the node that captured them.
-  The policy has three parts: frames whose module path is on **your client
-  allow-list** are kept; **standard-library and `runtime` frames are always
-  kept** (they carry no structure of your code and make a profile readable);
-  **third-party dependency frames are governed by config and dropped by
-  default.** Everything else (Kubernetes components, service meshes,
-  observability stacks, this agent itself) is dropped. Only the kept frames and
-  an aggregate count of what was dropped leave the node — never the identities
-  of dropped functions.
-- **Two exemptions to that policy, stated because they are not obvious from it**
-  (ADR 0039, and see the discussion in
-  [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011)): the always-kept
-  class is implemented as "module path with no dot in its first segment", which
-  admits **your own `main` package** and any module named without a domain; and
-  each kept frame carries its **source file path and line number**, which the
-  filter does not examine. Both are being closed; until then, a shipped profile
-  can name your application's own functions and the file paths they were
-  compiled from, regardless of the allow-list.
+  The policy has three parts: **your own code is kept** — the standard library
+  and `runtime`, your `main` package, and any module declared without a domain
+  in its path, since a public module path must begin with one; frames whose
+  module path is on **your client allow-list** are kept; **third-party
+  dependency frames are governed by config and dropped by default.** Everything
+  else (Kubernetes components, service meshes, observability stacks, this agent
+  itself) is dropped. Only the kept frames and an aggregate count of what was
+  dropped leave the node — never the identities of dropped functions.
+- So the allow-list is what bounds **dependencies**, not your own identifiers
+  (ADR 0041). What you exclude from collection entirely, you exclude with
+  namespace filters and opt-out annotations, and profiling scope follows
+  collection scope — there is no second list here
+  ([§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011), ADR 0025).
+- A kept frame carries its **source file's base name and line number** —
+  `server.go`, never a directory. The base name is taken where the profiler
+  hands the frame over, so the compiler-recorded path never enters the agent at
+  all. Without that, a binary built without `-trimpath` (the Go default) would
+  ship the absolute path of the machine that compiled it: CI workspace,
+  internal VCS hostname, the layout of your source tree.
 - eBPF profiles are **validated on the node before they are queued to leave**: a
   profile is shipped only if it parses, carries a `cpu`/`nanoseconds` sample
   type, and has a service (non-`runtime.*`) function in its top. A profile that

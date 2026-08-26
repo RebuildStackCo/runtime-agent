@@ -2,6 +2,7 @@ package nodeprofile
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/pprof/profile"
@@ -66,6 +67,42 @@ func TestValidateRejectsBadProfiles(t *testing.T) {
 	for name, data := range cases {
 		if err := Validate(data); err == nil || !errors.Is(err, ErrInvalidProfile) {
 			t.Errorf("%s: expected ErrInvalidProfile, got %v", name, err)
+		}
+	}
+}
+
+// TestNoShippedFunctionCarriesADirectory asserts the property on the bytes that
+// actually leave the node, not on the struct that produced them (ADR 0041).
+//
+// The reporter is what cuts the path, and the reporter is one package away from
+// the serializer. Asserting only there would let a later change reintroduce a
+// full path by any other route — a second producer of Frames, a field copied
+// somewhere new — and this test would still be the thing that catches it,
+// because it reads the shipped profile.
+func TestNoShippedFunctionCarriesADirectory(t *testing.T) {
+	// Frames as they exist after the reporter: base names only.
+	data, err := Serialize([]Sample{{
+		Value: 4,
+		Frames: []Frame{
+			{Function: "main.(*Server).handleCharge", File: "server.go", Line: 412, Kind: "native"},
+			{Function: "github.com/acme/app/billing.Apply", File: "ledger.go", Line: 88, Kind: "native"},
+			{Function: "runtime.mallocgc", File: "malloc.go", Line: 1000, Kind: "native"},
+		},
+	}}, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := profile.ParseData(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Function) == 0 {
+		t.Fatal("the profile carries no functions; the assertion below would be vacuous")
+	}
+	for _, fn := range p.Function {
+		if strings.ContainsAny(fn.Filename, `/\`) {
+			t.Errorf("function %q ships filename %q, which names a directory", fn.Name, fn.Filename)
 		}
 	}
 }

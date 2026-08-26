@@ -9,10 +9,16 @@ import "strings"
 // by default): here we KEEP only what we can positively classify as safe and
 // redact the rest, so a new or misclassified frame errs toward not leaving.
 //
-// Policy (decided in the slice-4 plan):
+// What it bounds is dependencies, not the customer's own code (ADR 0041): a
+// module the customer did not publish has no domain in its path, and is kept for
+// the same reason the standard library is — they installed the profiler to see
+// it. The allow-list decides which *domain-bearing* modules may leave.
+//
+// Policy:
 //   - client frames (module path on the allow-list)      -> keep
 //   - standard library / runtime / the workload's own
-//     main package (no domain in the package path)       -> keep
+//     main package / a module declared without a domain
+//     (no domain in the package path)                    -> keep
 //   - kernel frames                                       -> keep (N1: not the
 //     customer's code, and they make a profile readable)
 //   - third-party module frames (a domain, not allowed)  -> redact by default,
@@ -113,18 +119,22 @@ func (f *SymbolFilter) keep(fr Frame, c *FilterCounters) bool {
 	}
 	pkg := packagePath(fr.Function)
 	if !hasDomain(pkg) {
-		// stdlib, runtime, internal/*, the workload's own main package, or a
-		// bare native/kernel symbol.
+		// stdlib, runtime, internal/*, the workload's own main package, a
+		// module declared without a domain, or a bare native/kernel symbol.
 		//
-		// This exemption is wider than it should be, and saying so is the point
-		// of the note (ADR 0039). It is written as "no dot in the first path
-		// segment", which is true of the standard library — those frames carry
-		// no structure of the customer's code — and also true of `main.*` and
-		// of any module declared without a domain, which carry a great deal of
-		// it: handlers, jobs, business functions. Those reach a shipped profile
-		// regardless of the allow-list, including when the allow-list is empty.
-		// Narrowing this is a behaviour change and belongs to its own decision
-		// record; until then docs/security.md §7.2 and §8 name the gap.
+		// This branch is wider than "the standard library", and that is the
+		// decision rather than an oversight (ADR 0041). A public Go module path
+		// has to begin with a domain or it cannot be fetched, so "no domain"
+		// means the standard library or code the customer did not publish —
+		// their `main`, their private modules. Both are what they installed the
+		// profiler to see.
+		//
+		// Gating those behind the allow-list would make a customer enumerate
+		// their own module paths before their own hot functions appeared, which
+		// is the second list ADR 0025 abolished: profiling scope is collection
+		// scope, and workloads are excluded with namespace filters and opt-out
+		// annotations, not here. What the allow-list bounds is the frames of
+		// domain-bearing modules that are not theirs.
 		return true
 	}
 	if f.isAllowed(pkg) {
