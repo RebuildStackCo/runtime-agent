@@ -73,8 +73,19 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-        # Reading root-owned /proc/<pid>/exe requires matching credentials; the
-        # node runs as root and drops every capability but the ones named below.
+        # The one place in this product that asks for root, and it overrides the
+        # image's non-root default to get it (ADR 0037).
+        #
+        # The reason is not that root is convenient. Reading another container's
+        # root-owned /proc/<pid>/exe needs to pass the kernel's ptrace check,
+        # which CAP_SYS_PTRACE satisfies on its own — but a capability granted to
+        # a non-root process does not survive execve unless it is in the ambient
+        # set, and Kubernetes does not populate it. Measured on 1.36: the same
+        # pod with the same capability reads /proc/1/exe as uid 0 and is denied
+        # as uid 65532.
+        #
+        # What bounds this is everything else: zero RBAC, no API token, no
+        # writable host path, every capability dropped but the ones named below.
         runAsUser: 0
         runAsNonRoot: false
       containers:
