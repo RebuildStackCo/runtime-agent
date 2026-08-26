@@ -3,13 +3,10 @@
 package e2e
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"slices"
 	"strings"
@@ -18,10 +15,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -30,8 +25,6 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 )
-
-const controllerManifestPath = "../../deploy/controller.yaml"
 
 // spoolReaderImage is a shell-bearing image loaded into kind as a sidecar in
 // the controller pod: the agent image is distroless (no shell), so the sidecar
@@ -111,15 +104,18 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	// workload (Pod → ReplicaSet → Deployment) — exercising the owner chain.
 	deploySampleWorkload(ctx, t, clientset, ns, sampleImage)
 
-	// The controller: read RBAC, JWKS discovery grant, node-intake receiver, and
-	// a spool with a shell sidecar to read it.
-	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns))
+	// The `inventory` profile: the controller with its read RBAC, JWKS discovery
+	// grant and node-intake receiver, and the node DaemonSet running the scanner.
+	// One install, because that is how a customer gets them — and the endpoints
+	// the node calls are the chart's own, derived from this namespace rather than
+	// assembled by the test.
+	installChart(ctx, t, clientset, ns, agentImage, installOptions{
+		profile:     "inventory",
+		spoolReader: true,
+		values:      map[string]any{"node": map[string]any{"scanInterval": "15s"}},
+	})
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
-
-	// The node DaemonSet, pointed at the controller Service in this namespace.
-	base := fmt.Sprintf("http://runtime-agent-controller.%s.svc.cluster.local:8080", ns)
-	deployNodeDaemonSet(ctx, t, clientset, ns, agentImage, base+"/v1/node-inventory", base+"/v1/node-scope")
 	nodePod := waitDaemonSetPod(ctx, t, clientset, ns)
 	t.Logf("node pod: %s", nodePod)
 
@@ -426,149 +422,6 @@ func deploySampleWorkload(ctx context.Context, t *testing.T, cs kubernetes.Inter
 		t.Fatalf("creating sample deployment: %v", err)
 	}
 	waitDeploymentPod(ctx, t, cs, ns, "goworkload")
-}
-
-// deployController decodes deploy/controller.yaml and applies it into ns. It
-// retargets the namespace, uniquely renames the cluster-scoped RBAC objects (so
-// concurrent runs and cleanup are safe), points them at this run's
-// ServiceAccount, overrides the image, installs configYAML as the ConfigMap for
-// this namespace, and adds the shell sidecar that shares the spool volume so the
-// test can read the payload the controller writes.
-func deployController(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, configYAML string) {
-	t.Helper()
-	deployControllerWithRole(ctx, t, cs, ns, image, configYAML, nil)
-}
-
-// controllerClusterRoleName is the per-run name deployController gives the
-// cluster-scoped role, so a test can narrow the grant it was installed with.
-func controllerClusterRoleName(ns string) string {
-	return "runtime-agent-controller-" + ns
-}
-
-// deployControllerWithRole is deployController with a hook that rewrites the
-// ClusterRole before it is created — the only way to start an agent that was
-// never given a grant, since patching afterwards races the pod's first LIST.
-func deployControllerWithRole(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image, configYAML string, narrow func(*rbacv1.ClusterRole)) {
-	t.Helper()
-	data, err := os.ReadFile(controllerManifestPath)
-	if err != nil {
-		t.Fatalf("reading manifest %s: %v", controllerManifestPath, err)
-	}
-	clusterRoleName := controllerClusterRoleName(ns)
-	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
-	for {
-		doc, err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("reading manifest doc: %v", err)
-		}
-		if strings.TrimSpace(string(doc)) == "" {
-			continue
-		}
-		var tm metav1.TypeMeta
-		if err := k8syaml.Unmarshal(doc, &tm); err != nil {
-			t.Fatalf("decoding doc TypeMeta: %v", err)
-		}
-		switch tm.Kind {
-		case "", "Namespace":
-			// The test manages its own namespace.
-		case "ServiceAccount":
-			var sa corev1.ServiceAccount
-			mustUnmarshal(t, doc, &sa)
-			sa.Namespace = ns
-			create(ctx, t, "ServiceAccount", func() error {
-				_, err := cs.CoreV1().ServiceAccounts(ns).Create(ctx, &sa, metav1.CreateOptions{})
-				return err
-			})
-		case "ClusterRole":
-			var cr rbacv1.ClusterRole
-			mustUnmarshal(t, doc, &cr)
-			cr.Name = clusterRoleName
-			if narrow != nil {
-				narrow(&cr)
-			}
-			create(ctx, t, "ClusterRole", func() error {
-				_, err := cs.RbacV1().ClusterRoles().Create(ctx, &cr, metav1.CreateOptions{})
-				return err
-			})
-			t.Cleanup(func() {
-				delCtx, c := context.WithTimeout(context.Background(), time.Minute)
-				defer c()
-				_ = cs.RbacV1().ClusterRoles().Delete(delCtx, clusterRoleName, metav1.DeleteOptions{})
-			})
-		case "ClusterRoleBinding":
-			var crb rbacv1.ClusterRoleBinding
-			mustUnmarshal(t, doc, &crb)
-			crb.Name = clusterRoleName
-			crb.RoleRef.Name = clusterRoleName
-			for i := range crb.Subjects {
-				crb.Subjects[i].Namespace = ns
-			}
-			create(ctx, t, "ClusterRoleBinding", func() error {
-				_, err := cs.RbacV1().ClusterRoleBindings().Create(ctx, &crb, metav1.CreateOptions{})
-				return err
-			})
-			t.Cleanup(func() {
-				delCtx, c := context.WithTimeout(context.Background(), time.Minute)
-				defer c()
-				_ = cs.RbacV1().ClusterRoleBindings().Delete(delCtx, clusterRoleName, metav1.DeleteOptions{})
-			})
-		case "ConfigMap":
-			var cm corev1.ConfigMap
-			mustUnmarshal(t, doc, &cm)
-			cm.Namespace = ns
-			cm.Data["config.yaml"] = configYAML
-			create(ctx, t, "ConfigMap", func() error {
-				_, err := cs.CoreV1().ConfigMaps(ns).Create(ctx, &cm, metav1.CreateOptions{})
-				return err
-			})
-		case "Service":
-			var svc corev1.Service
-			mustUnmarshal(t, doc, &svc)
-			svc.Namespace = ns
-			create(ctx, t, "Service", func() error {
-				_, err := cs.CoreV1().Services(ns).Create(ctx, &svc, metav1.CreateOptions{})
-				return err
-			})
-		case "Deployment":
-			var dep appsv1.Deployment
-			mustUnmarshal(t, doc, &dep)
-			dep.Namespace = ns
-			c := &dep.Spec.Template.Spec.Containers[0]
-			c.Image = image
-			c.ImagePullPolicy = corev1.PullNever
-			// Add the shell sidecar sharing the spool volume (read-only), so the
-			// test can cat the payload the distroless controller cannot serve.
-			dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers, corev1.Container{
-				Name:            "spool-reader",
-				Image:           spoolReaderImage(),
-				ImagePullPolicy: corev1.PullNever,
-				Command:         []string{"sleep", "86400"},
-				VolumeMounts: []corev1.VolumeMount{{
-					Name: "spool", MountPath: "/var/spool/runtime-agent", ReadOnly: true,
-				}},
-			})
-			create(ctx, t, "Deployment", func() error {
-				_, err := cs.AppsV1().Deployments(ns).Create(ctx, &dep, metav1.CreateOptions{})
-				return err
-			})
-		default:
-			t.Fatalf("unexpected manifest kind %q", tm.Kind)
-		}
-	}
-}
-
-func renderControllerConfig(ns string) string {
-	return fmt.Sprintf(`spool:
-  dir: /var/spool/runtime-agent
-nodeIntake:
-  enabled: true
-  listenAddress: ":8080"
-  audience: rebuildstack-controller
-  expectedSubject: "system:serviceaccount:%s:runtime-agent-node"
-`, ns)
 }
 
 func mustUnmarshal(t *testing.T, doc []byte, into any) {

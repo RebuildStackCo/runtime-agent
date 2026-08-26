@@ -93,3 +93,4 @@ line to paste.
 - [0033. A permission the agent was not given degrades one payload, and says so](0033-policy-sources-degrade.md)
 - [0034. The restart counter is shipped as a reading, so the day-one history is not lost](0034-restart-counter-readings.md)
 - [0035. A cache that stopped being fed is noticed: gating caches stop the agent, the rest degrade their payload](0035-watch-failures-are-noticed.md)
+- [0036. The Helm chart is the only installer, and the install profile is the only switch](0036-chart-is-the-only-installer.md)

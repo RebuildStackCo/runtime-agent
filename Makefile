@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e
+.PHONY: build test lint chart-lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -27,6 +27,12 @@ test: ## Run all tests with the race detector, and type-check the e2e-tagged one
 
 lint: ## Run golangci-lint
 	golangci-lint run
+
+chart-lint: ## Lint the Helm chart with the helm CLI, once per install profile
+	go tool helm lint charts/runtime-agent --set profile=metrics-only
+	go tool helm lint charts/runtime-agent --set profile=inventory
+	go tool helm lint charts/runtime-agent \
+		--set profile=ebpf --set profiling.allowedModulePrefixes={example.com/app}
 
 tidy: ## Sync go.mod/go.sum
 	go mod tidy

@@ -1,0 +1,59 @@
+{{- include "runtime-agent.validate" . -}}
+# The controller's configuration. Read once at startup and never reconfigured
+# remotely (ADR 0001), so this rendered file is the whole of what the agent was
+# told to do.
+#
+# The agent parses it strictly: a key it does not know is a startup error rather
+# than a setting silently ignored. charts/runtime-agent/render_test.go feeds this
+# rendered text to the agent's own parser, so a chart that would fail at startup
+# fails in CI instead.
+#
+# Numeric fields are written only when set, because their defaults live in the
+# agent (internal/config) and a value repeated here would eventually disagree
+# with it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "runtime-agent.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+data:
+  config.yaml: |
+    filters:
+      namespaces:
+        allow:
+          {{- if .Values.filters.namespaces.allow }}
+          {{- toYaml .Values.filters.namespaces.allow | nindent 10 }}
+          {{- else }} []
+          {{- end }}
+        deny:
+          {{- if .Values.filters.namespaces.deny }}
+          {{- toYaml .Values.filters.namespaces.deny | nindent 10 }}
+          {{- else }} []
+          {{- end }}
+    spool:
+      dir: /var/spool/runtime-agent
+      {{- if .Values.spool.maxAgeHours }}
+      maxAgeHours: {{ .Values.spool.maxAgeHours }}
+      {{- end }}
+    nodeIntake:
+      {{- if include "runtime-agent.nodeEnabled" . }}
+      enabled: true
+      listenAddress: ":8080"
+      audience: {{ .Values.nodeIntake.audience | quote }}
+      expectedSubject: {{ include "runtime-agent.nodeSubject" . | quote }}
+      {{- else }}
+      # No node DaemonSet in this profile, so the receiver opens no port.
+      enabled: false
+      {{- end }}
+    profiling:
+      {{- if include "runtime-agent.ebpfEnabled" . }}
+      enabled: true
+      {{- if .Values.profiling.topN }}
+      topN: {{ .Values.profiling.topN }}
+      {{- end }}
+      {{- else }}
+      enabled: false
+      {{- end }}

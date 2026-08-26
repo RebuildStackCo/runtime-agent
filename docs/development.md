@@ -65,9 +65,21 @@ A PR is mergeable when:
   commutative, and merging N partial rollups must equal computing one rollup
   over the union. These properties are tested with generated inputs, not
   hand-picked examples — mergeability is what the whole data model rests on.
-- **End-to-end on kind.** The agent runs against a local kind cluster with
-  synthetic workloads; assertions are made on the spool contents, not on
-  logs. The kind node-image matrix pins the oldest supported Kubernetes
+- **The chart's rendered output is asserted, not reviewed.**
+  `internal/chartrender/chart_test.go` renders every install profile and checks
+  the promises `docs/security.md` makes about an installation: no write verb in
+  the ClusterRole, every cache the agent opens granted, the node bound to
+  nothing and holding no API token, no privileged container, exactly the
+  capabilities each profile claims, every host mount read-only, the spool an
+  emptyDir. It also feeds the rendered configuration to the agent's own strict
+  parser, so a chart that would CrashLoop at startup fails here instead
+  (ADR 0036). `make chart-lint` adds the helm CLI's own opinion, per profile.
+- **End-to-end on kind installs the chart.** The agent runs against a local kind
+  cluster with synthetic workloads; assertions are made on the spool contents,
+  not on logs. The suites install `charts/runtime-agent` rather than a copy of
+  its output, so a broken template fails in the same run as broken code — which
+  is the whole reason the raw manifests were deleted rather than kept as a
+  reference. The kind node-image matrix pins the oldest supported Kubernetes
   minor (see the README support policy) and a current release.
 - **The stability check takes a week and cannot be a CI gate.** kind proves the
   mechanism on a cluster we populated ourselves. It cannot show whether a week of
@@ -100,6 +112,8 @@ Every push and PR runs (`.github/workflows/ci.yml`):
 - **Secret scan** (gitleaks) — nothing that looks like a credential enters
   history.
 - With the Go scaffolding: `go build`, `go test`, `golangci-lint`.
+- **`make chart-lint`** — the Helm chart, once per install profile. helm is
+  wired as a Go tool (like kind), so nothing needs installing separately.
 - With the protobuf schema: `buf lint` and **`buf breaking`** against `main` —
   the N-2 compatibility promise in `backend-requirements.md` §6 is enforced
   mechanically, not by review vigilance.

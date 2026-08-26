@@ -52,10 +52,9 @@ func TestAnAgentDeniedAGatingPermissionStopsInsteadOfWaitingForever(t *testing.T
 	ns := fmt.Sprintf("runtime-agent-watch-deny-e2e-%d", os.Getpid())
 	createNamespace(ctx, t, clientset, ns)
 
-	deployControllerWithRole(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns),
-		func(cr *rbacv1.ClusterRole) {
-			removeResource(cr, "", "pods")
-		})
+	installChart(ctx, t, clientset, ns, agentImage, installOptions{
+		narrowRole: func(cr *rbacv1.ClusterRole) { removeResource(cr, "", "pods") },
+	})
 	pod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s (installed without the pods grant)", pod)
 
@@ -101,7 +100,7 @@ func TestAPermissionRevokedFromTheRunningAgentReachesThePayload(t *testing.T) {
 	createNamespace(ctx, t, clientset, fixtureNS)
 	createBudgetFixture(ctx, t, clientset, fixtureNS)
 
-	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns))
+	deployController(ctx, t, clientset, ns, agentImage)
 	pod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", pod)
 

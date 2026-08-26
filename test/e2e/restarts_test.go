@@ -58,7 +58,7 @@ func TestContainerRestartsEndToEnd(t *testing.T) {
 		_ = clientset.CoreV1().Namespaces().Delete(cleanupCtx, ns, metav1.DeleteOptions{})
 	})
 
-	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns))
+	deployController(ctx, t, clientset, ns, agentImage)
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
 
@@ -148,7 +148,7 @@ func TestRestartCountersCarryTheHistoryTheAgentDidNotWatch(t *testing.T) {
 	priorRestarts := waitForRestartCount(ctx, t, clientset, ns, 2)
 	t.Logf("the workload restarted %d times before the agent existed", priorRestarts)
 
-	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns))
+	deployController(ctx, t, clientset, ns, agentImage)
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
 

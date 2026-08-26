@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "runtime-agent values",
+  "description": "Strict: an unknown key is an error, for the same reason the agent's own config parser is strict — a typo must not silently disable a filter.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["profile", "image", "filters", "spool", "nodeIntake", "profiling", "controller", "node"],
+  "properties": {
+    "profile": {
+      "description": "Which installation profile to install: metrics-only, inventory or ebpf. The accepted set is not repeated as an enum here — the template validates it, so one place decides and the refusal can explain itself (notably for `pprof`, which docs/security.md marks [planned]).",
+      "type": "string",
+      "minLength": 1
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespaces"],
+      "properties": {
+        "namespaces": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allow": {"type": "array", "items": {"type": "string"}},
+            "deny": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "spool": {
+      "description": "No persistence setting exists: the spool is always an emptyDir (ADR 0026).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAgeHours": {"type": "integer", "minimum": 0}
+      }
+    },
+    "nodeIntake": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "audience": {"type": "string", "minLength": 1}
+      }
+    },
+    "profiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "topN": {"type": "integer", "minimum": 0},
+        "allowedModulePrefixes": {
+          "description": "Required non-empty by profile `ebpf`; the chart refuses to render an empty allow-list with the profiler on.",
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "thirdPartySymbols": {"type": "string", "enum": ["", "drop", "keep"]},
+        "captureDurationSeconds": {"type": "integer", "minimum": 0},
+        "intervalSeconds": {"type": "integer", "minimum": 0},
+        "overheadCeilingPercent": {"type": "integer", "minimum": 0, "maximum": 100}
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resources": {"type": "object"},
+        "nodeSelector": {"type": "object"},
+        "tolerations": {"type": "array", "items": {"type": "object"}},
+        "affinity": {"type": "object"},
+        "podAnnotations": {"type": "object"},
+        "podLabels": {"type": "object"}
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scanInterval": {"type": "string", "minLength": 1},
+        "resources": {"type": "object"},
+        "nodeSelector": {"type": "object"},
+        "tolerations": {"type": "array", "items": {"type": "object"}},
+        "affinity": {"type": "object"},
+        "podAnnotations": {"type": "object"},
+        "podLabels": {"type": "object"}
+      }
+    }
+  }
+}

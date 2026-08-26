@@ -1,0 +1,39 @@
+{{- include "runtime-agent.validate" . -}}
+{{- if include "runtime-agent.ebpfEnabled" . }}
+# The node's half of the profiling policy.
+#
+# Its schema is deliberately narrower than the controller's and holds only what
+# the node enforces on its own samples: the symbol allow-list that decides what
+# may leave this node, and the ceilings on what profiling costs it (ADR 0025).
+# The agent parses it strictly, so a controller-only setting placed here stops
+# the node at startup rather than being parsed and ignored — which is what it
+# used to do.
+#
+# Which workloads get profiled is configured neither here nor anywhere else: it
+# is which workloads are collected, from the controller's filters.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "runtime-agent.nodeName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runtime-agent.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+data:
+  config.yaml: |
+    profiling:
+      allowedModulePrefixes:
+        {{- toYaml .Values.profiling.allowedModulePrefixes | nindent 8 }}
+      {{- with .Values.profiling.thirdPartySymbols }}
+      thirdPartySymbols: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.profiling.captureDurationSeconds }}
+      captureDurationSeconds: {{ . }}
+      {{- end }}
+      {{- with .Values.profiling.intervalSeconds }}
+      intervalSeconds: {{ . }}
+      {{- end }}
+      {{- with .Values.profiling.overheadCeilingPercent }}
+      overheadCeilingPercent: {{ . }}
+      {{- end }}
+{{- end }}

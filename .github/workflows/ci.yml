@@ -37,6 +37,10 @@ jobs:
       # run above; type-check them here so a changed signature cannot rot there
       # unnoticed. They still only execute against a kind cluster.
       - run: go vet -tags e2e ./...
+      # The chart is the only installer, so `helm lint` runs on every profile a
+      # customer can choose. The rendered output is asserted by the Go tests
+      # above; this is the CLI's own opinion of the chart (ADR 0036).
+      - run: make chart-lint
 
   lint:
     name: Lint (golangci-lint)

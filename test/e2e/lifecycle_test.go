@@ -59,7 +59,7 @@ func TestPodLifecycleEndToEnd(t *testing.T) {
 		_ = clientset.CoreV1().Namespaces().Delete(cleanupCtx, ns, metav1.DeleteOptions{})
 	})
 
-	deployController(ctx, t, clientset, ns, agentImage, renderControllerConfig(ns))
+	deployController(ctx, t, clientset, ns, agentImage)
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
 

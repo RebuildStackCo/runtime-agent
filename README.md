@@ -6,10 +6,11 @@ ships them — strictly one-way — to the RebuildStack backend for efficiency
 analysis. All analysis happens outside the cluster: the agent's intelligence is
 data reduction, not judgment.
 
-> **Status: early development.** No releases yet, and two designed pieces are
-> not built — the backend transport (payloads are written to a local spool and
-> go no further) and the Helm chart (`deploy/` holds raw manifests for the
-> end-to-end tests). [`docs/security.md`](docs/security.md) marks every claim
+> **Status: early development.** No releases yet, and one designed piece is not
+> built — the backend transport, so payloads are written to a local spool and go
+> no further. Installation is a Helm chart
+> ([`charts/runtime-agent`](charts/runtime-agent)), which is what the end-to-end
+> tests install. [`docs/security.md`](docs/security.md) marks every claim
 > that is not yet built `[planned]`, so a reader can tell a promise from a
 > property.
 

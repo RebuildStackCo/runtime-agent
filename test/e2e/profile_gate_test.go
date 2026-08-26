@@ -4,12 +4,9 @@ package e2e
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"testing"
@@ -18,12 +15,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
-	k8syaml "sigs.k8s.io/yaml"
 )
-
-const nodeEBPFManifestPath = "../../deploy/node-daemonset-ebpf.yaml"
 
 // TestEBPFGateRefusesGracefully is the gate-refusal e2e that runs anywhere,
 // including kind on Docker Desktop / linuxkit where the kernel has no BTF. It
@@ -55,7 +48,7 @@ func TestEBPFGateRefusesGracefully(t *testing.T) {
 		_ = clientset.CoreV1().Namespaces().Delete(cleanupCtx, ns, metav1.DeleteOptions{})
 	})
 
-	deployNodeDaemonSetEBPF(ctx, t, clientset, ns, agentImage)
+	deployNodeEBPFLogOnly(ctx, t, clientset, ns, agentImage)
 	pod := waitDaemonSetPod(ctx, t, clientset, ns)
 
 	// This test asserts the graceful *refusal* path (a node that grants the eBPF
@@ -143,76 +136,27 @@ func ebpfGateLog(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns,
 	return refused, coverage, ready
 }
 
-// deployNodeDaemonSetEBPF applies the `ebpf` variant manifest into ns: its
-// ServiceAccount, its profiling ConfigMap, and its DaemonSet, overriding only the
-// namespace, the image, the pull policy, and the args. It runs the profiler in
-// log-only mode (no endpoints) — on a no-BTF node the gate refuses before any
-// query or ship would happen anyway.
-func deployNodeDaemonSetEBPF(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image string) {
+// deployNodeEBPFLogOnly installs the node half of the `ebpf` profile with no
+// controller and no endpoints.
+//
+// The gate refuses before any query or ship would happen on a node without BTF,
+// so wiring the endpoints would add nothing to observe. What is under test is
+// the chart's own eBPF wiring: the two capabilities, the /sys/kernel mount and
+// the profiling config it renders.
+func deployNodeEBPFLogOnly(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, image string) {
 	t.Helper()
-	data, err := os.ReadFile(nodeEBPFManifestPath)
-	if err != nil {
-		t.Fatalf("reading manifest %s: %v", nodeEBPFManifestPath, err)
-	}
-	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
-	for {
-		doc, err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("reading manifest doc: %v", err)
-		}
-		if strings.TrimSpace(string(doc)) == "" {
-			continue
-		}
-		var tm metav1.TypeMeta
-		if err := k8syaml.Unmarshal(doc, &tm); err != nil {
-			t.Fatalf("decoding doc TypeMeta: %v", err)
-		}
-		switch tm.Kind {
-		case "":
-			continue // comment-only section
-		case "Namespace":
-			// The test manages its own namespace.
-		case "ServiceAccount":
-			var sa corev1.ServiceAccount
-			if err := k8syaml.Unmarshal(doc, &sa); err != nil {
-				t.Fatalf("decoding ServiceAccount: %v", err)
-			}
-			sa.Namespace = ns
-			if _, err := cs.CoreV1().ServiceAccounts(ns).Create(ctx, &sa, metav1.CreateOptions{}); err != nil {
-				t.Fatalf("creating ServiceAccount: %v", err)
-			}
-		case "ConfigMap":
-			var cm corev1.ConfigMap
-			if err := k8syaml.Unmarshal(doc, &cm); err != nil {
-				t.Fatalf("decoding ConfigMap: %v", err)
-			}
-			cm.Namespace = ns
-			if _, err := cs.CoreV1().ConfigMaps(ns).Create(ctx, &cm, metav1.CreateOptions{}); err != nil {
-				t.Fatalf("creating ConfigMap: %v", err)
-			}
-		case "DaemonSet":
-			var ds appsv1.DaemonSet
-			if err := k8syaml.Unmarshal(doc, &ds); err != nil {
-				t.Fatalf("decoding DaemonSet: %v", err)
-			}
-			ds.Namespace = ns
-			c := &ds.Spec.Template.Spec.Containers[0]
-			c.Image = image
-			c.ImagePullPolicy = corev1.PullNever
-			// Log-only: keep the eBPF gate and the config, drop the controller
-			// endpoints; shorten the interval so the scanner logs a pass quickly.
-			c.Args = []string{
-				"node", "-proc", "/host/proc", "-interval", "15s",
-				"-enable-ebpf", "-config", "/etc/runtime-agent/config.yaml", "-sys", "/sys",
-			}
-			if _, err := cs.AppsV1().DaemonSets(ns).Create(ctx, &ds, metav1.CreateOptions{}); err != nil {
-				t.Fatalf("creating DaemonSet: %v", err)
-			}
-		default:
-			t.Fatalf("unexpected manifest kind %q", tm.Kind)
-		}
-	}
+	installChart(ctx, t, cs, ns, image, installOptions{
+		profile:        "ebpf",
+		skipController: true,
+		values: map[string]any{
+			"node": map[string]any{"scanInterval": "15s"},
+			"profiling": map[string]any{
+				"allowedModulePrefixes": []any{sampleModulePath},
+			},
+		},
+		mutateNode: func(ds *appsv1.DaemonSet) {
+			setNodeArgs(ds, "node", "-proc", "/host/proc", "-interval", "15s",
+				"-enable-ebpf", "-config", "/etc/runtime-agent/config.yaml", "-sys", "/sys")
+		},
+	})
 }
