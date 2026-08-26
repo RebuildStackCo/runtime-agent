@@ -106,3 +106,40 @@ func TestNoShippedFunctionCarriesADirectory(t *testing.T) {
 		}
 	}
 }
+
+// TestFilesOfTheSameNameInDifferentPackagesStayDistinct pins what makes the
+// base name sufficient (ADR 0041).
+//
+// An application with three files called server.go is the obvious objection to
+// shipping base names, and the answer is that a symbolized Go function name
+// carries its package path — and a Go package is a directory, so two files of
+// the same name cannot share one. Package path plus base name identifies the
+// file exactly; what was removed is only the prefix before the package path,
+// which is the build machine's part.
+//
+// If the serializer's dedup key ever narrows to the function name alone, this
+// stops being true and the base name starts losing information.
+func TestFilesOfTheSameNameInDifferentPackagesStayDistinct(t *testing.T) {
+	data, err := Serialize([]Sample{{Value: 4, Frames: []Frame{
+		{Function: "github.com/acme/app/api.(*Server).Serve", File: "server.go", Line: 41, Kind: "native"},
+		{Function: "github.com/acme/app/grpc.(*Server).Serve", File: "server.go", Line: 77, Kind: "native"},
+		{Function: "github.com/acme/app/internal/admin.(*Server).Serve", File: "server.go", Line: 12, Kind: "native"},
+	}}}, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := profile.ParseData(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Function) != 3 {
+		t.Fatalf("three same-named files in three packages produced %d functions, want 3", len(p.Function))
+	}
+	seen := map[string]bool{}
+	for _, fn := range p.Function {
+		if seen[fn.Name] {
+			t.Errorf("function %q appears twice", fn.Name)
+		}
+		seen[fn.Name] = true
+	}
+}

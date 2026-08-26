@@ -114,10 +114,26 @@ own functions — with no second list to maintain and no support ticket asking
 why half the stack is redacted. The allow-list now does one job and the document
 describes that job.
 
-**Harder / given up.** A shipped profile no longer says which directory a
-function came from. For a flame graph that is not a loss worth naming; for
-anyone who wanted to map a profile back onto a source tree by absolute path, it
-is. That mapping was never something to offer — it worked only because the
+**Harder / given up.** Less than it first appears, and the reason is worth
+recording because "three of my files are called `server.go`" is the obvious
+objection.
+
+For Go frames nothing is lost. A symbolized Go function name carries its full
+package path, and a Go package is a directory, so two files of the same name
+cannot share one. `github.com/acme/app/api.(*Server).Serve` plus `server.go`
+identifies the file exactly, and three `server.go` in three packages stay three
+distinct `Function` entries in the shipped profile — measured, not assumed. What
+the base name removes is only the prefix *before* the package path, which is
+precisely the build machine's part of it.
+
+What is genuinely lost is for frames whose name carries no package path — bare
+native symbols from libc or the kernel. There the base name is the only file
+hint and can now collide with an unrelated one. Those frames are not the
+customer's code: unsymbolized frames are redacted anyway, and kernel frames are
+kept for readability rather than for their filenames.
+
+Anyone who wanted to map a profile back onto a source tree by absolute path
+loses that. It was never something to offer — it worked only because the
 customer's build machine was leaking into their telemetry.
 
 The base name is a reduction, not a redaction: a filename is still a string the
