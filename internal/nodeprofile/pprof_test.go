@@ -115,10 +115,13 @@ func TestNoShippedFunctionCarriesADirectory(t *testing.T) {
 // carries its package path — and a Go package is a directory, so two files of
 // the same name cannot share one. Package path plus base name identifies the
 // file exactly; what was removed is only the prefix before the package path,
-// which is the build machine's part.
+// which is the build machine's part. A consumer that rejoins the two gets what
+// `go build -trimpath` would have recorded in the first place.
 //
-// If the serializer's dedup key ever narrows to the function name alone, this
-// stops being true and the base name starts losing information.
+// What that rests on is the serializer keying a function on its *name* and not
+// on its file alone. Were the key ever narrowed to the file, these three frames
+// would collapse into one entry and the base name really would be losing
+// information — which is the case this test exists to catch.
 func TestFilesOfTheSameNameInDifferentPackagesStayDistinct(t *testing.T) {
 	data, err := Serialize([]Sample{{Value: 4, Frames: []Frame{
 		{Function: "github.com/acme/app/api.(*Server).Serve", File: "server.go", Line: 41, Kind: "native"},
