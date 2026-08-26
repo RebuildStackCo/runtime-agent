@@ -25,9 +25,15 @@ the designed system:
    Kubernetes resource except `get`/`update` on its own pre-created identity
    Secret, scoped by `resourceNames` to that single object — the product's only
    write grant, disclosed in the RBAC table of [§4](#4-kubernetes-api-access-rbac)
-   and decided in [ADR 0008](adr/0008-identity-in-secret.md). It cannot modify
-   workloads, nodes, or configuration. **[planned]** — no manifest emits that
-   Role today.
+   and decided in [ADR 0008](adr/0008-identity-in-secret.md). **[planned]** — no
+   manifest emits that Role today.
+
+   The verb list is the claim; "therefore it cannot change anything" is not, and
+   this document used to draw that inference. One grant reaches past it:
+   `get` on `nodes/proxy` is what the kubelet answers `exec` on, and §4 and
+   [§9](#9-what-the-agent-does-not-request) now say so. What bounds it is a
+   property of this code rather than of the grant
+   ([ADR 0039](adr/0039-stated-limits-are-measured-limits.md)).
 2. **One-way data flow.** The agent pushes data out; there is no command or
    control channel from the backend to the agent. The backend cannot instruct
    the agent to do anything. All behavior is defined by the in-cluster
@@ -36,7 +42,13 @@ the designed system:
    corresponding access. Nothing is requested "just in case."
 4. **Filter as early as possible.** "Not collected" is better than "collected
    and discarded," which is better than "collected and not sent." For each
-   filter, this document states the stage at which it applies.
+   filter, this document states the stage at which it applies — including where
+   the principle is not achieved. The binary scanner reaches it: a pod's cgroup
+   decides scope before its executable is opened, so an excluded pod's build
+   info is never extracted. The eBPF profiler does not and cannot: perf sampling
+   attaches to the node, not to a process set, so its frames are captured first
+   and filtered after ([§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011),
+   [§10.2](#102-node-level-visibility-cannot-be-namespace-scoped)).
 5. **Single egress point.** Only the controller communicates outside the
    cluster, to one fixed domain, over mTLS **[planned]**. Node-level components
    never talk to the internet — that part holds today: the node role opens no
@@ -127,7 +139,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `limitranges`, `resourcequotas` | get/list/watch | Distinguish a request a team chose from one the namespace supplied on their behalf, and report the ceiling a namespace sits under and how much of it is spent (ADR 0032). Read only for namespaces that pass your filters |
 | `persistentvolumeclaims`, `storageclasses` | get/list/watch | A bound claim on a zonal volume pins its pod to that zone, which no field of the pod spec states (ADR 0032). A StorageClass's `parameters` are **not** read — that is the one field here carrying provider configuration (endpoints, key identifiers); what is read is how the class behaves: provisioner, reclaim policy, `volumeBindingMode`, expansion |
 | `priorityclasses` | get/list/watch | The value and preemption policy behind the `priorityClassName` already collected in the placement block ([ADR 0031](adr/0031-placement-constraints-are-reduced.md)), and the explanation for preemptions already reported in `pod_disruptions` |
-| `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
+| `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure — this is the widest grant in the table, and `get` understates it.** The kubelet serves `/exec/{ns}/{pod}/{container}`, `/attach/…` and `/portForward/…` over **GET**, so this verb permits command execution in any container in the cluster, as well as `/containerLogs/…`, which routinely carries credentials. It is the grant that makes "the agent cannot change your workloads" untrue as an inference from the verb list ([§1](#1-design-principles), [ADR 0039](adr/0039-stated-limits-are-measured-limits.md)). What bounds it is the code, not the grant, and the bound is auditable: exactly two call sites exist in the whole repository, both `GET`, both the stats paths above, both in one poll loop. Withholding this grant costs usage collection: the agent keeps running, but — unlike the policy caches described below — the absence is a log line per node per poll rather than a declared `unavailable_sources` entry, so a payload with no usage in it does not say why |
 | its own identity Secret **[planned]** | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret |
 
 **The controller runs as a non-root user.** It reads the API, polls kubelets
@@ -202,7 +214,7 @@ read, never a write.
 | Pod pprof endpoints **[planned]** | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only. Not built: the agent opens no connection to a pod today |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress **[planned]** | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system, and it does not exist yet: the controller writes payloads to its local spool and ships nothing. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets ships with the chart **[planned]** — the chart exists ([`charts/runtime-agent`](../charts/runtime-agent)), the policy does not |
-| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings and captured profiles for aggregation (ADR 0010, ADR 0011), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only. The **scope** query answers from the controller's already-filtered pod index, so it can only narrow what the node scans — it cannot name a pod your filters exclude. The **profiling-target** query is the one reply the node acts on; see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011) for what bounds it. The receiver is not reachable from outside the cluster; a NetworkPolicy restricting it to the DaemonSet ships with the chart **[planned]**. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster; a party that can already sniff pod traffic could replay the short-lived token to post fabricated inventory facts for this one cluster — bounded, one-way, no read or control capability (ADR 0010) |
+| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings and captured profiles for aggregation (ADR 0010, ADR 0011), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only. The **scope** query answers from the controller's already-filtered pod index, so it can only narrow what the node scans — it cannot name a pod your filters exclude. The **profiling-target** query is the one reply the node acts on; see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011) for what bounds it. The receiver is not reachable from outside the cluster, but it **is** reachable by every pod in it: a NetworkPolicy restricting it to the DaemonSet is **[planned]** and does not exist, in the chart or anywhere else (ADR 0039 — three decision records described it as shipped). The DaemonSet has **no** external egress. Honest disclosure, restated wider than it used to be: the token and the (already-filtered) facts travel in cleartext in-cluster, and every node presents the same ServiceAccount subject, so the channel authenticates *the node role* and not *a node*. A party who obtains one node's token — by sniffing pod traffic, or by compromising any one node — can therefore, for the remaining lifetime of that token: post fabricated inventory facts and fabricated profiles attributed to workloads on **other** nodes, and query the scope and target endpoints for **any** node name, which answers with the pod UIDs and container IDs the controller admitted there. Still one-way and still no read of the API or control of the agent, but wider than "fabricated inventory facts for this one cluster", which is what ADR 0010 recorded. Both halves — the identity check and the policy — are the next change |
 
 ---
 
@@ -312,12 +324,47 @@ to the internet, never to the API server.
 |---|---|
 | `hostPID: true` | See node processes and open their `/proc/<pid>/exe` to read Go `buildinfo` (Go version, module path, dependencies, whether `-pgo` was applied) without entering containers |
 | `CAP_SYS_PTRACE` | The **only** added capability. Container processes are non-dumpable, so the kernel's ptrace access check blocks reading another container's `/proc/<pid>/exe` even for a same-UID root reader — verified empirically. This resolves the "TBD" this document previously carried here: the capability is required, and it is **not** an eBPF capability |
-| host `/proc`, read-only | Mounted at `/host/proc` so the scanner reads the node's process table. No other host path is mounted |
+| host `/proc`, read-only | Mounted at `/host/proc` so the scanner reads the node's process table. No other host path is mounted. Note that with `hostPID` this mount is a convenience rather than a boundary: the container's own `/proc` already shows the same process table, and the runtime mounts that one read-write |
 
 What it reads, and only that: `/proc/<pid>/exe` (build info) and
 `/proc/<pid>/cgroup` (the pod UID and container ID the kubelet encodes into the
 cgroup path). See [§8](#8-data-collected-and-data-leaving-the-cluster) for the
 data and the on-node filter.
+
+**What this privilege actually is, stated before the controls that do not bound
+it** ([ADR 0039](adr/0039-stated-limits-are-measured-limits.md)). `hostPID` plus
+`CAP_SYS_PTRACE` plus uid 0 passes the kernel's ptrace access check against
+every process on the node, and `/proc/<pid>/root` then resolves in that
+process's own mount namespace. Concretely, code running in this container can:
+
+- **read any other container's filesystem on that node**, including its
+  ServiceAccount token and every Secret volume mounted into it — so the node
+  role does reach other workloads' secrets, by a path that has nothing to do
+  with the API server and is therefore not excluded by
+  [§9](#9-what-the-agent-does-not-request)'s "no `secrets`" row;
+- **read any host process's memory** (`/proc/<pid>/mem`, `PTRACE_ATTACH`),
+  recovering keys that were never written to disk;
+- **write** to that memory and to the host filesystem through `/proc/1/root`,
+  which is code execution as host root. The read-only flag on `/host/proc` does
+  not prevent this, for the reason in the table above;
+- **signal host processes**, kubelet and the container runtime included.
+
+By default the DaemonSet tolerates every taint, so it schedules on every node
+including control-plane ones. Where that matters is a self-managed cluster —
+kubeadm, kops, bare metal — because there the API server, etcd and the
+service-account signing key are processes and files on a node this pod can land
+on, and the access above reaches all three. On a managed control plane (EKS,
+GKE, AKS) the control plane is not in your node pool, so the DaemonSet cannot
+reach it and this paragraph does not apply. Change `node.tolerations` if you
+want to narrow it, and note what an excluded node costs: it contributes no
+inventory and no profiles, silently.
+
+**Installing the DaemonSet is therefore a decision to trust this agent's image
+with the node**, and on a control-plane node with the cluster. That is the
+honest question, and it is the one to weigh — not whether the controls below are
+present. They are present, and none of them narrows the paragraphs above: they
+bound what this agent's own code does by accident, not what code in that
+container could do on purpose.
 
 Compensating controls, all set by the chart in the `inventory` profile and
 asserted against its rendered output by `internal/chartrender/chart_test.go`:
@@ -341,9 +388,16 @@ asserted against its rendered output by `internal/chartrender/chart_test.go`:
   and is denied as uid 65532. Should that change, the node can drop root without
   losing anything.
 
-  Root buys exactly one operation, reading `/proc/<pid>/exe`;
-  `/proc/<pid>/cgroup` is world-readable and needs none of it. It is bounded by
-  all of the above and by the absence of API access.
+  Root buys the agent exactly one operation it did not otherwise have, reading
+  `/proc/<pid>/exe`; `/proc/<pid>/cgroup` is world-readable and needs none of
+  it. That is what the *scanner* uses the privilege for, and it is not a bound
+  on the privilege — this document previously ran the two together, which is the
+  claim ADR 0039 corrects.
+
+What genuinely does not follow from any of the above: the node role still holds
+**no Kubernetes API access**, so none of this is a path to reading your cluster's
+Secrets through the API server, to changing an object, or to reaching another
+node. The blast radius is the node and what is mounted on it.
 
 ### 7.2 The eBPF CPU profiler (opt-in `ebpf` profile, ADR 0011)
 
@@ -354,7 +408,7 @@ mount — never `privileged`:
 | Privilege | Why |
 |---|---|
 | `CAP_BPF` + `CAP_PERFMON` | Load eBPF programs and perform perf sampling for CPU profiles. These are the *minimum* for the embedded profiler; `privileged` is **not** used and `allowPrivilegeEscalation` stays `false`, so the container cannot acquire capabilities beyond these two |
-| host `/sys/kernel/btf`, read-only | Kernel BTF, required by the profiler's CO-RE eBPF programs for stack unwinding and on-node symbolization. This is the one additional host path beyond the scanner's `/proc`; no writable host mount is added |
+| host `/sys/kernel`, read-only | Kernel BTF, required by the profiler's CO-RE eBPF programs for stack unwinding and on-node symbolization. **The mount is the parent directory, not `/sys/kernel/btf`** — a `hostPath` of a missing directory blocks the pod from starting, and on a kernel without BTF `btf` does not exist, which would defeat the graceful refusal below. So the mount also exposes `security/`, `debug/`, `mm/` and the rest of `/sys/kernel` for reading. It is declared read-only; be aware that a `hostPath`'s read-only flag is not recursive, so a submount such as debugfs, where the host has one, is not covered by it. This is the one additional host path beyond the scanner's `/proc`; no writable host mount is declared |
 
 **Kernel floor with a graceful refusal.** `CAP_BPF`/`CAP_PERFMON` exist only on
 kernel 5.8+, and the profiler needs BTF. On a kernel that lacks either, the
@@ -367,6 +421,18 @@ uploaded. Stack addresses are resolved to function names locally against the
 running binary, and only symbolized, allow-list-filtered profiles (see
 [§8](#8-data-collected-and-data-leaving-the-cluster)) leave the node — and only
 towards the in-cluster controller.
+
+**Sampling is node-wide; the filters apply to what is shipped, not to what is
+captured.** Perf sampling attaches to the node rather than to a process set, so
+the profiler symbolizes frames from every process on it — pods from namespaces
+your filters exclude, and host processes such as the kubelet — and those frames
+sit in the node's in-memory buffer until the window is filtered and shipped.
+This is the one collection path where the filter-early principle of
+[§1](#1-design-principles) is not met, and it is a property of node-level
+profiling rather than a choice made here
+([§10.2](#102-node-level-visibility-cannot-be-namespace-scoped), ADR 0039). If
+that is not acceptable, the `ebpf` profile is not for you; the scanner, which
+does meet the principle, is available without it.
 
 **What decides who gets profiled.** Profiling is off unless you deploy the node
 DaemonSet with the `ebpf` profile *and* enable it on the controller — two
@@ -385,8 +451,10 @@ workload you excluded was never measured and cannot be named.
 Two answers must admit a container before its samples are shipped: the targets
 reply, and the scan scope of [§10.2](#102-node-level-visibility-cannot-be-namespace-scoped) —
 the same set that gates the binary scanner. A pod whose executable the scanner
-may not open is not profiled either, and a node that cannot reach the controller
-profiles nothing rather than everything it was last told.
+may not open has no profile *shipped* for it either — but, per the paragraph
+above, its frames were captured and symbolized before that gate was consulted.
+A node that cannot reach the controller profiles nothing rather than everything
+it was last told.
 
 **Which bound is enforced where, and what each one is worth** — stated as a
 table because the distinction is the whole security argument, and it was
@@ -394,7 +462,7 @@ previously stated wrongly (ADR 0025):
 
 | Bound | Enforced from | Stops a buggy controller | Stops a hostile one |
 |---|---|---|---|
-| Symbol allow-list — which module prefixes may leave in a frame | the node's own ConfigMap | yes | **yes** |
+| Symbol allow-list — which module prefixes may leave in a frame | the node's own ConfigMap | yes | **yes, with two exemptions named below** |
 | Overhead ceiling, capture duration, interval | the node's own ConfigMap | yes | **yes** |
 | Profile validation (parses, `cpu`/`nanoseconds`, a service function present) | the node's code | yes | **yes** |
 | The container exists on this node | the node's `/proc` | yes | **yes** |
@@ -410,10 +478,31 @@ controller-supplied label can constrain the controller. Giving the node a
 namespace list to check against would look like a safeguard and be none — which
 is why there is no longer one (ADR 0025).
 
-What that leaves is the top five rows, and they are genuinely unforgeable. The
-symbol allow-list is the load-bearing one: it is the reason a stack trace is
-defensible to ship at all, and it is enforced on the node from a file your Helm
-release owns.
+What that leaves is the top five rows. They are genuinely unforgeable — a
+controller cannot reach past them, however hostile — and the symbol allow-list
+is the load-bearing one: it is the reason a stack trace is defensible to ship at
+all, and it is enforced on the node from a file your Helm release owns.
+
+**Two things get past the allow-list today, and they are gaps rather than
+design** (ADR 0039; the fix is a separate change and will carry its own
+decision record):
+
+- **The workload's own `main` package is kept unconditionally**, before the
+  allow-list is consulted, along with any module whose path has no dot in its
+  first segment — `module acmecorp` rather than `module github.com/acme/…`. The
+  code treats "no domain" as "standard library or runtime, carries no structure
+  of your code"; for `main` that is wrong, since a Go service's handlers, jobs
+  and business functions live there. So `main.(*Server).handleCharge` ships even
+  with an empty allow-list.
+- **Source file paths and line numbers ship alongside function names.** The
+  filter classifies a frame on its function and never inspects its file, and the
+  file is written into the pprof as `Function.Filename`. In a binary built
+  without `-trimpath` — the Go default — that path carries the build machine's
+  directory layout and often an internal VCS hostname.
+
+Until both are closed, treat the allow-list as bounding *dependency and
+third-party* frames, which it does exactly, and not as bounding your own
+application's identifiers.
 
 ---
 
@@ -447,9 +536,9 @@ appearing here (ADR 0022).
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
 | `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
-| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032); plus `unavailable_sources`, naming any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035) | no |
+| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032); plus `unavailable_sources`, naming any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035) | not directly — but a claim is named, and a StatefulSet's claim is `<template>-<set>-<ordinal>`, so `data-db-0` identifies pod `db-0` (ADR 0039) |
 | `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035). StorageClass `parameters` are never read | no |
-| `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture | no |
+| `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture. The **name** is your cluster's, and on EKS and on GKE's legacy naming it encodes the node's private address — `ip-10-42-13-201.eu-west-1.compute.internal`. The agent reads no address field; the name it does read may be one (ADR 0039) | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
 | `go_build` | Per image digest, written once: Go version, main module, dependency module **paths**, allow-listed build settings | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
@@ -463,9 +552,19 @@ section describes each in detail.
 
 ### Field minimization
 
-- The agent **never reads Secrets or ConfigMaps** (no RBAC for them exists).
-  Its own configuration is a different thing and arrives as a mounted file, not
-  through the API.
+- The agent **never reads Secrets or ConfigMaps through the API** (no RBAC for
+  them exists) and no payload carries a field derived from one. Its own
+  configuration is a different thing and arrives as a mounted file, not through
+  the API. For the two non-API paths by which secret material is nonetheless
+  reachable in a running cluster, see [§9](#9-what-the-agent-does-not-request).
+- **The image reference ships verbatim, and it is the one free-form string here
+  with no length bound and no allow-list** (ADR 0039). Every other
+  operator-authored value in this section is truncated or reduced; this one is
+  not, because a truncated image reference is not an image reference. Be aware
+  of what your registry path encodes:
+  `123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/fraud-scoring:pr-4471-hotfix`
+  carries a cloud account identifier, a region, your internal repository
+  taxonomy, and whatever your CI writes into a tag.
 - From ReplicaSets, the agent keeps `metadata`, `spec.replicas`,
   `status.replicas`, `status.readyReplicas`, and from `spec.template` **exactly
   one field per container: the image reference**. Not `env`, not `args`, not
@@ -495,6 +594,14 @@ section describes each in detail.
   and other teams' workloads. A scheduler message such as "0/12 nodes are
   available: 3 node(s) had untolerated taint {dedicated: payments-gpu}" never
   leaves the cluster; the reason `Unschedulable` does.
+
+  One honest qualification on that example, because it was chosen badly (ADR
+  0039): the *message* is never read, but if a collected pod **tolerates**
+  `dedicated=payments-gpu`, that key and value ship in its placement block
+  below. Tolerations are the one field in that list carried verbatim rather than
+  reduced — they are short and bounded, so there is nothing to reduce — which
+  means your taint vocabulary, and whatever team, tenant or compliance names it
+  encodes, leaves with them.
 - **Placement constraints.** Nine pod-spec fields say where a pod may run and
   what it costs to move it, and they are what makes a usage number actionable:
   `nodeSelector`, `affinity` (node, pod and pod-anti), `topologySpreadConstraints`,
@@ -520,9 +627,12 @@ section describes each in detail.
   `status.nodeInfo`: `kernelVersion` (a version string, used to report
   eBPF-profile readiness) and `architecture` (`amd64`/`arm64`, what a build's
   target architecture is compared against, ADR 0019). No other node labels,
-  annotations, addresses, or `status` fields are read. Zone and region are how resource usage is
-  attributed to a failure domain and to the corresponding lines of your cloud
-  bill; they are labels your cluster already publishes.
+  annotations, addresses, or `status` fields are read — with the caveat recorded
+  in the `node_metadata` row above, that on several managed platforms the node's
+  *name* is derived from its private address, so declining to read the address
+  field does not keep the address out of the payload. Zone and region are how
+  resource usage is attributed to a failure domain and to the corresponding
+  lines of your cloud bill; they are labels your cluster already publishes.
 
 ### Workload and node metadata (ADR 0012)
 
@@ -648,6 +758,15 @@ ServiceAccount, stays in the agent's log and is never part of a payload.
   observability stacks, this agent itself) is dropped. Only the kept frames and
   an aggregate count of what was dropped leave the node — never the identities
   of dropped functions.
+- **Two exemptions to that policy, stated because they are not obvious from it**
+  (ADR 0039, and see the discussion in
+  [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011)): the always-kept
+  class is implemented as "module path with no dot in its first segment", which
+  admits **your own `main` package** and any module named without a domain; and
+  each kept frame carries its **source file path and line number**, which the
+  filter does not examine. Both are being closed; until then, a shipped profile
+  can name your application's own functions and the file paths they were
+  compiled from, regardless of the allow-list.
 - eBPF profiles are **validated on the node before they are queued to leave**: a
   profile is shipped only if it parses, carries a `cpu`/`nanoseconds` sample
   type, and has a service (non-`runtime.*`) function in its top. A profile that
@@ -663,13 +782,16 @@ ServiceAccount, stays in the agent's log and is never part of a payload.
   offered, comes from native pprof, not from this path (ADR 0011).
 - Aggregated metric rollups are hourly mergeable histograms per workload —
   no raw per-second samples are shipped.
-- Raw, unfiltered samples exist only in a 24–48h ring buffer on an ephemeral
-  `emptyDir` volume, for debugging and flame graphs. They are never
-  transported and never written to the persistent volume — unfiltered stack
-  traces do not survive pod deletion. Profiles that passed the allow-list
-  (i.e. are approved to leave the cluster) may sit in the spool on the
-  persistent volume until their delivery is acknowledged, and are deleted
-  right after.
+- Raw, unfiltered samples exist **in the node process's memory only**, for the
+  span of one capture window, and are never written to disk at all: the node
+  DaemonSet mounts no `emptyDir` and no writable path of any kind. This
+  paragraph previously described a "24–48h ring buffer on an ephemeral
+  `emptyDir` volume" — that volume was never built, and describing a
+  persistence surface that does not exist is the kind of claim ADR 0039 exists
+  to remove. Unfiltered stack traces do not survive the window, let alone pod
+  deletion. Profiles that passed the allow-list — that is, are approved to leave
+  the cluster — sit in the controller's spool until delivery is acknowledged and
+  are deleted right after.
 
 ### On-node binary scanning (node role, ADR 0009)
 
@@ -785,15 +907,30 @@ kinds enumerated above and nothing else.
 
 Stated explicitly so it does not have to be asked:
 
-- No `secrets`, no `configmaps` — reading either is impossible, no RBAC for
-  them exists anywhere.
-- No `pods/exec`, `pods/attach`, `pods/portforward`.
+This section lists what is **not requested**. Two of its rows used to be read as
+listing what is *not reachable*, which is a stronger claim and was not true; both
+now say which one they are (ADR 0039).
+
+- No `secrets`, no `configmaps` — no RBAC for either exists anywhere, so the
+  controller cannot read one through the API server, and the API server is what
+  enforces that rather than agent configuration. This is a statement about the
+  API path only: secret *contents* remain reachable by the controller's identity
+  through `nodes/proxy` (below), and on a node by the DaemonSet's `/proc` access
+  ([§7.1](#71-the-go-binary-scanner-the-current-node-role)). What keeps them out
+  of payloads is the collection code — pod `env`, `args` and `command` are not
+  fields of any collected struct — and that is asserted by tests rather than by
+  the API server.
+- No `pods/exec`, `pods/attach`, `pods/portforward` **as named resources**. Not
+  the same as "cannot exec": `get` on `nodes/proxy` reaches the kubelet's own
+  `exec`, `attach` and `portForward` routes, which it serves over GET
+  ([§4](#4-kubernetes-api-access-rbac)). The agent calls two stats paths and
+  nothing else, and that bound lives in the code.
 - **No write verb except one**, and it is named: `get`/`update` on the agent's
   own identity Secret, scoped by `resourceNames`
   ([§4](#4-kubernetes-api-access-rbac), and **[planned]** — not emitted today).
   Nothing else in the product carries `create`, `update`, `patch`, `delete` or
-  `deletecollection`, so the agent cannot change your workloads, nodes or
-  configuration.
+  `deletecollection`. That is a true statement about verbs; for what it does not
+  imply, see the row above and [§1](#1-design-principles).
 - No cloud provider credentials, IAM roles, or billing API access. Node
   pricing uses a static price table plus your stated discount.
 - No external egress from nodes — only the controller crosses the boundary.
@@ -840,6 +977,15 @@ collection-stage filter: samples from processes whose module path or namespace
 is not allow-listed are discarded on the node, before transport to the
 controller. If this is not acceptable, use the `pprof` or `metrics-only`
 profile, where no node component exists.
+
+The two node functions differ here, and the difference is worth being precise
+about (ADR 0039). The **scanner** avoids the exposure rather than mitigating it:
+it reads a process's cgroup first and never opens the executable of a pod
+outside your scope, so nothing is extracted to discard. The **profiler** cannot:
+perf sampling attaches to the node, so frames from every process — excluded
+namespaces, and host processes such as the kubelet — are symbolized into the
+node's memory and dropped afterwards. Same outcome at the cluster boundary,
+different guarantee inside it, and only the first one is "not collected".
 
 **How the node knows your namespaces**
 ([ADR 0015](adr/0015-node-scan-scope.md)). The node holds no Kubernetes API

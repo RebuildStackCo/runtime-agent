@@ -30,8 +30,10 @@ type Server struct {
 // NewServer wires a receiver listening on addr. It always dispatches the
 // inventory and scope paths, and mounts the profile and targets paths when their
 // handlers are non-nil. addr follows net/http conventions (e.g. ":8080"). All
-// endpoints share the one port, the one token audience, and the one
-// NetworkPolicy. The inventory and profile endpoints are one-way pushes (the
+// endpoints share the one port and the one token audience. They do not share a
+// NetworkPolicy: this comment used to say they did, and none is shipped — the
+// port is reachable by every pod in the cluster and only the token bounds who
+// may be heard (ADR 0039). The inventory and profile endpoints are one-way pushes (the
 // reply is an ack); the targets and scope endpoints are the two queries whose
 // replies carry data — bounded by the operator's config, never by the backend
 // (ADR 0011 §3, ADR 0015).

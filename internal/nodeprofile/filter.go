@@ -114,7 +114,17 @@ func (f *SymbolFilter) keep(fr Frame, c *FilterCounters) bool {
 	pkg := packagePath(fr.Function)
 	if !hasDomain(pkg) {
 		// stdlib, runtime, internal/*, the workload's own main package, or a
-		// bare native/kernel symbol — none reveal the customer's Go structure.
+		// bare native/kernel symbol.
+		//
+		// This exemption is wider than it should be, and saying so is the point
+		// of the note (ADR 0039). It is written as "no dot in the first path
+		// segment", which is true of the standard library — those frames carry
+		// no structure of the customer's code — and also true of `main.*` and
+		// of any module declared without a domain, which carry a great deal of
+		// it: handlers, jobs, business functions. Those reach a shipped profile
+		// regardless of the allow-list, including when the allow-list is empty.
+		// Narrowing this is a behaviour change and belongs to its own decision
+		// record; until then docs/security.md §7.2 and §8 name the gap.
 		return true
 	}
 	if f.isAllowed(pkg) {
