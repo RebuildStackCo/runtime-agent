@@ -99,3 +99,4 @@ line to paste.
 - [0039. A stated limit is a measured limit, or it is marked](0039-stated-limits-are-measured-limits.md)
 - [0040. The channel authenticates a node, not just the node role](0040-the-channel-authenticates-a-node.md)
 - [0041. The symbol allow-list bounds dependencies, not the customer's own code; source paths do not ship](0041-the-allow-list-bounds-dependencies-not-your-own-code.md)
+- [0042. The spool is bounded, and its bound does not depend on the cluster being healthy](0042-the-spool-is-bounded.md)

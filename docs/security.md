@@ -269,9 +269,21 @@ StorageClass and no provisioning rights. The volume holds exactly one thing:
 
 - **The spool of unshipped payload batches** — rollups, metadata and
   allow-listed profiles, held until delivery is acknowledged and deleted
-  immediately after, with a maximum-age cap so an extended outage cannot fill
-  the volume. Only data that has already passed the filters — data approved to
-  leave the cluster — is ever written there.
+  immediately after. Only data that has already passed the filters — data
+  approved to leave the cluster — is ever written there.
+
+  **It cannot fill your node** (ADR 0042). Three bounds, in order: payloads
+  older than 24 hours are deleted even unacknowledged; the spool holds at most
+  512 MiB and 20000 files, dropping the oldest first when either is reached;
+  and the `emptyDir` itself declares a 1 GiB `sizeLimit`, deliberately above the
+  agent's own budget so the agent's bound is the one that acts and the kubelet's
+  is what holds if it ever fails.
+
+  This is stated because the earlier version of it did not work. The sweep used
+  to run only when a usage record was written, so on a cluster where the kubelet
+  could not be polled — the `nodes/proxy` grant withheld, or every kubelet
+  unreachable — nothing was ever swept and the age cap never applied. A full node
+  makes the kubelet evict pods, and they would not have been ours.
 
 Everything else the collector keeps — counter baselines, open windows,
 profiling rotation state — is held **in memory only**. ADR 0003 placed a

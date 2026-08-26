@@ -540,6 +540,15 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				flushRestarts()
 				flushDisruptions()
 				flushJobRuns()
+				// Unconditionally, on the agent's own cadence rather than the
+				// usage poller's: the spool's bounds must hold on a cluster
+				// where no usage record is ever written, which is exactly the
+				// cluster where they used to not hold at all (ADR 0042).
+				if spool != nil {
+					if err := spool.Sweep(time.Now()); err != nil {
+						logger.Error("sweeping the spool failed", "error", err)
+					}
+				}
 			}
 		}
 	}()

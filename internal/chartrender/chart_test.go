@@ -17,6 +17,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/chartrender"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
+	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
 
 // What this file is for.
@@ -259,6 +260,22 @@ func TestTheSpoolIsAlwaysAnEmptyDir(t *testing.T) {
 				found = true
 				if volume.EmptyDir == nil {
 					t.Errorf("the spool volume is not an emptyDir (ADR 0026)")
+					continue
+				}
+				// An emptyDir with no sizeLimit draws on the node's whole
+				// ephemeral storage, and a node that runs out makes the kubelet
+				// evict pods — other people's pods (ADR 0042). The agent bounds
+				// its own spool; this is what holds if that ever fails, so it
+				// must be larger than the agent's budget and must exist.
+				limit := volume.EmptyDir.SizeLimit
+				if limit == nil {
+					t.Errorf("the spool emptyDir has no sizeLimit; it can consume the node's ephemeral storage")
+					continue
+				}
+				if limit.Value() <= sink.DefaultMaxBytes {
+					t.Errorf("spool sizeLimit %s is not above the agent's own %d-byte budget; "+
+						"the agent's bound is the one meant to act",
+						limit.String(), int64(sink.DefaultMaxBytes))
 				}
 			}
 			if !found {
