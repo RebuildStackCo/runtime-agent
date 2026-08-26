@@ -20,6 +20,7 @@ import (
 	"math/big"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // KeySet is an immutable set of signing keys indexed by key ID, parsed from a
@@ -235,11 +236,18 @@ func (s StaticKeys) Key(_ context.Context, kid string) (crypto.PublicKey, error)
 	return s.Set.Key(kid)
 }
 
+// defaultFetchTimeout bounds one refresh of the key set. The fetch is two GETs
+// to the API server on the cluster network, so a healthy one takes
+// milliseconds; this is a ceiling on a hang, not a budget.
+const defaultFetchTimeout = 10 * time.Second
+
 // CachingKeySource is a KeyProvider that caches the fetched KeySet and refetches
 // once when asked for a kid it does not hold — the signal that the cluster
 // rotated its signing keys. Concurrent verifications share one refresh.
 type CachingKeySource struct {
 	Source KeySource
+	// FetchTimeout bounds a single refresh; zero selects defaultFetchTimeout.
+	FetchTimeout time.Duration
 
 	mu     sync.Mutex
 	cached *KeySet
@@ -248,6 +256,21 @@ type CachingKeySource struct {
 // Key returns the key for kid, fetching the set on first use and refetching
 // once if the cached set lacks the kid. A refetch that still lacks the kid is
 // an error — the token was signed by a key the cluster does not advertise.
+//
+// The refresh runs under the mutex, which serializes it: one refresh at a time,
+// however many verifications want one. That is deliberate. The case this has to
+// survive is not an attacker — it is a signing-key rotation, which is an
+// operation on the control plane and therefore likely to coincide with an API
+// server that is rolling. Every node's token carries the new kid at once, so
+// every verification misses the cache together, and whatever the first one does
+// the rest are waiting for. Serializing them keeps that to one attempt at a
+// time; letting them run concurrently would put one fetch per in-flight request
+// onto an API server that is already unwell.
+//
+// What that costs is that a slow refresh stalls verification cluster-wide,
+// which is why the fetch carries its own deadline below. Without it the only
+// bound was the caller's request context — the node client gives up after 30s —
+// so a hung API server froze the channel for that long, invisibly.
 func (c *CachingKeySource) Key(ctx context.Context, kid string) (crypto.PublicKey, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -257,8 +280,20 @@ func (c *CachingKeySource) Key(ctx context.Context, kid string) (crypto.PublicKe
 			return key, nil
 		}
 	}
-	set, err := c.Source.Fetch(ctx)
+
+	timeout := c.FetchTimeout
+	if timeout <= 0 {
+		timeout = defaultFetchTimeout
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	set, err := c.Source.Fetch(fetchCtx)
 	if err != nil {
+		// The previous set is kept rather than cleared: a refresh that failed
+		// says nothing about the keys already in hand, and dropping them would
+		// turn one unreachable API server into a cluster-wide authentication
+		// outage that outlives it.
 		return nil, err
 	}
 	c.cached = set
