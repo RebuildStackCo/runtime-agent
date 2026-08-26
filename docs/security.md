@@ -130,6 +130,13 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `nodes/proxy` | get | Poll each kubelet's `/stats/summary` and `/metrics/cadvisor` through the API server for usage counters: CPU, memory working set, CFS throttling, PSI where exposed (ADR 0006). **Honest disclosure:** this verb technically permits any kubelet GET endpoint through the API server, including node logs. The agent calls exactly the two stats paths above — auditable, since all kubelet access lives in a single poll loop |
 | its own identity Secret **[planned]** | get, update (namespaced Role, `resourceNames`) | Persist the in-cluster-generated key and certificate across rescheduling (ADR 0008). Helm pre-creates the Secret; the agent owns only its content. No `create` (cannot be name-scoped), no `list`/`watch`/`delete` — the agent can neither enumerate nor touch any other Secret |
 
+**The controller runs as a non-root user.** It reads the API, polls kubelets
+through it, and writes payload files to an `emptyDir` — it mounts no host path
+and opens no other process's `/proc`, so it needs no privilege and takes none
+(ADR 0037). It also declares `runAsNonRoot`, so an image rebuilt without its
+non-root user fails to start rather than quietly regaining root. The one
+component that does run as root is the node role, in [§7.1](#71-the-go-binary-scanner-the-current-node-role).
+
 **Declining any of the four grants above degrades one payload, not the agent.**
 The caches behind `poddisruptionbudgets`, `horizontalpodautoscalers`,
 `limitranges`, `resourcequotas`, `persistentvolumeclaims`, `priorityclasses` and
@@ -320,8 +327,23 @@ asserted against its rendered output by `internal/chartrender/chart_test.go`:
 - `seccompProfile: RuntimeDefault`.
 - **All capabilities dropped except `SYS_PTRACE`.** No `CAP_BPF`, no
   `CAP_PERFMON`.
-- Runs as UID 0 (needed to match the credentials of the root processes it
-  reads); bounded by all of the above and by the absence of API access.
+- Runs as UID 0 — the only component in the product that does, and the only one
+  that asks for it explicitly rather than inheriting it: the agent image runs as
+  uid 65532 and the node DaemonSet overrides that
+  ([ADR 0037](adr/0037-root-is-one-roles-exception.md)).
+
+  The reason is not convenience, and it is not that root is the only way past
+  the kernel's check — `CAP_SYS_PTRACE` satisfies that check on its own. It is
+  that a capability granted to a non-root process does not survive `execve`
+  unless it is in the *ambient* set, which Kubernetes does not populate.
+  Measured on Kubernetes 1.36: one pod, `hostPID`, every capability dropped but
+  `SYS_PTRACE`, differing only in uid — reading `/proc/1/exe` succeeds as uid 0
+  and is denied as uid 65532. Should that change, the node can drop root without
+  losing anything.
+
+  Root buys exactly one operation, reading `/proc/<pid>/exe`;
+  `/proc/<pid>/cgroup` is world-readable and needs none of it. It is bounded by
+  all of the above and by the absence of API access.
 
 ### 7.2 The eBPF CPU profiler (opt-in `ebpf` profile, ADR 0011)
 

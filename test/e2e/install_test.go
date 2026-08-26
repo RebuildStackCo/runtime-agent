@@ -13,6 +13,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/chartrender"
@@ -180,6 +181,15 @@ func addSpoolReader(dep *appsv1.Deployment) {
 		Image:           spoolReaderImage(),
 		ImagePullPolicy: corev1.PullNever,
 		Command:         []string{"sleep", "86400"},
+		// The pod asserts runAsNonRoot, so kubelet refuses any container whose
+		// image would run as root — busybox would. Running the sidecar as the
+		// agent's own uid is also what lets it read the payloads: the spool's
+		// files are 0600, owned by the controller (ADR 0037).
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                ptr.To(int64(65532)),
+			RunAsNonRoot:             ptr.To(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+		},
 		VolumeMounts: []corev1.VolumeMount{{
 			Name: "spool", MountPath: "/var/spool/runtime-agent", ReadOnly: true,
 		}},

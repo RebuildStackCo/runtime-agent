@@ -48,7 +48,26 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # The controller holds every API grant in the product and will be the one
+      # component that talks to a backend, and it needs no privilege at all: it
+      # reads the API and writes a spool. So it takes the image's non-root
+      # default and says so, rather than inheriting root by omission (ADR 0037).
+      #
+      # runAsUser is not set here: the uid comes from the image, and repeating it
+      # would be the same fact in two places. runAsNonRoot is the assertion —
+      # kubelet refuses to start a container whose image would run as root, so an
+      # image rebuilt without its USER line fails visibly instead of quietly
+      # regaining privilege.
+      #
+      # There is deliberately no fsGroup. It looks necessary — the spool holds
+      # files a non-root process must create — and it is not: kubelet creates an
+      # emptyDir world-writable (measured: drwxrwxrwx), so the uid above writes
+      # there without help. An fsGroup would be a setting that does nothing,
+      # justified by a belief nobody checked. It becomes necessary only if the
+      # spool path is ever backed by something other than an emptyDir, which the
+      # chart does not offer (ADR 0026, ADR 0037).
       securityContext:
+        runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:

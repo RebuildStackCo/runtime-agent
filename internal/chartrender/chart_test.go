@@ -501,3 +501,48 @@ func TestTheChartsVersionFloorIsTheBaselineWePromise(t *testing.T) {
 			declared[1], stated[1])
 	}
 }
+
+// Root is one role's exception, not the product's default (ADR 0037).
+//
+// The controller reads the API and writes a spool; it needs no privilege, so it
+// takes the image's non-root uid and asserts it. The node overrides back to root
+// because reading another container's /proc/<pid>/exe cannot be bought with
+// CAP_SYS_PTRACE alone — a capability granted to a non-root process does not
+// survive execve without the ambient set, and Kubernetes does not populate it.
+//
+// Both halves are asserted, and the second matters as much as the first: the
+// exception must stay explicit, so that a node silently inheriting root from a
+// changed image is a failure rather than a continuation.
+func TestRootIsOneRolesExceptionAndTheControllerDoesNotTakeIt(t *testing.T) {
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			docs := render(t, values)
+
+			pod := only(t, decode[appsv1.Deployment](t, docs, "Deployment"), "Deployment").Spec.Template.Spec
+			if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
+				t.Error("the controller does not assert runAsNonRoot; it would inherit whatever the image happens to be")
+			}
+			if pod.SecurityContext != nil && pod.SecurityContext.RunAsUser != nil {
+				t.Errorf("the controller pins runAsUser=%d; the uid belongs to the image, and repeating it here is the same fact in two places",
+					*pod.SecurityContext.RunAsUser)
+			}
+			// And no fsGroup: kubelet creates an emptyDir world-writable, so
+			// the non-root uid writes the spool without one. A setting that
+			// does nothing is a belief nobody checked (ADR 0037).
+			if pod.SecurityContext != nil && pod.SecurityContext.FSGroup != nil {
+				t.Errorf("the controller sets fsGroup=%d; an emptyDir needs none, and the spool is always an emptyDir",
+					*pod.SecurityContext.FSGroup)
+			}
+
+			for _, ds := range decode[appsv1.DaemonSet](t, docs, "DaemonSet") {
+				node := ds.Spec.Template.Spec.SecurityContext
+				if node == nil || node.RunAsUser == nil || *node.RunAsUser != 0 {
+					t.Error("the node does not ask for root explicitly; it must override the image's default rather than depend on it")
+				}
+				if node.RunAsNonRoot == nil || *node.RunAsNonRoot {
+					t.Error("the node does not declare that it runs as root")
+				}
+			}
+		})
+	}
+}
