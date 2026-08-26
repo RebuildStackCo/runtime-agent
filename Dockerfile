@@ -1,7 +1,7 @@
 # Agent image. One binary, two roles (ADR 0009): the same image runs the
 # controller (a Deployment — ADR 0026) and the node scanner (a DaemonSet); the
 # role is the first argument.
-FROM golang:1.26.1 AS build
+FROM golang:1.26.7 AS build
 WORKDIR /src
 
 # Cache module downloads separately from the source.

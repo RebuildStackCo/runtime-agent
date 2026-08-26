@@ -1,6 +1,6 @@
 module github.com/RebuildStackCo/runtime-agent
 
-go 1.26.1
+go 1.26.7
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -8,6 +8,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.70.1
 	go.opentelemetry.io/ebpf-profiler v0.0.202633
+	helm.sh/helm/v4 v4.2.4
 	k8s.io/api v0.36.4
 	k8s.io/apimachinery v0.36.4
 	k8s.io/client-go v0.36.4
@@ -122,22 +123,25 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.30.0 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20260810151157-a8b543ca52da // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/mod v0.39.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
 	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/vuln v1.7.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260720211330-0afa2a65878a // indirect
 	google.golang.org/grpc v1.83.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	helm.sh/helm/v4 v4.2.4 // indirect
 	k8s.io/apiextensions-apiserver v0.36.1 // indirect
 	k8s.io/apiserver v0.36.1 // indirect
 	k8s.io/cli-runtime v0.36.1 // indirect
@@ -146,7 +150,7 @@ require (
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
 	k8s.io/kubectl v0.36.1 // indirect
 	k8s.io/streaming v0.36.4 // indirect
-	oras.land/oras-go/v2 v2.6.1 // indirect
+	oras.land/oras-go/v2 v2.6.2 // indirect
 	sigs.k8s.io/controller-runtime v0.24.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/kind v0.32.0 // indirect
@@ -157,6 +161,7 @@ require (
 )
 
 tool (
+	golang.org/x/vuln/cmd/govulncheck
 	helm.sh/helm/v4/cmd/helm
 	sigs.k8s.io/kind
 )
