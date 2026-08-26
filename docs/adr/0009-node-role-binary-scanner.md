@@ -2,7 +2,7 @@
 
 Date: 2026-08-10
 Status: Accepted
-Amended by: 0010, 0011, 0015, 0022, 0037
+Amended by: 0010, 0011, 0015, 0022, 0037, 0039
 
 ## Context
 

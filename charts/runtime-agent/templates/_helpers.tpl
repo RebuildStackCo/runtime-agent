@@ -78,7 +78,7 @@ produce its own output should not start.
 {{- end -}}
 {{- if eq .Values.profile "ebpf" -}}
 {{- if not .Values.profiling.allowedModulePrefixes -}}
-{{- fail "profile \"ebpf\" requires profiling.allowedModulePrefixes to name at least one Go module prefix. An empty allow-list admits no stack frame, so the profiler would run and ship nothing, forever and silently (ADR 0011 §4)." -}}
+{{- fail "profile \"ebpf\" requires profiling.allowedModulePrefixes to name at least one Go module prefix. An empty allow-list admits no dependency frame, so the profiles would be near-empty — and not entirely: your own main package is kept regardless of the allow-list, so an empty one ships the least useful profile and not the safest (ADR 0011 §4, ADR 0039)." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
