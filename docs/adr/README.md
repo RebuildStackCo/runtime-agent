@@ -97,3 +97,4 @@ line to paste.
 - [0037. The image runs as uid 65532; root is one role's exception, asked for by name](0037-root-is-one-roles-exception.md)
 - [0038. Vulnerabilities are gated on reachability, not on the module graph](0038-reachability-is-the-gate.md)
 - [0039. A stated limit is a measured limit, or it is marked](0039-stated-limits-are-measured-limits.md)
+- [0040. The channel authenticates a node, not just the node role](0040-the-channel-authenticates-a-node.md)

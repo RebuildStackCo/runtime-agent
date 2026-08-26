@@ -3,6 +3,7 @@
 Date: 2026-08-26
 
 Status: Accepted
+Amended by: 0040
 
 Amends: 0009 §3, 0010 §Consequences, 0011 §Consequences, 0015 §1, 0025 §5
 

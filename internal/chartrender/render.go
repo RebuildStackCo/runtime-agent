@@ -71,8 +71,13 @@ func Render(chartDir string, opts Options) (map[string]string, error) {
 	}
 	// Partials and templates whose whole body is disabled render to whitespace.
 	// An operator never sees those, so neither should a caller.
+	//
+	// NOTES.txt is dropped for a different reason: Helm renders it like any
+	// other template but prints it to the installer instead of applying it, so
+	// it is not a manifest and decoding it as YAML fails in whatever reads this.
 	for path, body := range out {
-		if strings.TrimSpace(body) == "" || strings.HasPrefix(filepath.Base(path), "_") {
+		base := filepath.Base(path)
+		if strings.TrimSpace(body) == "" || strings.HasPrefix(base, "_") || base == "NOTES.txt" {
 			delete(out, path)
 		}
 	}

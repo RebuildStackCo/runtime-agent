@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,12 @@ func TestScopeClientRejectsNon2xx(t *testing.T) {
 // runNodeOnce runs the node role for a single pass and returns its log output.
 func runNodeOnce(t *testing.T, args ...string) string {
 	t.Helper()
+	// The node will not start without a name to speak for (ADR 0040). Supply a
+	// default, but never override a caller that set its own — a test asserting
+	// which node the controller was asked about owns that value.
+	if os.Getenv("NODE_NAME") == "" {
+		t.Setenv("NODE_NAME", "node-1")
+	}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	done := make(chan error, 1)

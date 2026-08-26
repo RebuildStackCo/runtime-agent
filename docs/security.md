@@ -182,6 +182,11 @@ installed (ADR 0010), the controller authenticates each node's projected
 ServiceAccount token by verifying its signature against the cluster's published
 JWKS **locally**. It does **not** call `TokenReview`, so no `create` on
 `authentication.k8s.io/tokenreviews` — or any other verb — is added for this.
+The same token also establishes *which node* is calling: a token projected into
+a pod is bound to that pod, and the kubelet writes the pod's node into it, so
+the controller reads the node from the token instead of believing the request
+(ADR 0040). A token that was not projected into a running pod carries no node
+and is refused.
 Resolving the cluster's OIDC discovery and JWKS endpoints is a read-only
 non-resource URL `GET`, granted cluster-wide to ServiceAccounts by the built-in
 `system:service-account-issuer-discovery` role on typical clusters; it is a
@@ -214,7 +219,7 @@ read, never a write.
 | Pod pprof endpoints **[planned]** | controller → pods | Pull `/debug/pprof/profile` and `/debug/pprof/heap` from Go services that already expose them | Only pods that pass the workload filters are probed; ports taken from `containerPorts`, never blind scans. `pprof`/`ebpf` profiles only. Not built: the agent opens no connection to a pod today |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress **[planned]** | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system, and it does not exist yet: the controller writes payloads to its local spool and ships nothing. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets ships with the chart **[planned]** — the chart exists ([`charts/runtime-agent`](../charts/runtime-agent)), the policy does not |
-| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings and captured profiles for aggregation (ADR 0010, ADR 0011), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only. The **scope** query answers from the controller's already-filtered pod index, so it can only narrow what the node scans — it cannot name a pod your filters exclude. The **profiling-target** query is the one reply the node acts on; see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011) for what bounds it. The receiver is not reachable from outside the cluster, but it **is** reachable by every pod in it: a NetworkPolicy restricting it to the DaemonSet is **[planned]** and does not exist, in the chart or anywhere else (ADR 0039 — three decision records described it as shipped). The DaemonSet has **no** external egress. Honest disclosure, restated wider than it used to be: the token and the (already-filtered) facts travel in cleartext in-cluster, and every node presents the same ServiceAccount subject, so the channel authenticates *the node role* and not *a node*. A party who obtains one node's token — by sniffing pod traffic, or by compromising any one node — can therefore, for the remaining lifetime of that token: post fabricated inventory facts and fabricated profiles attributed to workloads on **other** nodes, and query the scope and target endpoints for **any** node name, which answers with the pod UIDs and container IDs the controller admitted there. Still one-way and still no read of the API or control of the agent, but wider than "fabricated inventory facts for this one cluster", which is what ADR 0010 recorded. Both halves — the identity check and the policy — are the next change |
+| Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings and captured profiles for aggregation (ADR 0010, ADR 0011), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only. The **scope** query answers from the controller's already-filtered pod index, so it can only narrow what the node scans — it cannot name a pod your filters exclude. The **profiling-target** query is the one reply the node acts on; see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011) for what bounds it. The receiver is not reachable from outside the cluster, and a NetworkPolicy shipped with the chart restricts it to the node DaemonSet (ADR 0040 — it was described as shipping for months before it did, ADR 0039). Read that policy for what it is: it is enforced by your CNI, so on a cluster whose CNI does not implement NetworkPolicy it is inert, and it restricts who may be *heard*, never what a caller may *say*. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster, so a party who can sniff pod traffic can replay a node's token until it expires. What that buys is now bounded to **the node it was taken from**: the token names the node its bearer runs on, every endpoint refuses a request that speaks for a different one, and a fact can only join to a pod on the reporting node (ADR 0040). So a replayed or compromised node token can post fabricated inventory facts and profiles about workloads on *that* node, and read which of *that* node's pods passed your filters. It cannot read or write anything about any other node, it cannot reach the API, and it controls nothing |
 
 ---
 
@@ -310,6 +315,15 @@ audience *and* no grant — and it appears in none of the RBAC tables in
 [§4](#4-kubernetes-api-access-rbac) because it holds nothing there. This is
 enforced by the API server (an unbound identity cannot authorize anything), not
 by agent configuration.
+
+That one credential is also what limits a node to itself. Every pod of the
+DaemonSet presents the same ServiceAccount, so the subject says which role is
+calling and nothing about which node — but the token is bound to the pod it was
+projected into, and the kubelet records that pod's node inside it. The
+controller reads the node from there and refuses any request that speaks for a
+different one, so a node that is compromised, or whose token is sniffed off the
+cleartext channel, is confined to facts and queries about **that node**
+(ADR 0040).
 
 ### 7.1 The Go-binary scanner (the current node role)
 

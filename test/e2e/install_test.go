@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -145,6 +146,19 @@ func installChart(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns
 			mustUnmarshal(t, []byte(doc), &svc)
 			create(ctx, t, "Service", func() error {
 				_, err := cs.CoreV1().Services(ns).Create(ctx, &svc, metav1.CreateOptions{})
+				return err
+			})
+		case "NetworkPolicy":
+			// Created because a customer's install creates it, not because this
+			// suite can prove it works: kind's default CNI does not implement
+			// NetworkPolicy, so nothing here is enforcing it (ADR 0040). What
+			// creating it does prove is that the object the chart renders is one
+			// the API server accepts, and that the channel still works with it
+			// present.
+			var np networkingv1.NetworkPolicy
+			mustUnmarshal(t, []byte(doc), &np)
+			create(ctx, t, "NetworkPolicy", func() error {
+				_, err := cs.NetworkingV1().NetworkPolicies(ns).Create(ctx, &np, metav1.CreateOptions{})
 				return err
 			})
 		case "Deployment":

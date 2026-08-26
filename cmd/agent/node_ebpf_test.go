@@ -117,6 +117,7 @@ func TestRunProfilingPipelineGraceful(t *testing.T) {
 // scanner to completion (single pass) and return nil — a refusal degrades, it
 // never fails the node or escalates (ADR 0011 §2).
 func TestRunNodeEBPFRefusalDoesNotStop(t *testing.T) {
+	t.Setenv("NODE_NAME", "node-1")
 	proc, sys := writeGateFixture(t, "5.4.0", false)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	done := make(chan error, 1)

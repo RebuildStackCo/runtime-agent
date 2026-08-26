@@ -336,7 +336,7 @@ func TestLookupContainerJoinsNodeFact(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	for {
 		var ok bool
-		ns, workload, container, digest, ok = watcher.LookupContainer("uid-web-7d9f-abcde", "aaa111")
+		ns, workload, container, digest, ok = watcher.LookupContainerOnNode("uid-web-7d9f-abcde", "aaa111", "node-1")
 		if ok {
 			break
 		}
@@ -358,12 +358,23 @@ func TestLookupContainerJoinsNodeFact(t *testing.T) {
 	}
 
 	// Unknown container ID within a known pod: not joinable.
-	if _, _, _, _, ok := watcher.LookupContainer("uid-web-7d9f-abcde", "ffffff"); ok {
+	if _, _, _, _, ok := watcher.LookupContainerOnNode("uid-web-7d9f-abcde", "ffffff", "node-1"); ok {
 		t.Error("unknown container ID resolved; want not-ok")
 	}
 	// Unknown pod: not joinable.
-	if _, _, _, _, ok := watcher.LookupContainer("uid-nope", "aaa111"); ok {
+	if _, _, _, _, ok := watcher.LookupContainerOnNode("uid-nope", "aaa111", "node-1"); ok {
 		t.Error("unknown pod UID resolved; want not-ok")
+	}
+	// A pod that exists, on a node other than the one reporting it: not
+	// joinable either, which is what stops one node filing facts and profiles
+	// against a workload it does not host (ADR 0040).
+	if _, _, _, _, ok := watcher.LookupContainerOnNode("uid-web-7d9f-abcde", "aaa111", "node-2"); ok {
+		t.Error("container resolved for a node it is not on; want not-ok")
+	}
+	// An empty node never resolves: a caller with no established node is not a
+	// caller that may claim every pod.
+	if _, _, _, _, ok := watcher.LookupContainerOnNode("uid-web-7d9f-abcde", "aaa111", ""); ok {
+		t.Error("container resolved for an empty node; want not-ok")
 	}
 
 	cancel()

@@ -56,10 +56,17 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	}
 	profiling := cfg.Profiling.Normalized()
 
-	// The node identity for the report; the DaemonSet sets NODE_NAME via the
-	// downward API. Empty is acceptable (the controller keys facts by pod UID
-	// and container ID, not node name).
+	// The node this agent speaks for; the DaemonSet sets NODE_NAME via the
+	// downward API, from the same `spec.nodeName` the kubelet writes into the
+	// projected token. The controller now requires the two to agree (ADR 0040),
+	// so an empty value is no longer harmless — every request would be refused
+	// with 400 and the node would scan nothing while looking healthy. Fail here
+	// instead, where the message names the missing variable.
 	node := os.Getenv("NODE_NAME")
+	if node == "" {
+		return fmt.Errorf("NODE_NAME is not set: the controller matches it against the node named " +
+			"in this pod's token, so a node that cannot name itself cannot report")
+	}
 	shipper := newReportShipper(*endpoint, *tokenPath, node)
 	scoper := newScopeClient(*scopeEndpoint, *tokenPath)
 

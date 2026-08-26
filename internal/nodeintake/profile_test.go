@@ -11,10 +11,7 @@ import (
 
 func testProfileHandler(t *testing.T, onProfile func(nodeauth.Identity, ProfileReport)) *ProfileHandler {
 	t.Helper()
-	v := fakeVerifier{accept: goodToken, identity: nodeauth.Identity{
-		Subject:        "system:serviceaccount:runtime-agent:runtime-agent-node",
-		ServiceAccount: "runtime-agent-node",
-	}}
+	v := fakeVerifier{accept: goodToken, identity: nodeIdentity()}
 	return NewProfileHandler(v, slog.New(slog.NewTextHandler(io.Discard, nil)), onProfile)
 }
 

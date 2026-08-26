@@ -78,7 +78,8 @@ func (h *TargetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return
 	}
-	if _, err := h.verifier.Verify(r.Context(), token); err != nil {
+	identity, err := h.verifier.Verify(r.Context(), token)
+	if err != nil {
 		h.logger.Warn("targets query rejected: token verification failed", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -95,12 +96,11 @@ func (h *TargetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed query", http.StatusBadRequest)
 		return
 	}
-	if req.Node == "" {
-		http.Error(w, "node required", http.StatusBadRequest)
+	if !authorizeNode(w, h.logger, "targets query", identity, req.Node) {
 		return
 	}
 
-	resp := TargetsResponse{ContainerIDs: h.targeter.ContainersForNode(req.Node)}
+	resp := TargetsResponse{ContainerIDs: h.targeter.ContainersForNode(identity.Node)}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)

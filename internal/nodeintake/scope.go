@@ -70,7 +70,8 @@ func (h *ScopeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return
 	}
-	if _, err := h.verifier.Verify(r.Context(), token); err != nil {
+	identity, err := h.verifier.Verify(r.Context(), token)
+	if err != nil {
 		h.logger.Warn("scope query rejected: token verification failed", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -87,12 +88,13 @@ func (h *ScopeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed query", http.StatusBadRequest)
 		return
 	}
-	if req.Node == "" {
-		http.Error(w, "node required", http.StatusBadRequest)
+	if !authorizeNode(w, h.logger, "scope query", identity, req.Node) {
 		return
 	}
 
-	resp := ScopeResponse{PodUIDs: h.scoper.AdmittedPodsOnNode(req.Node)}
+	// identity.Node, not req.Node: the two are equal by the check above, and
+	// reading the token's copy is what keeps that true if the check moves.
+	resp := ScopeResponse{PodUIDs: h.scoper.AdmittedPodsOnNode(identity.Node)}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)

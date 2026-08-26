@@ -675,18 +675,27 @@ func (w *PodWatcher) LookupPodByName(namespace, name string) (uid types.UID, wor
 	return uid, entry.workload, true
 }
 
-// LookupContainer resolves a node-role build-info fact — a pod UID and a
-// container ID — to the workload, container name, and image digest the
+// LookupContainerOnNode resolves a node-role fact — a pod UID and a container
+// ID, reported by node — to the workload, container name, and image digest the
 // controller has for it (ADR 0010). It reports false when the pod is unknown or
-// excluded (informer lag or a filtered pod), or when the container ID is not
-// among the pod's started containers; the caller counts those as unjoined and
-// drops them, never guessing. The container ID is matched in the node's bare,
-// lowercased form.
-func (w *PodWatcher) LookupContainer(podUID types.UID, containerID string) (namespace string, workload WorkloadRef, container, imageDigest string, ok bool) {
+// excluded (informer lag or a filtered pod), when the container ID is not among
+// the pod's started containers, or when the pod is not on node; the caller
+// counts those as unjoined and drops them, never guessing. The container ID is
+// matched in the node's bare, lowercased form.
+//
+// The node argument is what keeps a report attributable (ADR 0040). A pod UID
+// and container ID pair is internally consistent no matter who sends it, so
+// without this check any node's token could file inventory facts and profiles
+// against a workload running somewhere else in the cluster. The reporting node
+// is taken from the caller's token, never from the report.
+func (w *PodWatcher) LookupContainerOnNode(podUID types.UID, containerID, node string) (namespace string, workload WorkloadRef, container, imageDigest string, ok bool) {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
 	entry, ok := w.index[podUID]
 	if !ok {
+		return "", WorkloadRef{}, "", "", false
+	}
+	if node == "" || entry.node != node {
 		return "", WorkloadRef{}, "", "", false
 	}
 	ci, ok := entry.containers[normalizeContainerID(containerID)]

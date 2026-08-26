@@ -20,6 +20,8 @@ import (
 const (
 	testAudience = "rebuildstack-controller"
 	nodeSubject  = "system:serviceaccount:runtime-agent:runtime-agent-node"
+	testNode     = "node-1"
+	testNodeUID  = "3799b633-8b3e-43f7-a1d0-ff72ea59f92f"
 )
 
 // signer bundles a signing key with the kid and method used to mint tokens for
@@ -51,7 +53,7 @@ func newECSigner(t *testing.T, kid string) signer {
 
 // mint signs a token with the signer's key, allowing the claims to be tweaked
 // per test. The kid header is set so the verifier selects the matching key.
-func (s signer) mint(t *testing.T, claims jwt.RegisteredClaims) string {
+func (s signer) mint(t *testing.T, claims nodeBoundClaims) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(s.method, claims)
 	tok.Header["kid"] = s.kid
@@ -63,15 +65,18 @@ func (s signer) mint(t *testing.T, claims jwt.RegisteredClaims) string {
 }
 
 // validClaims is a well-formed token body: node subject, controller audience,
-// unexpired.
-func validClaims() jwt.RegisteredClaims {
+// unexpired, and bound to a node the way a kubelet-projected token is.
+func validClaims() nodeBoundClaims {
 	now := time.Now()
-	return jwt.RegisteredClaims{
+	c := nodeBoundClaims{RegisteredClaims: jwt.RegisteredClaims{
 		Subject:   nodeSubject,
 		Audience:  jwt.ClaimStrings{testAudience},
 		IssuedAt:  jwt.NewNumericDate(now.Add(-time.Minute)),
 		ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
-	}
+	}}
+	c.Kubernetes.Node.Name = testNode
+	c.Kubernetes.Node.UID = testNodeUID
+	return c
 }
 
 func newTestVerifier(s signer) *Verifier {
@@ -94,6 +99,55 @@ func TestVerifyValidRSAToken(t *testing.T) {
 	}
 	if len(id.Audience) != 1 || id.Audience[0] != testAudience {
 		t.Errorf("audience = %v, want [%s]", id.Audience, testAudience)
+	}
+	if id.Node != testNode || id.NodeUID != testNodeUID {
+		t.Errorf("node identity = %q/%q, want %q/%q", id.Node, id.NodeUID, testNode, testNodeUID)
+	}
+}
+
+// TestVerifyRejectsATokenWithNoNodeClaim is the check that gives the channel a
+// per-node identity at all (ADR 0040). Every node presents the same subject, so
+// the subject says which role is calling and only this claim says which node.
+// A token without it was not projected into a running pod — it was minted
+// directly, e.g. through TokenRequest with no bound object — and its bearer
+// could then name any node it liked.
+func TestVerifyRejectsATokenWithNoNodeClaim(t *testing.T) {
+	s := newRSASigner(t, "rsa-1")
+	v := newTestVerifier(s)
+
+	claims := validClaims()
+	claims.Kubernetes.Node.Name = ""
+	claims.Kubernetes.Node.UID = ""
+
+	if _, err := v.Verify(context.Background(), s.mint(t, claims)); err == nil {
+		t.Fatal("token without a node claim accepted; want rejection")
+	}
+}
+
+// TestVerifyReturnsTheNodeFromTheTokenNotTheSubject guards the property the
+// handlers rely on: two tokens identical but for their node claim establish two
+// different identities. If this ever collapses, one node's token speaks for
+// every node again.
+func TestVerifyReturnsTheNodeFromTheTokenNotTheSubject(t *testing.T) {
+	s := newRSASigner(t, "rsa-1")
+	v := newTestVerifier(s)
+
+	other := validClaims()
+	other.Kubernetes.Node.Name = "node-2"
+
+	first, err := v.Verify(context.Background(), s.mint(t, validClaims()))
+	if err != nil {
+		t.Fatalf("first token rejected: %v", err)
+	}
+	second, err := v.Verify(context.Background(), s.mint(t, other))
+	if err != nil {
+		t.Fatalf("second token rejected: %v", err)
+	}
+	if first.Subject != second.Subject {
+		t.Fatalf("test premise broken: subjects differ (%q, %q)", first.Subject, second.Subject)
+	}
+	if first.Node == second.Node {
+		t.Errorf("both tokens resolved to node %q; the node must come from the token", first.Node)
 	}
 }
 

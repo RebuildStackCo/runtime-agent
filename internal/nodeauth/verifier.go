@@ -29,11 +29,49 @@ type Identity struct {
 	// canonical service-account form; empty otherwise.
 	Namespace      string
 	ServiceAccount string
+	// Node is the name of the node the bearer's pod is running on, taken from
+	// the token rather than from anything the caller said. It is what separates
+	// one node from another: every node in the DaemonSet presents the same
+	// Subject, so Subject establishes the *role* and only this establishes the
+	// *node* (ADR 0040). Never empty on a verified identity — a token without
+	// the claim does not verify.
+	Node string
+	// NodeUID is the node object's UID from the same claim. It distinguishes a
+	// node that was deleted and recreated under its old name.
+	NodeUID string
 	// Audience is the token's audience list, already checked to contain the
 	// verifier's expected audience.
 	Audience []string
 	// ExpiresAt is the token's expiry.
 	ExpiresAt time.Time
+}
+
+// nodeBoundClaims is the subset of a projected ServiceAccount token this
+// verifier reads: the registered claims, plus the node half of Kubernetes'
+// private claim block.
+//
+// The block is keyed "kubernetes.io" and carries namespace, pod, serviceaccount
+// and node sub-objects. Measured on Kubernetes 1.36.1, for a token projected
+// into a pod with a non-default audience:
+//
+//	"kubernetes.io": {
+//	  "namespace": "…",
+//	  "node": {"name": "…", "uid": "…"},
+//	  "pod": {"name": "…", "uid": "…"},
+//	  "serviceaccount": {"name": "…", "uid": "…"}
+//	}
+//
+// Only "node" is decoded. The pod identity would pin harder still, but it is
+// not what any decision here turns on, and a claim that is read is a claim that
+// has to keep being true.
+type nodeBoundClaims struct {
+	jwt.RegisteredClaims
+	Kubernetes struct {
+		Node struct {
+			Name string `json:"name"`
+			UID  string `json:"uid"`
+		} `json:"node"`
+	} `json:"kubernetes.io"`
 }
 
 // Verifier validates a projected ServiceAccount token against the cluster
@@ -77,16 +115,17 @@ func NewVerifier(keys KeyProvider, audience string, opts ...Option) *Verifier {
 // Verify validates tokenString and returns the established identity. It checks,
 // in one pass: the signature (against the kid-selected key, asymmetric methods
 // only), that expiry is present and unexpired, that the audience contains the
-// configured value, and — when configured — that the subject is the expected
-// ServiceAccount. Any failure returns an error and a zero Identity; nothing is
-// trusted from an unverified token.
+// configured value, that the token names the node its bearer runs on, and —
+// when configured — that the subject is the expected ServiceAccount. Any failure
+// returns an error and a zero Identity; nothing is trusted from an unverified
+// token.
 func (v *Verifier) Verify(ctx context.Context, tokenString string) (Identity, error) {
 	keyfunc := func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
 		return v.keys.Key(ctx, kid)
 	}
 
-	var claims jwt.RegisteredClaims
+	var claims nodeBoundClaims
 	_, err := jwt.ParseWithClaims(tokenString, &claims, keyfunc,
 		jwt.WithValidMethods(asymmetricMethods),
 		jwt.WithExpirationRequired(),
@@ -101,8 +140,20 @@ func (v *Verifier) Verify(ctx context.Context, tokenString string) (Identity, er
 		return Identity{}, fmt.Errorf("nodeauth: token subject %q is not the expected %q", claims.Subject, v.expectedSubject)
 	}
 
+	// A token with no node claim is not a token the kubelet projected into a
+	// running pod — it is one something minted directly, e.g. through the
+	// TokenRequest API with no bound object. Such a token carries no node
+	// identity at all, so the caller could claim any node; rejecting it is the
+	// only answer that keeps the rest of this package's promise (ADR 0040).
+	if claims.Kubernetes.Node.Name == "" {
+		return Identity{}, fmt.Errorf("nodeauth: token for subject %q carries no kubernetes.io node claim; "+
+			"only a token projected into a running pod is accepted", claims.Subject)
+	}
+
 	id := Identity{
 		Subject:  claims.Subject,
+		Node:     claims.Kubernetes.Node.Name,
+		NodeUID:  claims.Kubernetes.Node.UID,
 		Audience: []string(claims.Audience),
 	}
 	if claims.ExpiresAt != nil {

@@ -42,6 +42,8 @@ func TestParseRole(t *testing.T) {
 // proc tree: it must complete without touching a Kubernetes client and return
 // nil. It is the guard that the node role has no API dependency.
 func TestRunNodeSinglePass(t *testing.T) {
+	// The node refuses to start without a name to speak for (ADR 0040).
+	t.Setenv("NODE_NAME", "node-1")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	done := make(chan error, 1)
 	go func() {
