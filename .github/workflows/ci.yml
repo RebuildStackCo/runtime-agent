@@ -41,6 +41,9 @@ jobs:
       # customer can choose. The rendered output is asserted by the Go tests
       # above; this is the CLI's own opinion of the chart (ADR 0036).
       - run: make chart-lint
+      # Reachability, not the module graph: this fails only on vulnerabilities
+      # the code actually calls, standard library included (ADR 0038).
+      - run: make vulncheck
 
   lint:
     name: Lint (golangci-lint)

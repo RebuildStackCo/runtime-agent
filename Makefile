@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint chart-lint tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e
+.PHONY: build test lint chart-lint vulncheck tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -27,6 +27,19 @@ test: ## Run all tests with the race detector, and type-check the e2e-tagged one
 
 lint: ## Run golangci-lint
 	golangci-lint run
+
+vulncheck: ## Scan for known vulnerabilities reachable from this code, standard library included
+	# Fails only on vulnerabilities the code actually calls. A finding in a
+	# module we require but never reach is reported and does not fail — which is
+	# the right line: `golang.org/x/crypto/openpgp` arrives through helm, is
+	# declared unmaintained with no fixed version, and is not linked into the
+	# agent binary at all.
+	#
+	# This exists because Dependabot answers a different question. It walks the
+	# module graph, so it found one transitive dependency that is not in the
+	# shipped image, and could not see sixteen standard-library vulnerabilities
+	# that were (ADR 0038).
+	go tool govulncheck ./...
 
 chart-lint: ## Lint the Helm chart with the helm CLI, once per install profile
 	go tool helm lint charts/runtime-agent --set profile=metrics-only

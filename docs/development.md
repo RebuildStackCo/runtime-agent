@@ -114,6 +114,12 @@ Every push and PR runs (`.github/workflows/ci.yml`):
 - With the Go scaffolding: `go build`, `go test`, `golangci-lint`.
 - **`make chart-lint`** — the Helm chart, once per install profile. helm is
   wired as a Go tool (like kind), so nothing needs installing separately.
+- **`make vulncheck`** — `govulncheck` over the whole module, standard library
+  included. It gates on **reachability**: a vulnerability the code calls fails
+  the build, one in a module nothing reaches is reported and does not. That
+  distinction is the point — Dependabot walks the module graph and cannot see
+  the standard library, where all sixteen findings were the first time this ran
+  ([ADR 0038](adr/0038-reachability-is-the-gate.md)).
 - With the protobuf schema: `buf lint` and **`buf breaking`** against `main` —
   the N-2 compatibility promise in `backend-requirements.md` §6 is enforced
   mechanically, not by review vigilance.
