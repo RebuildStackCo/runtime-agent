@@ -13,10 +13,9 @@ import (
 // that it happened (ADR 0029).
 //
 // It exists because usage rollups systematically misrepresent short-lived
-// workloads. A Job that runs ninety seconds inside an hour-long window reports a
-// tiny average, and `covered_nanoseconds` says the coverage was low without
-// saying why. This is the denominator: the run happened, it took this long, and
-// it finished.
+// workloads: a Job running ninety seconds inside an hour-long window reports a
+// tiny average, and `covered_nanoseconds` says coverage was low without saying
+// why. This is the denominator.
 type JobRun struct {
 	Namespace string
 	// Workload is the CronJob that scheduled this run, or the Job itself when
@@ -116,16 +115,14 @@ func (w *PodWatcher) resolveJobWorkload(job *batchv1.Job) WorkloadRef {
 	return WorkloadRef{Kind: "Job", Name: job.Name}
 }
 
-// admitJob runs a Job through the filter. The workload step is its owning
-// CronJob; the object step is the Job's own annotations, which is where an
-// annotation on a CronJob's `jobTemplate.metadata` lands; and the pod-template
-// step is what excluded the run's pods.
+// admitJob runs a Job through the filter: the workload step is its owning
+// CronJob, the object step the Job's own annotations (where an annotation on a
+// CronJob's `jobTemplate.metadata` lands), and the pod-template step is what
+// excluded the run's pods.
 //
-// That last step is what keeps this payload honest. A customer who opted out
-// the way security.md documented before ADR 0028 wrote the annotation into the
-// pod template. Their pods are excluded, and if `job_runs` ignored the template
-// the agent would ship facts about a workload the customer refused — collected
-// and sent, which is worse than collected and dropped.
+// That last step keeps the payload honest — a customer who opted out the way
+// security.md documented before ADR 0028 wrote the annotation into the pod
+// template, and ignoring it would ship facts about a workload they refused.
 func (w *PodWatcher) admitJob(job *batchv1.Job, count bool) bool {
 	var nsAnnotations map[string]string
 	if ns, err := w.nsLister.Get(job.Namespace); err == nil {

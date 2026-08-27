@@ -1,17 +1,10 @@
-// Package docs holds no code. It exists so that the promises in
-// `security.md` can be checked the way everything else in this repository is
-// checked: by a test that fails.
+// Package docs holds no code. It exists so that the promises in `security.md`
+// can be checked the way everything else here is: by a test that fails.
 //
-// `security.md` is the promise to customers about what the agent can access and
-// what leaves the cluster, and until now it was the only document in the tree
-// with no mechanism behind it. An audit found the predictable result — three of
-// the ten payload kinds were never named in the section that claims to
-// enumerate what leaves, and a cross-reference pointed at a section that did not
-// exist. Both are mechanical, so both are checked here (ADR 0022).
-//
-// What is deliberately not checked: whether the prose is accurate. No test can
-// read "the agent never reads Secrets" and confirm it. What a test can hold is
-// the part that is a list — and the list is exactly where the drift was.
+// A document with no mechanism drifted predictably: three of ten payload kinds
+// unnamed in the section that claims to enumerate what leaves (ADR 0022). What
+// a test can hold is the part that is a list, never whether the prose is true.
+// Size is held by prose_test.go.
 package docs
 
 import (
@@ -60,15 +53,10 @@ func payloadTableKinds(t *testing.T) map[string]bool {
 	return kinds
 }
 
-// The table and the registry must be the same set, in both directions. §8 is
-// the section a security review reads to learn what leaves the cluster, so a
-// kind missing from it is an undisclosed payload, and a kind listed there that
-// nothing ships is a capability the agent does not have.
-//
-// This is the direction that actually failed: `usage_snapshot`, `usage_window`
-// and `ebpf_profile` shipped for months while the document described the first
-// two only as "hourly rollup histograms" and never named the third, so a
-// reviewer could not map the document onto the wire.
+// The table and the registry must be the same set, both directions. A kind
+// missing from §8 is an undisclosed payload; a kind listed there that nothing
+// ships is a capability the agent does not have. The first is what failed:
+// three kinds shipped for months while the document never named them.
 func TestSecurityDocPayloadTableMirrorsTheRegistry(t *testing.T) {
 	listed := payloadTableKinds(t)
 

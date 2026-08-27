@@ -18,16 +18,13 @@ type PodBinding struct {
 	ContainerID string
 }
 
-// The kubelet encodes the pod UID into the cgroup path. Two drivers produce
-// two shapes:
+// The kubelet encodes the pod UID into the cgroup path, in two shapes:
 //
 //	cgroupfs: /kubepods/burstable/pod<uid>/<container-id>
-//	systemd:  /kubepods.slice/kubepods-burstable.slice/
-//	          kubepods-burstable-pod<uid>.slice/cri-containerd-<container-id>.scope
+//	systemd:  /kubepods.slice/…/kubepods-burstable-pod<uid>.slice/cri-containerd-<id>.scope
 //
-// Under the systemd driver the UID's dashes become underscores. We match both
-// and normalize underscores back to dashes so callers always see the canonical
-// form the API server would report.
+// Under systemd the UID's dashes become underscores; both are matched and
+// normalized back to the form the API server would report.
 var (
 	podUIDPattern = regexp.MustCompile(`pod([0-9a-fA-F]{8}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{12})`)
 	// A container ID is a 64-character hex digest. It may be bare (cgroupfs) or

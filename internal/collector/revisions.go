@@ -56,17 +56,10 @@ type ReplicaSetInfo struct {
 // ReplicaSets returns the collected view of every ReplicaSet belonging to a
 // Deployment that has admitted pods.
 //
-// Which Deployments those are is inherited rather than decided again: the set is
-// read from the admitted pod index, so a workload excluded by a namespace
-// filter or by an opt-out annotation on its namespace, itself or its pods is
-// absent here too. One admission decision, one lifetime, no second source of
-// truth — the property `podIndexEntry.info` already relies on, and the reason
-// this needs no filter call of its own.
-//
-// A Deployment whose pods are all gone therefore has no revisions here, even
-// while its ReplicaSets still exist. That is the same forgetting ADR 0018
-// decided for the Go inventory: the snapshot is current state, and history is
-// the backend's to accumulate.
+// Which Deployments those are is inherited, not decided again: the set is read
+// from the admitted pod index, so an excluded workload is absent here too. A
+// Deployment whose pods are all gone therefore has no revisions even while its
+// ReplicaSets exist — the forgetting ADR 0018 chose for the Go inventory.
 func (w *PodWatcher) ReplicaSets() []ReplicaSetInfo {
 	collected := w.collectedDeployments()
 	if len(collected) == 0 {

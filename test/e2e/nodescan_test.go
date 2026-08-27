@@ -25,23 +25,13 @@ const sampleModulePath = "example.com/rebuildstack-e2e/goworkload"
 // the dependency set survives the node→controller join.
 const sampleDependency = "github.com/cespare/xxhash/v2"
 
-// TestNodeScannerFailsClosedWithoutScope deploys the node-role DaemonSet from
-// the shipped manifest into kind alongside a known Go workload, with no scope
-// endpoint, and asserts the scanner reports nothing about it.
+// TestNodeScannerFailsClosedWithoutScope deploys the node DaemonSet into kind
+// beside a known Go workload, with no scope endpoint, and asserts the scanner
+// reports nothing about it — ADR 0015 against the real image and manifest. A Go
+// workload really is running there; it must appear in neither payload nor log.
 //
-// This is the security property of ADR 0015 proven against the real image and
-// the real manifest: a node that cannot ask the controller which pods passed the
-// customer's filters must scan none of them, because its cgroup gives it a pod
-// UID and never a namespace. A Go workload really is running on the node here —
-// the same one the inventory e2e finds — and it must still not appear, in the
-// payload or in the log.
-//
-// The positive path (workload found, joined, spooled) is TestGoInventoryEndToEnd,
-// which deploys a controller and asserts on the payload rather than the log.
-//
-// It is gated on E2E_AGENT_IMAGE / E2E_SAMPLE_IMAGE (kind-loaded images); use
-// `make node-e2e`. Without them the test skips, since the in-process e2e run
-// (`make e2e`) has no images to deploy.
+// The positive path is TestGoInventoryEndToEnd. Gated on E2E_AGENT_IMAGE and
+// E2E_SAMPLE_IMAGE (kind-loaded); use `make node-e2e`.
 func TestNodeScannerFailsClosedWithoutScope(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	sampleImage := os.Getenv("E2E_SAMPLE_IMAGE")

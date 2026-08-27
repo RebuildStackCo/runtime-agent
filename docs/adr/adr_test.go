@@ -1,19 +1,11 @@
-// Package adr holds no code. It exists so that the decision records in this
-// directory can be checked the way everything else in this repository is
-// checked: by a test that fails.
+// Package adr holds no code. It exists so that the decision records here can be
+// checked the way everything else in this repository is: by a test that fails.
 //
-// The problem this answers is recorded in ADR 0022. Backward references — "this
-// amends 0012 §1" — were already written in almost every ADR header, in two
-// incompatible prose shapes, and two ADRs that amended others said nothing at
-// all. What was missing was the other direction: a reader arriving at ADR 0012
-// saw a registry table six later decisions had rewritten, with no sign that
-// anything had happened to it. Planning a slice from that table is how three
-// separate inaccuracies reached merged pull requests.
-//
-// So the header carries a machine-readable `Amends:` line, and the mirror
-// `Amended by:` line on the target is checked here. Neither can drift: an ADR
-// that amends another cannot stay silent about it, and the amended ADR cannot
-// stay unaware.
+// Backward references were already written in almost every header, in two
+// incompatible shapes, and two ADRs that amended others said nothing at all.
+// What was missing was the other direction — a reader arriving at an amended ADR
+// saw no sign anything had happened to it, and planning a slice from that table
+// is how three inaccuracies reached merged pull requests (ADR 0022).
 package adr
 
 import (

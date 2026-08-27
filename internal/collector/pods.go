@@ -325,14 +325,9 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 // about it: whether it ever filled, and whether it is still being fed.
 //
 // HasSynced answers the first, and choosing it over "the list came back empty"
-// is the point: a cluster with no PodDisruptionBudgets syncs fine and lists zero
-// objects, while a cluster that denied the permission never syncs at all. An
-// empty result and a refused read are therefore different states rather than the
-// same silence.
-//
-// It cannot answer the second, because it is a one-way latch — a cache that
-// filled and then lost its watch keeps saying yes while serving what it last
-// held. The health record covers that half (ADR 0035).
+// is the point — a cluster with no PodDisruptionBudgets syncs and lists zero, a
+// cluster that denied the permission never syncs. It cannot answer the second,
+// being a one-way latch; the health record covers that half (ADR 0035).
 type policySource struct {
 	name   string
 	synced cache.InformerSynced
@@ -351,17 +346,11 @@ func (w *PodWatcher) clock() time.Time {
 // unavailablePolicySources returns the names of the caches this payload cannot
 // be assembled from, sorted, for the payload to declare.
 //
-// A source is unavailable if it never filled or if it is failing now. The two
-// are one statement to a consumer — "not available at this capture" — and
-// deliberately not distinguished in the payload, for the same reason ADR 0033 §2
-// refused to distinguish the causes: neither the shape nor the reader has a use
-// for the difference.
-//
-// The names are resource classes, never customer objects, so nothing here can
-// identify a workload (CLAUDE.md invariant 6). The answer is about this capture
-// and no other: a cache that fills a minute later is simply present at the next
-// flush, and a permission restored is declared unavailable for a capture or two
-// more, which is the direction to be wrong in.
+// A source is unavailable if it never filled or is failing now; the two are one
+// statement to a consumer and deliberately not distinguished (ADR 0033 §2). The
+// names are resource classes, never customer objects (CLAUDE.md invariant 6).
+// The answer is about this capture alone — a permission restored is declared
+// unavailable for a capture or two more, which is the direction to be wrong in.
 func (w *PodWatcher) unavailablePolicySources(want ...string) []string {
 	wanted := make(map[string]bool, len(want))
 	for _, name := range want {
@@ -426,19 +415,13 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	// registered with the factory — every Lister() call instantiates one — so
 	// Start runs them like the rest.
 
-	// The watchdog starts before the wait, not after it, and that ordering is
-	// the point. A gating cache that is refused from the first LIST never syncs,
-	// and WaitForCacheSync has no timeout — the agent would sit there
-	// indefinitely, holding no data and reporting no error. Watching the
-	// failures makes the two cases one: a cache that never filled and a cache
-	// that stopped being fed both end the same way, with an error naming the
-	// resource (ADR 0035).
+	// The watchdog starts before the wait: a gating cache refused from the
+	// first LIST never syncs, and WaitForCacheSync has no timeout, so the agent
+	// would sit there holding no data and reporting no error (ADR 0035).
 	//
-	// The informers run on runCtx rather than on ctx, because Shutdown below
-	// waits for every one of them: started on the outer context they would
-	// outlive the watchdog's verdict and hold the agent up until the process
-	// was signalled — which is the shutdown this decision exists to avoid
-	// waiting for.
+	// The informers run on runCtx rather than ctx because Shutdown below waits
+	// for all of them — on the outer context they would outlive the watchdog's
+	// verdict and hold the agent up until the process was signalled.
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 	fatal := make(chan error, 1)
@@ -675,19 +658,14 @@ func (w *PodWatcher) LookupPodByName(namespace, name string) (uid types.UID, wor
 	return uid, entry.workload, true
 }
 
-// LookupContainerOnNode resolves a node-role fact — a pod UID and a container
-// ID, reported by node — to the workload, container name, and image digest the
-// controller has for it (ADR 0010). It reports false when the pod is unknown or
-// excluded (informer lag or a filtered pod), when the container ID is not among
-// the pod's started containers, or when the pod is not on node; the caller
-// counts those as unjoined and drops them, never guessing. The container ID is
-// matched in the node's bare, lowercased form.
+// LookupContainerOnNode resolves a node-role fact — a pod UID and container ID
+// reported by node — to the workload, container name and image digest the
+// controller has for it (ADR 0010). False when the pod is unknown or excluded,
+// when the ID is not among its started containers, or when the pod is not on
+// node; the caller drops those rather than guessing.
 //
-// The node argument is what keeps a report attributable (ADR 0040). A pod UID
-// and container ID pair is internally consistent no matter who sends it, so
-// without this check any node's token could file inventory facts and profiles
-// against a workload running somewhere else in the cluster. The reporting node
-// is taken from the caller's token, never from the report.
+// node is what keeps a report attributable (ADR 0040): a UID/ID pair is
+// internally consistent whoever sends it. It comes from the token, not the body.
 func (w *PodWatcher) LookupContainerOnNode(podUID types.UID, containerID, node string) (namespace string, workload WorkloadRef, container, imageDigest string, ok bool) {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
@@ -738,14 +716,12 @@ func (w *PodWatcher) ContainersOnNode(node string) []ContainerOnNode {
 }
 
 // AdmittedPodsOnNode returns the UIDs of the pods on node that passed the
-// filters, sorted. It is how the node role learns which pods it may scan: the
-// node resolves a process only as far as a pod UID through its cgroup and has no
-// API access to check a namespace itself (ADR 0009), so the controller — which
-// holds the filters — answers for it.
+// filters, sorted. It is how the node role learns which pods it may scan, since
+// it resolves a process only to a pod UID and has no API access (ADR 0009).
 //
-// The set is the admitted index itself, so a pod excluded by a namespace filter
-// or an opt-out annotation cannot appear here: excluded pods never enter the
-// index, and one that opts out mid-flight is dropped from it on the next update.
+// The set is the admitted index itself, so an excluded pod cannot appear here:
+// excluded pods never enter the index, and one that opts out mid-flight is
+// dropped on the next update.
 func (w *PodWatcher) AdmittedPodsOnNode(node string) []string {
 	w.indexMu.RLock()
 	var out []string
@@ -943,15 +919,12 @@ func containerDigests(pod *corev1.Pod) map[string]string {
 	return digests
 }
 
-// parseImageDigest extracts the content digest from a container status
-// imageID. The kubelet reports imageID in a few shapes depending on the
-// runtime: "registry/repo@sha256:…", the older
-// "docker-pullable://registry/repo@sha256:…", or occasionally a bare
-// "sha256:…" with no repository. The digest itself — everything from the
-// algorithm prefix on — is what identifies the image content across registries
-// and mirrors, so the registry prefix is discarded and only the digest kept.
-// Returns "" when the imageID carries no digest (e.g. before the image is
-// pulled, or a runtime that reports only a local reference).
+// parseImageDigest extracts the content digest from a container status imageID.
+// The kubelet reports it as "registry/repo@sha256:…", the older
+// "docker-pullable://…", or a bare "sha256:…". The digest identifies the image
+// content across registries and mirrors, so the prefix is discarded. Returns ""
+// when the imageID carries no digest — before the pull, or a runtime that
+// reports only a local reference.
 func parseImageDigest(imageID string) string {
 	if at := strings.LastIndex(imageID, "@"); at >= 0 {
 		return imageID[at+1:]

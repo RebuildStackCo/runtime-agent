@@ -31,22 +31,14 @@ const (
 	jobRunsSpoolGlob        = spoolDir + "/job-runs-*.json"
 )
 
-// TestPolicyAndJournalsEndToEnd exercises the four payload kinds that had unit
-// tests and golden bytes but had never met a real API server: `job_runs`
-// (ADR 0029), `deployment_revisions` (ADR 0030), `workload_policy` and
-// `cluster_policy` (ADR 0032).
+// TestPolicyAndJournalsEndToEnd exercises the four payload kinds that had golden
+// bytes but had never met a real API server: `job_runs` (ADR 0029),
+// `deployment_revisions` (ADR 0030), `workload_policy` and `cluster_policy`
+// (ADR 0032).
 //
-// The workload-policy assertion is the one that earns the test. Its records can
-// only be built if the ClusterRole actually grants the six resources ADR 0032
-// added — and since ADR 0033 a missing grant no longer stops the agent, so a
-// mistake there would now be silent in every other test. Here it surfaces as an
-// `unavailable_sources` line, which this test requires to be absent.
-//
-// Fixtures live in their own namespace: a ResourceQuota or LimitRange in the
-// controller's namespace would apply to the controller's own pod, and the test
-// would then be measuring its own interference.
-//
-// Gated on E2E_AGENT_IMAGE and E2E_SPOOL_READER_IMAGE; use `make policy-e2e`.
+// Workload policy earns the test: since ADR 0033 a missing grant no longer stops
+// the agent, so it would be silent everywhere else and surfaces here as an
+// `unavailable_sources` line this test requires to be absent.
 func TestPolicyAndJournalsEndToEnd(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	if agentImage == "" {

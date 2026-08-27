@@ -239,14 +239,12 @@ func (w *PodWatcher) WorkloadPolicies() ([]WorkloadPolicy, []string) {
 	return out, unavailable
 }
 
-// The caches each policy payload reads. They are listed per payload rather than
-// pooled because each payload must be readable on its own: the two have distinct
-// natural keys, so the backend upserts them independently and one can arrive
-// without the other (ADR 0033).
+// The caches each policy payload reads, listed per payload rather than pooled
+// because each must be readable on its own: the two have distinct natural keys,
+// so one can arrive without the other (ADR 0033).
 //
-// The storage-class catalog is deliberately absent from the workload list. A
-// claim's `storage_class` is a name read from the PersistentVolumeClaim, not
-// from the catalog; the catalog says what that name means, which is a
+// The storage-class catalog is absent from the workload list: a claim's
+// `storage_class` is a name read from the PVC, and what that name means is a
 // cluster-policy question.
 var (
 	workloadPolicySources = []string{

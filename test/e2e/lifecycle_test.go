@@ -24,19 +24,14 @@ const (
 	disruptionsSpoolGlob      = spoolDir + "/disruptions-*.json"
 )
 
-// TestPodLifecycleEndToEnd exercises both halves of ADR 0021 in a real cluster.
+// TestPodLifecycleEndToEnd exercises both halves of ADR 0021 in a real cluster:
+// a pod that cannot fit anywhere is reported unschedulable with the scheduler's
+// reason, and a low-priority pod preempted by a high-priority one reaches
+// pod_disruptions with the node it was taken from.
 //
-// First: a pod that cannot fit anywhere is reported as unschedulable *with the
-// scheduler's reason*, inside the workload-metadata record that already showed
-// the replica shortfall.
-//
-// Second: a low-priority pod is preempted by a high-priority one, and the
-// preemption reaches the pod_disruptions payload with the node it was taken
-// from. Preemption is used rather than node-pressure eviction because it is the
-// one disruption a test can cause deterministically — and it is the same
-// capacity story, told by the scheduler instead of the kubelet.
-//
-// Gated on E2E_AGENT_IMAGE (kind-loaded); use `make lifecycle-e2e`.
+// Preemption rather than node-pressure eviction, because it is the one
+// disruption a test can cause deterministically. Gated on E2E_AGENT_IMAGE
+// (kind-loaded); use `make lifecycle-e2e`.
 func TestPodLifecycleEndToEnd(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	if agentImage == "" {

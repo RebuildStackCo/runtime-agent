@@ -11,24 +11,9 @@ import (
 )
 
 // The two roles have separate configuration schemas, and a setting belongs in
-// the node's file only if the node can enforce it alone (ADR 0025). The symbol
-// allow-list and the cost ceilings qualify: the node applies them to its own
-// samples with no help from anyone, so no controller reply can widen them.
-//
-// They shared one schema until ADR 0025, and the cost was not hypothetical. The
-// node's sample ConfigMap carried `eligibleNamespaces` under the comment
-// "which workloads may be profiled at all (empty = none)", the node parsed it,
-// logged it, and enforced nothing — a knob that read as deny-by-default and was
-// inert. Separate types make that a parse error instead: `UnmarshalStrict`
-// rejects a field the node's schema does not have, so a setting the node cannot
-// honor stops the node instead of misleading its operator.
-//
-// That field is gone from both schemas now. Which workloads may be profiled is
-// which workloads are collected, and Filters already says so; a second namespace
-// list was the same intent expressed twice, with the opposite meaning for an
-// empty value — and the shipped controller sample proved the trap by enabling
-// profiling with an empty eligible set, which produces nothing, forever,
-// silently.
+// the node's file only if the node can enforce it alone (ADR 0025). Separate
+// types make a setting the node cannot honor a parse error rather than an inert
+// knob: `UnmarshalStrict` rejects a field the schema does not have.
 
 // Config is the root of the controller's configuration file.
 type Config struct {

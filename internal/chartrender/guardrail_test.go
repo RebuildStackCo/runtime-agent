@@ -10,39 +10,20 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// What this file is for.
+// These tests assert absences, which chart_test.go cannot: it enumerates what
+// the chart must contain, and a presence test is indifferent to an addition
+// standing next to it. Five chart mutations that break plain promises in
+// docs/security.md — `secrets` in a read-only rule, hostPID on the controller,
+// a capability added beside `drop: [ALL]`, a privileged init container, a
+// writable hostPath — each passed the whole suite green (ADR 0044).
 //
-// chart_test.go asserts that the chart contains what it must: every grant the
-// agent's informers need, the capabilities the profiler asks for, the policy on
-// the receiver's port. Those tests enumerate what is *present*, and a test that
-// enumerates presence is indifferent to an addition standing next to it.
-//
-// The promises this product makes are mostly about absence. "No secrets, no
-// configmaps" (docs/security.md §9), "the controller is an ordinary workload"
-// (§7), "no host access outside the node role" (§2). None of those survives a
-// presence test, and each was measured passing a whole green suite:
-//
-//	resources: [pods, namespaces, nodes, secrets, configmaps]   PASS
-//	hostPID: true, hostNetwork: true on the controller          PASS
-//	capabilities.add: [NET_ADMIN, SYS_ADMIN] on the controller  PASS
-//	a privileged initContainer in the Deployment                PASS
-//	hostPath: / mounted writable into the controller            PASS
-//
-// So the tests here are written the other way round: they name the complete
-// permitted set and fail on anything outside it. An addition has to be argued
-// for in a diff that changes a test, which is the point — the failure mode these
-// guard against is not someone writing a wrong rule, it is a right-looking word
-// added to a right rule and nobody noticing.
+// So each test here names the complete permitted set and fails on anything else.
 
-// The controller's grant is a closed list, not a floor.
-// TestTheClusterRoleGrantsEveryCacheTheAgentOpens checks that nothing needed is
-// missing; this checks that nothing else is there. Both are necessary: one word
-// added to an existing rule keeps every verb read-only, keeps every required
-// grant in place, and quietly breaks the promise of docs/security.md §9.
-//
-// The permitted set is spelled out here rather than derived from the chart,
-// because a test that reads its expectation from the thing it is testing asserts
-// nothing.
+// The controller's grant is a closed list, not a floor: one word added to an
+// existing rule keeps every verb read-only, keeps every required grant in place,
+// and quietly breaks docs/security.md §9. The permitted set is spelled out here
+// rather than derived from the chart, because a test that reads its expectation
+// from the thing it tests asserts nothing.
 func TestTheClusterRoleNamesNothingBeyondThisList(t *testing.T) {
 	permitted := map[string][]string{
 		"":                  {"pods", "namespaces", "nodes", "nodes/proxy", "limitranges", "resourcequotas", "persistentvolumeclaims"},
@@ -104,16 +85,13 @@ func TestTheOnlyNonResourceURLsAreTheOnesNodeTokensNeed(t *testing.T) {
 	}
 }
 
-// docs/security.md §2 draws the boundary between the two roles at the host: the
-// node role reaches it, the controller is an ordinary workload that could run
-// anywhere. hostPID is what the scanner needs to see other containers' /proc
-// (ADR 0009), so it is asserted in both directions — absent from the controller,
-// and present on the node, because losing it there makes the scanner collect
-// nothing and say nothing about why.
+// docs/security.md §2 draws the host boundary between the two roles. hostPID is
+// what the scanner needs to see other containers' /proc (ADR 0009), so it is
+// asserted both ways — absent from the controller, present on the node, since
+// losing it there makes the scanner collect nothing and say nothing about why.
 //
-// hostNetwork and hostIPC are on no pod in any profile. Neither has ever been
-// needed, and hostNetwork in particular would put the receiver's port on the
-// node's address, where the NetworkPolicy that restricts it does not reach.
+// hostNetwork and hostIPC are on no pod: hostNetwork would put the receiver's
+// port on the node's address, where the NetworkPolicy does not reach.
 func TestOnlyTheNodeSharesTheHostsNamespaces(t *testing.T) {
 	for name, values := range profiles() {
 		t.Run(name, func(t *testing.T) {
@@ -140,17 +118,13 @@ func TestOnlyTheNodeSharesTheHostsNamespaces(t *testing.T) {
 }
 
 // docs/security.md §7 promises the added capabilities belong to the node role
-// alone. TestNoContainerIsPrivilegedAndCapabilitiesAreExactlyWhatIsPromised
-// pins the node's set exactly; every other container must add nothing at all.
+// alone; chart_test.go pins the node's set, and every other container must add
+// nothing at all.
 //
-// `drop: [ALL]` does not cover this, and the reason it looks like it should is
-// what makes the hole worth a test. The runtime applies the drop and then the
-// add, so the add wins. Measured on Kubernetes 1.36, one container with
-// `drop: [ALL]` and `add: [SYS_ADMIN, NET_ADMIN]`:
-//
-//	CapEff: 0000000000201000   — bits 21 and 12, exactly the two added
-//
-// A securityContext that reads as careful, holding CAP_SYS_ADMIN.
+// `drop: [ALL]` does not cover this: the runtime applies the drop and then the
+// add, so the add wins. Measured on 1.36.1, a container with `drop: [ALL]` and
+// `add: [SYS_ADMIN, NET_ADMIN]` has CapEff 0000000000201000 — bits 21 and 12,
+// exactly the two added, in a securityContext that reads as careful.
 func TestOnlyTheNodeContainerAddsACapability(t *testing.T) {
 	for name, values := range profiles() {
 		t.Run(name, func(t *testing.T) {
@@ -175,15 +149,11 @@ func TestOnlyTheNodeContainerAddsACapability(t *testing.T) {
 
 // The controller touches no part of the node it runs on. TestEveryHostMountIsReadOnly
 // bounds how a host path may be mounted; this says the controller may not mount
-// one at all, read-only included — a read-only mount of the host filesystem is
-// still a read of the host filesystem, and §7's blast-radius paragraphs are
-// written about the DaemonSet on the understanding that the controller has no
-// such reach.
+// one at all, read-only included — §7's blast-radius paragraphs are written
+// about the DaemonSet on the understanding that the controller has no reach.
 //
-// The same goes for the volume types that read the cluster around the pod: the
-// controller's config comes from its own ConfigMap and nothing else, and a
-// projected serviceAccountToken belongs to the node pod, which is the side that
-// authenticates (ADR 0010).
+// Same for volumes that read the cluster around the pod: config comes from its
+// own ConfigMap, and a projected token belongs to the node (ADR 0010).
 func TestTheControllerReachesNothingOutsideItsOwnPod(t *testing.T) {
 	for name, values := range profiles() {
 		t.Run(name, func(t *testing.T) {

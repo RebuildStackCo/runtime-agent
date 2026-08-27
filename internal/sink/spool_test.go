@@ -1285,12 +1285,11 @@ func decodeSpooled(t *testing.T, path string, into any) {
 // TestAnOwnerReferenceNameCannotEscapeTheSpool is the traversal this slice
 // closes (ADR 0042).
 //
-// A profile's filename is built from the workload name, which comes from
-// `ownerReferences[].name`. The API server validates that field for
-// non-emptiness and nothing else — no DNS-1123, no character set — so a pod
-// created with a crafted owner reference put an arbitrary path into a name that
-// filepath.Join then resolved. In the shipped chart a readOnlyRootFilesystem
-// made most targets fail with EROFS, which is luck rather than a design.
+// A profile's filename is built from the workload name, taken from
+// `ownerReferences[].name`, which the API server validates only for
+// non-emptiness — so a crafted owner reference put an arbitrary path into a name
+// filepath.Join then resolved. readOnlyRootFilesystem made most targets fail
+// with EROFS, which is luck rather than design.
 func TestAnOwnerReferenceNameCannotEscapeTheSpool(t *testing.T) {
 	hostile := []string{
 		"../../../../tmp/pwn",

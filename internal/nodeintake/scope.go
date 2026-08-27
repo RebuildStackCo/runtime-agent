@@ -31,21 +31,12 @@ type NodeScoper interface {
 
 // ScopeHandler answers a node's scan-scope query.
 //
-// Why the reply carries data. The node role holds zero Kubernetes API access
-// (ADR 0009) and resolves a process only as far as a pod UID and container ID,
-// through its cgroup — never to a namespace. It therefore cannot itself honor
-// the namespace filters and opt-out annotations that docs/security.md §10.2
-// promises are applied on the node, before transport. The controller holds those
-// filters, so the node asks it which pods are in scope.
+// The node holds zero API access (ADR 0009) and resolves a process only to a pod
+// UID, never to a namespace, so it cannot honor the filters security.md §10.2
+// promises are applied on the node. It asks the controller, which holds them.
 //
-// This does not breach invariant 1 (no control channel, ADR 0001), for the same
-// reasons as the targets query of ADR 0011 §3: the external backend is not
-// involved at any point; the reply is pod identifiers derived from the operator's
-// own Helm-values filters applied to the live cluster, never configuration or a
-// command; and the reply can only ever *narrow* what the node does. A rogue or
-// broken controller can withhold pods from the scope — the node then scans less —
-// but naming a pod that the filters exclude is impossible, because the set is
-// PodWatcher's admitted index, which excluded pods never enter.
+// Not a control channel (ADR 0001): the reply is pod identifiers from the
+// admitted index, so it can only narrow what the node scans.
 type ScopeHandler struct {
 	verifier TokenVerifier
 	scoper   NodeScoper

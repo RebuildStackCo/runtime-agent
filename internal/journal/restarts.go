@@ -3,10 +3,9 @@
 // counters, terminations — which is what makes their provenance `journal`
 // rather than `measured` or `structural` (ADR 0012).
 //
-// The windows are wall-clock aligned and the same length as the usage windows,
-// on purpose: a restart count is read next to the CPU and memory of the same
-// hour, and a window that did not line up would make that comparison a
-// judgement call (ADR 0020).
+// The windows are wall-clock aligned and the same length as the usage windows:
+// a restart count is read next to the CPU and memory of the same hour, and a
+// window that did not line up would make that comparison a judgement call.
 package journal
 
 import (

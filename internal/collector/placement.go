@@ -39,16 +39,13 @@ const defaultSchedulerName = "default-scheduler"
 const defaultTolerationSeconds int64 = 300
 
 // Placement is what a pod's spec says about where it may run and how much it
-// costs to move it. It is the missing third of the consolidation question:
-// workload metadata says what a workload asks for, node metadata says what kind
-// of machine it got, and this says why it cannot be put somewhere else.
+// costs to move it — the missing third of the consolidation question, after what
+// a workload asks for and what machine it got.
 //
-// Every field is a reduction of the corresponding pod-spec field, not a copy of
-// it — see reducePlacement. Nothing here is judged: a required anti-affinity on
-// hostname is reported as such, and whether that is deliberate or forgotten is a
-// backend rendering (ADR 0004).
-//
-// Every field is omitempty, so a pod with no constraints contributes no bytes.
+// Every field is a reduction of its pod-spec field, not a copy (reducePlacement),
+// and nothing here is judged: whether a hostname anti-affinity is deliberate or
+// forgotten is a backend rendering (ADR 0004). All fields are omitempty, so a
+// pod with no constraints contributes no bytes.
 type Placement struct {
 	// NodeSelector is spec.nodeSelector verbatim — it is already the flat
 	// key/value form the other fields are reduced to.
@@ -152,16 +149,11 @@ func (d *placementDrops) empty() bool { return d.Values == 0 && d.Terms == 0 }
 // reducePlacement reads the nine placement fields of a pod spec and returns the
 // reduced view plus what it refused to carry.
 //
-// This is a reduction and not a faithful copy, and the difference matters for
-// whoever reads the payload: node affinity's terms are OR'd with each other and
-// AND'd within themselves, and flattening loses that structure. What survives
-// answers "what is this workload pinned on, and how hard" — which is the
-// question. Replaying the scheduler's decision from this payload is not
-// possible, and is not something the agent offers.
-//
-// `env`, `args` and `command` sit in the same PodSpec and are never read
-// (CLAUDE.md invariant 4); so do `volumes`, which reference Secrets and
-// ConfigMaps by name.
+// A reduction, not a faithful copy: node affinity's terms are OR'd across and
+// AND'd within, and flattening loses that. What survives answers "what is this
+// pinned on, and how hard"; replaying the scheduler's decision is not offered.
+// `env`, `args`, `command` and `volumes` sit in the same PodSpec and are never
+// read (CLAUDE.md invariant 4).
 func reducePlacement(spec *corev1.PodSpec) (Placement, placementDrops) {
 	var p Placement
 	var drops placementDrops
@@ -347,14 +339,12 @@ func reduceTolerations(tolerations []corev1.Toleration, drops *placementDrops) [
 }
 
 // tolerationIsClusterDefault reports whether a toleration is one the cluster put
-// on every pod rather than one someone wrote. The DefaultTolerationSeconds
-// admission plugin adds `not-ready` and `unreachable` at 300 seconds to every
-// pod that does not already tolerate them, so keeping them would repeat two
-// identical entries on every record in the payload and state nothing.
+// on every pod rather than one someone wrote: DefaultTolerationSeconds adds
+// `not-ready` and `unreachable` at 300s to every pod that does not already
+// tolerate them, and repeating those on every record states nothing.
 //
-// The match is exact on the seconds. A pod tolerating `not-ready` for zero
-// seconds or for an hour has been deliberately tuned — that is how fast it
-// leaves a failing node — and that deviation is kept.
+// The match is exact on the seconds — a pod tolerating `not-ready` for zero or
+// for an hour has been tuned, and that deviation is kept.
 func tolerationIsClusterDefault(t corev1.Toleration) bool {
 	if t.Key != corev1.TaintNodeNotReady && t.Key != corev1.TaintNodeUnreachable {
 		return false

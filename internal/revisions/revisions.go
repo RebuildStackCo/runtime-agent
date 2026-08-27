@@ -2,11 +2,9 @@
 // revisions payload: which builds of a Deployment exist, when each appeared, and
 // how many replicas each is carrying.
 //
-// It is reduction, not judgment (CLAUDE.md: the agent's intelligence is data
-// reduction). Nothing here decides that a rollout is stuck, that a revision is
-// old, or that a change caused anything; those are backend renderings of these
-// facts. The package holds no state: every snapshot is derived from the live
-// ReplicaSet view, so it is loss-harmless by construction (ADR 0003).
+// Reduction, not judgment: nothing here decides that a rollout is stuck or that
+// a change caused anything. The package holds no state — every snapshot is
+// derived from the live ReplicaSet view (ADR 0003).
 package revisions
 
 import (
@@ -25,15 +23,13 @@ type Container struct {
 	Init bool `json:"init,omitempty"`
 }
 
-// Replicas is how many pods a revision is meant to carry and how many it
-// actually has. The three together are what distinguish a finished rollout from
-// one in progress from one that is stuck: a rollout in flight has two revisions
-// with non-zero counts, and a stuck one has a revision whose `desired` is
-// positive and whose `ready` is not.
+// Replicas is how many pods a revision is meant to carry and how many it has.
+// The three together distinguish a finished rollout from one in progress from
+// one that is stuck — two revisions with non-zero counts, or a revision whose
+// `desired` is positive and whose `ready` is not.
 //
-// The agent reports the three numbers and names none of those states. Which of
-// them a reader is looking at is a rendering, and it belongs to whoever has the
-// history to compare against (ADR 0004).
+// The agent reports the numbers and names none of those states: which one a
+// reader is looking at is a rendering (ADR 0004).
 type Replicas struct {
 	Desired int32 `json:"desired"`
 	Current int32 `json:"current"`

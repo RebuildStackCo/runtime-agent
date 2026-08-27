@@ -2,11 +2,9 @@
 // metadata payload: the declared shape of every collected workload container —
 // requests, limits, QoS, declared ports — and where its replicas currently run.
 //
-// It is reduction, not judgment (CLAUDE.md: the agent's intelligence is data
-// reduction). Nothing here compares a request to an observation, ranks a
-// workload, or decides that anything is misconfigured; those are backend
-// renderings of these facts. The package holds no state: every snapshot is
-// derived from the pod index, so it is loss-harmless by construction (ADR 0003).
+// Reduction, not judgment: nothing here compares a request to an observation or
+// decides that anything is misconfigured. The package holds no state — every
+// snapshot is derived from the pod index (ADR 0003).
 package metadata
 
 import (
@@ -20,10 +18,8 @@ import (
 //
 // The first four fields are exactly rollup.Key, so a usage record joins to its
 // declared envelope without a lookup table. ImageDigest extends it because a
-// rollout runs two builds of the same workload at once, and their declared
-// resources may differ: keying on the digest reports both truthfully instead of
-// letting whichever pod was observed last overwrite the other. The extra
-// records collapse back to one when the rollout finishes.
+// rollout runs two builds at once with possibly different declared resources;
+// keying on the digest reports both instead of letting the last one seen win.
 type Key struct {
 	Namespace    string `json:"namespace"`
 	WorkloadKind string `json:"workload_kind"`
@@ -51,18 +47,13 @@ type PodScope struct {
 	// this build.
 	Replicas int `json:"replicas"`
 	// Phases counts those replicas by pod phase (status.phase, verbatim). It
-	// sums to Replicas, and it is what keeps "ten replicas running"
-	// distinguishable from "ten replicas pending" without the agent deciding
-	// which matters. It is also what makes Replicas safe to read: a CronJob's
+	// sums to Replicas and is what makes Replicas safe to read: a CronJob's
 	// workload legitimately reports dozens of Succeeded pods that consume
-	// nothing, and the breakdown is what lets a consumer separate them instead
-	// of the agent silently dropping them.
+	// nothing, and the breakdown lets a consumer separate them.
 	//
-	// Phase is placement and lifecycle, never health. "Running" means the pod
-	// is bound to a node with at least one container started — a pod in
-	// CrashLoopBackOff is Running, and so is one whose readiness probe has
-	// never passed. Readiness lives in status.conditions and container
-	// statuses, which this payload does not carry.
+	// Phase is placement and lifecycle, never health — a pod in
+	// CrashLoopBackOff is Running. Readiness lives in status.conditions, which
+	// this payload does not carry.
 	Phases map[string]int `json:"phases,omitempty"`
 	// Nodes counts those replicas by node name — the join to node metadata, and
 	// through it to zone. Unscheduled pods have no node yet, so Nodes may sum to
@@ -70,27 +61,21 @@ type PodScope struct {
 	// signal, not a gap in collection.
 	Nodes map[string]int `json:"nodes,omitempty"`
 	// Unscheduled counts the replicas not yet on a node, by the reason the
-	// scheduler gave. It explains the Nodes shortfall above rather than
-	// restating it: the shortfall was always visible, the cause was not
-	// (ADR 0021).
+	// scheduler gave — the shortfall above was always visible, the cause was
+	// not (ADR 0021).
 	//
-	// The reasons are not interchangeable. "Unschedulable" means nothing in the
-	// cluster fits the pod, which is a capacity fact. "SchedulingGated" means
-	// the pod is deliberately held by a gate and is not waiting on capacity at
-	// all — counting it as pressure would invent a shortage. "SchedulerError"
-	// is the scheduler failing on the pod's own spec. The agent reports which,
-	// and draws no conclusion (ADR 0004).
+	// The reasons are not interchangeable: "Unschedulable" is a capacity fact,
+	// "SchedulingGated" is a deliberate hold that would invent a shortage if
+	// counted as pressure, "SchedulerError" is the pod's own spec. The agent
+	// reports which and draws no conclusion (ADR 0004).
 	Unscheduled map[string]int `json:"unscheduled,omitempty"`
 	// Placement is what the pod spec says about where these replicas may run
-	// and what it costs to move them. Usage says what a workload consumes,
-	// resources say what it asked for, nodes say what machine it got — and
-	// none of them says why it cannot be put somewhere cheaper. This does.
+	// and what it costs to move them — the one thing usage, resources and node
+	// metadata do not say.
 	//
-	// It is taken from the first pod seen under the key, the same way Image,
-	// Resources and Ports above are. The key carries the image digest, so a
-	// rollout that changes placement produces one record per build, each with
-	// its own constraints, rather than one record with whichever pod was seen
-	// first (ADR 0031).
+	// Taken from the first pod seen under the key, like Image and Resources
+	// above. The key carries the image digest, so a rollout that changes
+	// placement produces one record per build (ADR 0031).
 	Placement collector.Placement `json:"placement,omitzero"`
 }
 

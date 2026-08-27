@@ -3,6 +3,7 @@
 Date: 2026-08-22
 Status: Accepted
 Amends: 0020 §2, 0022 §5
+Amended by: 0044
 
 Closes two of the five items ADR 0022 §5 recorded as open — the label selector
 and the document's present tense — and gives `security.md` the mechanism that

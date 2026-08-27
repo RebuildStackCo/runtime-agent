@@ -2,33 +2,13 @@ package nodeprofile
 
 import "strings"
 
-// This is the security boundary of the profiler, not a data-reduction step: a
-// stack trace is a map of the customer's code structure, and this filter is what
-// makes shipping one defensible (ADR 0011 §4, security.md §8). Its posture is the
-// opposite of the scanner's infra deny-list (nodescan.ModuleFilter, which keeps
-// by default): here we KEEP only what we can positively classify as safe and
-// redact the rest, so a new or misclassified frame errs toward not leaving.
+// The profiler's security boundary, not a data-reduction step: a stack trace is
+// a map of the customer's code structure (ADR 0011 §4, ADR 0041, security.md §8).
 //
-// What it bounds is dependencies, not the customer's own code (ADR 0041): a
-// module the customer did not publish has no domain in its path, and is kept for
-// the same reason the standard library is — they installed the profiler to see
-// it. The allow-list decides which *domain-bearing* modules may leave.
-//
-// Policy:
-//   - client frames (module path on the allow-list)      -> keep
-//   - standard library / runtime / the workload's own
-//     main package / a module declared without a domain
-//     (no domain in the package path)                    -> keep
-//   - kernel frames                                       -> keep (N1: not the
-//     customer's code, and they make a profile readable)
-//   - third-party module frames (a domain, not allowed)  -> redact by default,
-//     keep only if ThirdPartyKeep is configured
-//   - unsymbolized / other native frames                 -> redact
-//
-// Redaction (R2): a redacted frame is replaced by a single neutral placeholder,
-// and consecutive redacted frames collapse into one, so the flame-graph shape is
-// preserved but no identity — not even which dependency, nor its depth — leaves
-// the node. Only kept frames and aggregate drop counts ever leave.
+// Keep only what can be positively classified — allow-listed modules, paths with
+// no domain, kernel frames — and redact the rest, so a misclassified frame errs
+// toward not leaving. A redacted frame becomes one neutral placeholder and
+// consecutive ones collapse: the shape survives, no identity leaves.
 
 // RedactedFrame is the neutral placeholder that replaces a redacted frame. It
 // carries no identity.
@@ -119,22 +99,10 @@ func (f *SymbolFilter) keep(fr Frame, c *FilterCounters) bool {
 	}
 	pkg := packagePath(fr.Function)
 	if !hasDomain(pkg) {
-		// stdlib, runtime, internal/*, the workload's own main package, a
-		// module declared without a domain, or a bare native/kernel symbol.
-		//
-		// This branch is wider than "the standard library", and that is the
-		// decision rather than an oversight (ADR 0041). A public Go module path
-		// has to begin with a domain or it cannot be fetched, so "no domain"
-		// means the standard library or code the customer did not publish —
-		// their `main`, their private modules. Both are what they installed the
-		// profiler to see.
-		//
-		// Gating those behind the allow-list would make a customer enumerate
-		// their own module paths before their own hot functions appeared, which
-		// is the second list ADR 0025 abolished: profiling scope is collection
-		// scope, and workloads are excluded with namespace filters and opt-out
-		// annotations, not here. What the allow-list bounds is the frames of
-		// domain-bearing modules that are not theirs.
+		// Wider than the standard library, deliberately: a public module path
+		// must begin with a domain, so "no domain" means stdlib or code the
+		// customer did not publish. Gating those would rebuild the second list
+		// ADR 0025 abolished (ADR 0041).
 		return true
 	}
 	if f.isAllowed(pkg) {

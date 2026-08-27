@@ -1,14 +1,8 @@
-// Package busywork burns CPU in a stable, allow-listed function so the eBPF
-// capture e2e (ADR 0011) can prove two things about the node's on-node symbol
-// filter at once:
-//
-//  1. Keep: this package's module path (example.com/rebuildstack-e2e/goworkload)
-//     is the customer allow-list entry, so busywork.Grind survives filtering and
-//     is the dominant service function in the shipped profile.
-//  2. Redact: Grind also calls a real third-party dependency
-//     (github.com/cespare/xxhash), whose frames are NOT on the allow-list and so
-//     must be replaced by the [filtered] placeholder before the profile leaves
-//     the node.
+// Package busywork burns CPU in a stable function so the capture e2e (ADR 0011)
+// can prove both halves of the node's symbol filter at once. Its module path is
+// the allow-list entry, so busywork.Grind survives and dominates the shipped
+// profile; Grind also calls github.com/cespare/xxhash, which is not on the list
+// and must read [filtered] before the profile leaves the node.
 package busywork
 
 import "github.com/cespare/xxhash/v2"

@@ -1,19 +1,11 @@
 // Package ebpfgate decides whether a node can run the eBPF CPU profiler
-// (ADR 0011). It is a readiness *gate*, evaluated once before the profiler is
-// ever started: on a kernel that is too old or lacks BTF the node refuses the
-// `ebpf` profile gracefully and keeps running the Go-binary scanner, rather
-// than escalating to `privileged` or crashing.
+// (ADR 0011): a readiness gate evaluated once, so a kernel too old or without
+// BTF refuses the `ebpf` profile gracefully and keeps the scanner running.
 //
-// The kernel version is a proxy, not the truth: it is cheap to read and rules
-// out kernels where CAP_BPF/CAP_PERFMON do not even exist (< 5.8), but a Probe
-// that passes does not guarantee the profiler will attach — LSM, kernel
-// lockdown, or perf_event_paranoid can still refuse at load time. That final
-// gate lives with the profiler (ADR 0011; the profiler slice reports a
-// program-load failure with the same graceful discipline). The reasons here are
-// deliberately split (kernel too old vs BTF absent vs unknown) so the counts
-// tell us *why* a fleet refused — in particular so a BTF-capable-but-old kernel
-// (RHEL backports BTF onto 4.18/5.14) is visibly refused on version alone, which
-// is what we would relax first if we ever support it.
+// The version check is a proxy — a Probe that passes does not guarantee the
+// profiler attaches, since LSM, lockdown or perf_event_paranoid refuse at load
+// time. Reasons are split so the counts say why a fleet refused; a
+// BTF-capable-but-old kernel is refused on version alone.
 package ebpfgate
 
 import (
@@ -62,13 +54,11 @@ func (r Result) Supported() bool { return r.Reason == ReasonSupported }
 
 // Probe evaluates readiness from two roots so it is pure and testable: the
 // kernel version from <procRoot>/sys/kernel/osrelease and BTF from
-// <sysRoot>/kernel/btf/vmlinux. In the DaemonSet procRoot is the host /proc
-// mount and sysRoot is the read-only /sys/kernel/btf host mount's parent.
+// <sysRoot>/kernel/btf/vmlinux.
 //
-// Precedence when several things are wrong: an unknown version, then a
-// too-old version, then absent BTF. Version dominates BTF so that the RHEL
-// backport case (BTF present, version < 5.8) is reported as kernel_too_old, not
-// masked as supported.
+// Precedence when several things are wrong: unknown version, then too-old
+// version, then absent BTF. Version dominates so the RHEL backport case (BTF
+// present, version < 5.8) reports kernel_too_old rather than looking supported.
 func Probe(procRoot, sysRoot string) Result {
 	var res Result
 

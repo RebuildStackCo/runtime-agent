@@ -23,18 +23,10 @@ func newTraceReporter(buf *Buffer) *traceReporter { return &traceReporter{buf: b
 // It intentionally ignores meta.EnvVars: environment variables routinely carry
 // secrets and never leave with a profile (CLAUDE.md invariant 4).
 //
-// The source file is reduced to its base name here, at the seam, rather than
-// filtered later (ADR 0041). What the profiler hands us is the path the
-// compiler recorded, which for a binary built without -trimpath — the Go
-// default — is the build machine's absolute path: CI workspace, internal VCS
-// host, the layout of the customer's source tree. None of that is the
-// customer's code structure, which is what a profile is for and what they
-// consented to ship. The base name keeps "which file", which is what a flame
-// graph shows.
-//
-// Taking the directory off at the seam rather than in the filter is the
-// filter-early rule (CLAUDE.md invariant 4): the full path never enters the
-// buffer, so there is no stage at which the agent holds it.
+// The source file is reduced to its base name here rather than filtered later
+// (ADR 0041): without -trimpath the compiler records the build machine's
+// absolute path, none of which is the code structure a profile is for. Cutting
+// it at the seam means the full path never enters the buffer.
 func (r *traceReporter) ReportTraceEvent(trace *libpf.Trace, meta *samples.TraceEventMeta) error {
 	s := Sample{
 		Value:       meta.Value,

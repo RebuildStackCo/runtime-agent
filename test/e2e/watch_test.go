@@ -34,12 +34,9 @@ import (
 // agent without the `pods` grant.
 //
 // Before ADR 0035 this produced the worst outcome available: WaitForCacheSync
-// has no timeout, so the process sat in it forever — a Running pod, a healthy
-// Deployment, no data, and no error anywhere. Now the failing watch is watched,
-// and the agent exits naming the resource, which is what puts the pod in
-// CrashLoopBackOff where a customer can see it.
-//
-// Gated on E2E_AGENT_IMAGE; use `make watch-e2e`.
+// has no timeout, so the process sat in it forever — a Running pod, no data, no
+// error. Now the agent exits naming the resource, which puts the pod in
+// CrashLoopBackOff where a customer can see it. Use `make watch-e2e`.
 func TestAnAgentDeniedAGatingPermissionStopsInsteadOfWaitingForever(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	if agentImage == "" {
@@ -74,16 +71,13 @@ func TestAnAgentDeniedAGatingPermissionStopsInsteadOfWaitingForever(t *testing.T
 }
 
 // TestAPermissionRevokedFromTheRunningAgentReachesThePayload is the case
-// ADR 0033 §5 recorded as undetected: a grant taken away from an agent that
-// already synced.
+// ADR 0033 §5 recorded as undetected: a grant taken from an agent that synced.
 //
 // HasSynced is a one-way latch, so before ADR 0035 the cache went on answering
 // from what it last held and `workload_policy` went on declaring every source
-// read — indefinitely, and identically at every capture. The claim under test
-// is that the payload now says it cannot see budgets, while everything the
-// revocation did not touch keeps being collected (ADR 0033 §1).
-//
-// Gated on E2E_AGENT_IMAGE and E2E_SPOOL_READER_IMAGE; use `make watch-e2e`.
+// read. The claim is that the payload now says it cannot see budgets, while
+// everything the revocation did not touch keeps being collected. Gated on
+// E2E_AGENT_IMAGE and E2E_SPOOL_READER_IMAGE; use `make watch-e2e`.
 func TestAPermissionRevokedFromTheRunningAgentReachesThePayload(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	if agentImage == "" {

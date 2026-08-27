@@ -26,20 +26,13 @@ func postTo(t *testing.T, h http.Handler, path, token, body string) *httptest.Re
 	return rec
 }
 
-// TestNoEndpointLetsANodeSpeakForAnotherNode is the whole of ADR 0040 as a
-// test, across every endpoint at once, because the property is only worth
-// anything if it holds on all four: a token establishes which node is calling,
-// and a caller naming a different node is refused.
+// TestNoEndpointLetsANodeSpeakForAnotherNode is ADR 0040 as a test, across all
+// four endpoints at once, because the property is worth nothing unless it holds
+// on every one: a token establishes which node is calling, and a caller naming
+// another node is refused.
 //
-// Before this, one compromised node could file inventory facts and profiles
-// against workloads on other nodes, and read the controller's admitted-pod
-// index for the whole cluster by iterating node names. The token was valid in
-// every one of those requests — what was missing was any comparison between it
-// and the node the body claimed.
-//
-// Each case is written as the attack rather than as the mechanism, so that a
-// later refactor which drops the check fails with a description of what it just
-// permitted.
+// Each case is written as the attack rather than as the mechanism, so a later
+// refactor that drops the check fails with a description of what it permitted.
 func TestNoEndpointLetsANodeSpeakForAnotherNode(t *testing.T) {
 	const foreign = "some-other-node"
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))

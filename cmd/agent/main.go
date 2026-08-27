@@ -1,15 +1,10 @@
 // Command agent is the RebuildStack runtime agent. One binary, two roles
-// (ADR 0009):
-//
-//	agent [controller]   the default role — a cluster-wide collector that talks
-//	                     to the Kubernetes API, aggregates usage rollups and
-//	                     workload metadata, and ships them one-way to a backend.
-//	agent node           a per-node DaemonSet role that scans on-node processes
-//	                     for Go build information. It holds NO Kubernetes client
-//	                     and opens no external connection.
+// (ADR 0009). The default controller role is a cluster-wide collector that talks
+// to the Kubernetes API and ships rollups and metadata one-way to a backend.
+// `agent node` is a per-node DaemonSet role that scans on-node processes for Go
+// build information, holds no Kubernetes client and opens no external connection.
 //
 // The role is selected by the first argument; absent one, the controller runs.
-// See docs/ for the architecture.
 package main
 
 import (

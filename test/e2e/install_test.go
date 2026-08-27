@@ -21,17 +21,13 @@ import (
 )
 
 // The e2e installs the chart, and that is the point of the chart existing
-// (ADR 0036).
+// (ADR 0036). Before it, `deploy/*.yaml` were the operator's reference and this
+// suite's hand-parsed input at once, with nothing checking they described the
+// same install — the node's token audience, the controller's required audience
+// and the pinned subject were written out three times.
 //
-// Before it, `deploy/*.yaml` were two artifacts at once: the reference an
-// operator followed, and the input this suite parsed by hand. Nothing checked
-// that they still described the same install, and the node's token audience,
-// the controller's required audience and the pinned subject — three strings
-// that must agree — were written out three times.
-//
-// What the tests still change is what a cluster forces them to: an image that
-// exists only in kind, intervals shortened so a test finishes, and a shell
-// sidecar so the payload of a distroless container can be read.
+// What the tests still change is what a cluster forces: a kind-only image,
+// shortened intervals, and a sidecar to read a distroless container's spool.
 
 const chartPath = "../../" + chartrender.Dir
 
