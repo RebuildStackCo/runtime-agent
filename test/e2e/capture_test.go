@@ -29,22 +29,14 @@ import (
 // node's symbol filter runs, no frame carrying it may leave the node.
 const thirdPartyMarker = "xxhash"
 
-// TestEBPFCaptureEndToEnd is the full-path eBPF capture e2e (ADR 0011): a Go
-// workload burns CPU in an allow-listed function that also calls a third-party
-// dependency; the node loads the eBPF profiler, asks the controller which
-// containers to profile, captures and symbolizes stacks, filters symbols on the
-// node, and ships the filtered pprof; the controller joins it to the workload and
-// spools an ebpf_profile payload. The test asserts on that payload — the bytes
-// the backend would receive: a valid cpu/nanoseconds profile whose own-module
-// frames survive and whose third-party frames are redacted to [filtered].
+// TestEBPFCaptureEndToEnd is the full-path capture e2e (ADR 0011): a Go workload
+// burns CPU in an allow-listed function that calls a third-party dependency, and
+// the test asserts on the shipped payload — a valid cpu/nanoseconds profile whose
+// own-module frames survive and whose third-party frames read [filtered].
 //
-// The capture path needs a Linux host with kernel BTF and CAP_BPF/CAP_PERFMON.
-// Where the node cannot grant those caps or the kernel lacks BTF (Docker Desktop
-// / linuxkit), the pod never captures and the test skips with a clear reason —
-// the same detection the gate-refusal e2e uses. Run `make profile-capture-e2e`
-// on a capable host (a real Linux VM).
-//
-// Gated on E2E_AGENT_IMAGE / E2E_SAMPLE_IMAGE (kind-loaded).
+// Needs a Linux host with kernel BTF and CAP_BPF/CAP_PERFMON; elsewhere the pod
+// never captures and the test skips with a reason. Gated on E2E_AGENT_IMAGE and
+// E2E_SAMPLE_IMAGE; run `make profile-capture-e2e` on a capable host.
 func TestEBPFCaptureEndToEnd(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	sampleImage := os.Getenv("E2E_SAMPLE_IMAGE")
@@ -104,15 +96,12 @@ func TestEBPFCaptureEndToEnd(t *testing.T) {
 	}
 }
 
-// waitForEBPFReadyOrSkip blocks until the node's eBPF profiler actually starts
-// capturing (the only signal that the full path can be asserted), or skips the
-// test when capture is unavailable in this environment. The gate reporting
-// "ready" is NOT sufficient: the kernel-version + BTF gate can pass and the
-// tracer still fail to load — most notably inside kind's nested container, where
-// the profiler's system-analysis step fails with program_load_failed even though
-// the gate passed (docs/spikes/ebpf-capture-e2e.md). Skips cover every case where
-// capture cannot run here: caps not grantable, the gate refusing (btf_absent /
-// kernel_too_old), or the tracer failing to load (program_load_failed).
+// waitForEBPFReadyOrSkip blocks until the profiler actually starts capturing —
+// the only signal that the full path can be asserted — or skips when capture is
+// unavailable here. The gate reporting "ready" is not sufficient: it can pass
+// and the tracer still fail to load, notably inside kind's nested container
+// (docs/spikes/ebpf-capture-e2e.md). Skips cover caps not grantable, the gate
+// refusing, and the tracer failing to load.
 func waitForEBPFReadyOrSkip(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, pod string) {
 	t.Helper()
 	deadline := time.Now().Add(4 * time.Minute)
@@ -317,19 +306,14 @@ func execSpoolReader(ctx context.Context, t *testing.T, config *rest.Config, cs 
 	return stdout.String(), true
 }
 
-// captureValues is the whole of what this test configures, and every line of it
-// is a value a customer could set.
+// captureValues is the whole of what this test configures, and every line is a
+// value a customer could set.
 //
-// Scope comes from the collection filter and nothing else (ADR 0025): allowing
-// only this test's namespace is what confines both the rollups and the profiling
-// targets to the sample workload. The agent's own pods live in that namespace too
-// and are ranked alongside it; their frames do not survive the node's symbol
-// allow-list, so their profiles fail validation and are never shipped — the
-// filters doing their job rather than a second knob.
-//
-// The allow-list is exactly the sample's own module, so its frames survive and
-// every third-party frame is redacted. The short cadence shortens time-to-signal,
-// and the raised overhead ceiling raises the sampling rate that produces it.
+// Scope comes from the collection filter and nothing else (ADR 0025). The
+// agent's own pods share the namespace and are ranked alongside the sample;
+// their frames do not survive the symbol allow-list, so their profiles fail
+// validation and are never shipped — the filters working, not a second knob.
+// The allow-list is exactly the sample's own module.
 func captureValues(ns string) map[string]any {
 	return map[string]any{
 		"filters": map[string]any{

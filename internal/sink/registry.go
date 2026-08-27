@@ -4,21 +4,11 @@ import "sort"
 
 // The payload registry: the one place that says what this agent ships.
 //
-// ADR 0012 §1 introduced this list as a table in a document, and the table did
-// not survive contact with six later decisions — ADR 0013 completed the
-// provenance column, ADR 0017 added a kind, ADR 0019 renamed it, ADR 0020 and
-// ADR 0021 added two more. Reading ADR 0012 today gives a list that is wrong in
-// three rows and missing three kinds, and nothing anywhere answers "what does
-// the agent send". That is what ADR 0022 moves here.
-//
-// The table lives next to the writers and is checked against the golden payload
-// bytes in both directions (registry_test.go): a kind that ships without a row
-// fails, and a row with no shipped payload fails. A document cannot fail, which
-// is the whole reason this is code.
-//
-// Adding a kind means adding a row here, a writer, and a golden — and an ADR
-// recording the decision, exactly as ADR 0012 required. What changed is only
-// where the list itself lives.
+// It sits next to the writers and is checked against the golden payload bytes in
+// both directions (registry_test.go) — a kind that ships without a row fails, a
+// row with no shipped payload fails. It was a table in ADR 0012 and drifted in
+// three rows across six later decisions, which is why ADR 0022 moved it here: a
+// document cannot fail. Adding a kind means a row, a writer, a golden, an ADR.
 
 // Delivery is how a kind's payloads relate to one another under their natural
 // key. It is the discipline the backend's ingest must implement; getting it

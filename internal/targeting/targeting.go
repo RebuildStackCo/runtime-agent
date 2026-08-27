@@ -1,18 +1,11 @@
 // Package targeting computes the top-N workloads to profile from the usage
 // rollups and publishes them for the node targets query (ADR 0011 §3, §6b).
 //
-// It exists to keep the query handler off the usage Accumulator: the Accumulator
-// is owned by the poller goroutine and has no synchronization, so the HTTP
-// handler must never read it. Instead the poller calls Publish on its own tick
-// with an already-deep-copied snapshot, and the handler reads only the atomically
-// published result.
-//
-// What bounds the published list is the input, not a second filter. Records
-// reach Publish from the usage rollups, which exist only for pods the collection
-// filters admitted, so a workload the customer excluded cannot be ranked — it was
-// never measured. Profiling scope is collection scope; there is no separate
-// eligible set to keep in step with it (ADR 0025). TopN then caps how many of
-// the admitted workloads an answer may name.
+// It keeps the query handler off the usage Accumulator, which the poller
+// goroutine owns without synchronization: the poller publishes a deep copy on
+// its own tick and the handler reads only that. What bounds the list is the
+// input, not a second filter — rollups exist only for pods the collection
+// filters admitted, so profiling scope is collection scope (ADR 0025).
 package targeting
 
 import (

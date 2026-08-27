@@ -1,12 +1,10 @@
-// Package nodescan is the node role's binary scanner. It enumerates processes
-// on the node, reads the Go build information embedded in each executable, ties
-// it to a pod and container through the process's cgroup, and filters out
-// infrastructure on the node. It holds no Kubernetes client and no external
-// egress: everything it needs is under /proc (ADR 0009).
+// Package nodescan is the node role's binary scanner: it enumerates processes,
+// reads each executable's Go build information, ties it to a pod and container
+// through the cgroup, and filters out infrastructure on the node. No Kubernetes
+// client, no external egress — everything it needs is under /proc (ADR 0009).
 //
-// Only aggregate counts and the metadata of kept (non-infrastructure) binaries
-// are produced here. Identities of filtered-out binaries never leave this
-// package as anything but a number (CLAUDE.md invariant 6).
+// Only aggregate counts and the metadata of kept binaries leave here; identities
+// of filtered-out ones leave as a number (CLAUDE.md invariant 6).
 package nodescan
 
 import (
@@ -87,14 +85,12 @@ func NewScanner(procRoot string, filter *ModuleFilter) *Scanner {
 }
 
 // Scan performs one full pass over the process tree, restricted to the pods
-// scope admits, and returns the kept binaries and the counters. It never returns
-// an error for an individual unreadable process — those are counted, not
-// surfaced — only for a failure to read the process tree itself.
+// scope admits, and returns the kept binaries and the counters. An individual
+// unreadable process is counted, not surfaced; only a failure to read the
+// process tree itself is an error.
 //
-// scope is required, and the zero Scope admits nothing: a node with no eligible
-// set from the controller produces counters and no identities. The parameter is
-// deliberately not optional, so that no call site can scan the node unscoped by
-// omission.
+// scope is required and its zero value admits nothing, so no call site can scan
+// the node unscoped by omission.
 func (s *Scanner) Scan(scope Scope) (Result, error) {
 	entries, err := os.ReadDir(s.procRoot)
 	if err != nil {
@@ -197,19 +193,13 @@ func dependencyPaths(info *buildinfo.BuildInfo) []string {
 }
 
 // buildSettingsAllowList is the exhaustive set of build settings the scanner
-// keeps. It is an allow-list, and that is the decision, not the mechanism
-// (ADR 0019): build settings are the one place where strings written by whoever
-// ran the build enter the agent. "-ldflags" routinely carries build-machine
-// paths, internal hostnames and injected version strings; "-pgo" carries a path
-// on the build machine; "-gcflags" and "-tags" are equally free-form. A
-// deny-list would protect only against the keys we thought to name, and the
-// toolchain is free to add new ones in any release.
+// keeps. An allow-list is the decision, not the mechanism (ADR 0019): settings
+// are where strings written by whoever ran the build enter the agent, and
+// "-ldflags", "-pgo", "-gcflags" and "-tags" are all free-form. A deny-list
+// would cover only the keys we thought to name.
 //
-// Everything here is a bounded token the toolchain chose from a fixed
-// vocabulary, or — for vcs.* — a value git produced, never a human. GOOS is
-// deliberately absent: every process the agent can see is linux, so it would be
-// a constant rather than a fact. Further arch-level knobs (GO386, GOPPC64, …)
-// are added here by name when a cluster needs them.
+// Everything here is a bounded token the toolchain chose, or a vcs.* value git
+// produced. GOOS is absent: every process the agent can see is linux.
 var buildSettingsAllowList = map[string]struct{}{
 	"CGO_ENABLED":  {},
 	"GOARCH":       {},

@@ -123,15 +123,13 @@ func TestRegistryRowsAreComplete(t *testing.T) {
 	}
 }
 
-// No payload carries an ordering field (ADR 0027). The five counters that
-// produced `sequence` restarted at one with the process, so a backend obeying
-// the old "order by the agent's sequence" rule would have rejected everything a
-// restarted controller sent under a fixed key until the count caught up.
+// No payload carries an ordering field (ADR 0027). The counters that produced
+// `sequence` restarted at one with the process, so a backend ordering by them
+// would have rejected everything a restarted controller sent under a fixed key.
 //
-// The replacement is structural rather than declared: the spool holds one
-// version of a natural key, atomically replaced, so last-write-wins is correct
-// without a field. This test is what stops a future kind from quietly
-// reintroducing one — the reasoning lives in an ADR, and an ADR cannot fail.
+// The replacement is structural: the spool holds one version of a natural key,
+// atomically replaced, so last-write-wins is correct without a field. This test
+// stops a future kind from quietly reintroducing one.
 func TestNoPayloadCarriesAnOrderingField(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("testdata", "*.golden.json"))
 	if err != nil {

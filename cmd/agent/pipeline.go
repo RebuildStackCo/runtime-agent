@@ -32,20 +32,12 @@ func samplesPerSecond(overheadCeilingPercent int) int {
 }
 
 // runProfilingPipeline runs the eBPF profiler and, on a cadence, cuts a window,
-// asks the controller which containers to profile on this node, groups the
-// window's samples by container, filters symbols on the node, serializes,
-// validates, and ships each profile. A capture that cannot load degrades to
-// scanner-only, recorded as program_load_failed (ADR 0011 §2). Blocks until ctx
-// is cancelled.
+// asks the controller which containers to profile, groups, filters symbols on
+// the node, serializes, validates and ships. A capture that cannot load degrades
+// to scanner-only as program_load_failed (ADR 0011 §2). Blocks until ctx ends.
 //
-// Two controller answers bound a window, and they are refreshed on different
-// cadences because they answer different questions. The target set — which
-// containers rank highest — changes with consumption and is refetched every
-// IntervalSeconds. The scan scope — which pods passed the customer's filters —
-// changes with the cluster and is refetched every window, matching the
-// scanner's own cadence (ADR 0015). Both must admit a container before its
-// samples are shipped, and the scope fails closed exactly as the scanner does:
-// no answer, nothing shipped (ADR 0025).
+// Targets and scope refresh on different cadences — consumption against the
+// cluster (ADR 0015). Both must admit a container, and scope fails closed.
 func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.NodeProfiling,
 	procRoot, node string, targets *targetsClient, scoper *scopeClient,
 	shipper *profileShipper, m *ebpfGateMetrics) {
@@ -114,18 +106,10 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 // processWindow groups a window's samples by container and ships every container
 // that both the controller targeted and the scope admits.
 //
-// The two conditions are not redundant. The target set says which containers are
-// worth profiling; the scope says which pods the customer's filters admit at
-// all. A container in the first and not the second is one whose executable the
-// scanner is forbidden to open (ADR 0015) — profiling it would take the more
-// sensitive signal from the pod denied the less sensitive one.
-//
-// How many containers a window may ship is bounded by the controller's TopN
-// alone. A node-side cap existed and was removed (ADR 0025): profiling is
-// directed from the controller, a second count limit in a second file only
-// raised the question of which one applied, and the node's real cost bounds are
-// its sampling rate and its container CPU limit — neither of which a target
-// count changes.
+// Not redundant: targets say which containers are worth profiling, scope says
+// which pods the filters admit at all. A container in the first and not the
+// second is one whose executable the scanner may not even open (ADR 0015). How
+// many a window may ship is the controller's TopN alone (ADR 0025).
 func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile.SymbolFilter,
 	sps int, procRoot, node string, start, end time.Time, samples []nodeprofile.Sample,
 	targetSet map[string]struct{}, scope nodescan.Scope, shipper *profileShipper) {

@@ -255,23 +255,14 @@ type stubPodLister struct {
 
 func (s stubPodLister) List(labels.Selector) ([]*corev1.Pod, error) { return s.pods, nil }
 
-// TestTheReadingNeverClaimsMoreHistoryThanItCounts reproduces the interleaving
-// deterministically instead of waiting for it (ADR 0043).
+// TestTheReadingNeverClaimsMoreHistoryThanItCounts builds the interleaving by
+// hand instead of waiting for it (ADR 0043).
 //
-// client-go updates the informer's shared store *before* dispatching to the
-// event handler that maintains the restart baseline. So for the span of one
-// dispatch, the store holds a pod whose counter the baseline has not seen — and
-// the reading used to take `restarts` from the store and
-// `restarts_before_observation` from the baseline.
-//
-// A StatefulSet replacing a pod under the same name is where that becomes
-// visible: the store already says 2, the baseline still says 40, and the
-// payload asserts that forty restarts predate an observation of a counter
-// standing at two. ADR 0034 §2–3 tell a consumer to subtract those, so the
-// answer they get is negative.
-//
-// This test sets the two apart by hand, which is what the informer does for a
-// moment on every counter change.
+// client-go updates the shared store before dispatching to the handler that
+// maintains the baseline, so for one dispatch the store holds a counter the
+// baseline has not seen. A StatefulSet replacing a pod under the same name makes
+// it visible: store 2, baseline 40, and the subtraction ADR 0034 §2 prescribes
+// returns a negative number.
 func TestTheReadingNeverClaimsMoreHistoryThanItCounts(t *testing.T) {
 	w := NewPodWatcher(fake.NewClientset(), func(PodInfo) {})
 

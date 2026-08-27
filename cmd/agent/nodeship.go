@@ -109,15 +109,13 @@ func readProjectedToken(path string) (string, error) {
 }
 
 // targetsClient asks the controller which workloads to profile (ADR 0011 §3).
-// Unlike the shippers, this reply carries data the node acts on: the top-N list,
-// as container IDs.
+// Unlike the shippers, this reply carries data the node acts on: the top-N list.
 //
-// What the node applies to it is the intersection with its own processes and
-// every ceiling in its ConfigMap — top-N, capture duration, interval, overhead,
-// and the symbol allow-list that governs egress. It does not re-check the
-// collection filters: a container ID cannot be resolved to a namespace without
-// API access (ADR 0009). Scope is applied on the controller, before the ranking
-// exists — see nodeintake.TargetsHandler and ADR 0025.
+// The node applies the intersection with its own processes and every ceiling in
+// its ConfigMap, including the symbol allow-list that governs egress. It does
+// not re-check the collection filters — a container ID cannot be resolved to a
+// namespace without API access — so scope is applied on the controller before
+// the ranking exists (ADR 0009, ADR 0025).
 type targetsClient struct {
 	endpoint  string
 	tokenPath string

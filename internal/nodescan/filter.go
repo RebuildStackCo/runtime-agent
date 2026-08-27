@@ -2,18 +2,14 @@ package nodescan
 
 import "strings"
 
-// DefaultInfraModulePrefixes is the built-in deny-list of Go module paths that
-// the node scanner drops on the node, before anything about them is recorded
-// (filter early, CLAUDE.md invariant 4). These are cluster infrastructure —
-// the control plane, the container runtime, the CNI, the observability stack —
-// whose efficiency is not the customer's cost to analyze, plus this agent's own
-// module. Matching is by module-path prefix on a path boundary, so
-// "k8s.io/" excludes "k8s.io/kubernetes" without excluding an unrelated
-// "k8s.io.example.com/...".
+// DefaultInfraModulePrefixes is the built-in deny-list of Go module paths the
+// node scanner drops before anything about them is recorded (invariant 4):
+// cluster infrastructure — control plane, runtime, CNI, observability stack —
+// plus this agent's own module. Matching is by prefix on a path boundary, so
+// "k8s.io/" excludes "k8s.io/kubernetes" and not "k8s.io.example.com/...".
 //
-// The list is deliberately conservative: a false negative (an infra binary
-// reported) is a harmless extra count on a controller that will ignore it; the
-// filter's job is data reduction, not a security boundary.
+// Deliberately conservative: a reported infra binary is a harmless extra count.
+// This is data reduction, not a security boundary.
 var DefaultInfraModulePrefixes = []string{
 	// This agent itself.
 	"github.com/RebuildStackCo/",

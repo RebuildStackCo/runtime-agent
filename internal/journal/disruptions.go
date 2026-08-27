@@ -35,11 +35,10 @@ type disruptionKey struct {
 // safe for concurrent use: observations arrive on the informer goroutine while
 // the flush goroutine reads snapshots.
 //
-// Unlike Restarts this accumulates records rather than counters, because a
-// disruption is terminal — a pod is preempted or evicted once, and there is
-// nothing to add up. The window exists to bound the payload's file count and to
-// line the events up with the usage and restart windows of the same hour, not
-// because the events aggregate.
+// Unlike Restarts it accumulates records rather than counters: a disruption is
+// terminal and there is nothing to add up. The window bounds the payload's file
+// count and lines the events up with the usage and restart windows of the same
+// hour, not because they aggregate.
 type Disruptions struct {
 	mu           sync.Mutex
 	windowLength time.Duration

@@ -68,15 +68,12 @@ var allowedBuildSettings = map[string]struct{}{
 }
 
 // TestGoInventoryEndToEnd exercises the whole node→controller inventory path in
-// a real cluster (ADR 0010): a known Go workload runs, the node DaemonSet scans
-// it and ships the fact to the controller over HTTP with a projected token, the
-// controller validates the token against the cluster JWKS, joins the fact
-// against its workload inventory, and writes a go_inventory payload to its
-// spool. The test asserts on the spool contents — the payload the backend would
-// receive — not on logs (docs/development.md).
+// a real cluster (ADR 0010): a Go workload runs, the node scans it and ships the
+// fact with a projected token, the controller validates it against the cluster
+// JWKS, joins it, and spools a go_inventory payload. The assertion is on the
+// spool contents, not on logs.
 //
-// Gated on E2E_AGENT_IMAGE / E2E_SAMPLE_IMAGE (kind-loaded); use
-// `make inventory-e2e`.
+// Gated on E2E_AGENT_IMAGE / E2E_SAMPLE_IMAGE; use `make inventory-e2e`.
 func TestGoInventoryEndToEnd(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	sampleImage := os.Getenv("E2E_SAMPLE_IMAGE")
@@ -170,13 +167,10 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 // checkOptOutRemovesTheRecord annotates the running sample pod with the opt-out
 // annotation and asserts its record leaves the go_inventory payload.
 //
-// This is the promise of docs/security.md §11 — "the exclusion applies at the
-// collection stage" — proven against the payload rather than against the filter.
-// The inventory is assembled from facts the nodes push, so opting a pod out only
-// stops *new* facts arriving; without the retention pass of ADR 0018 the record
-// already held would keep shipping in every snapshot for as long as the
-// controller ran, and the customer's opt-out would apply to everything except
-// what had already been collected.
+// The promise of docs/security.md §11 — "the exclusion applies at the collection
+// stage" — proven against the payload rather than the filter. Opting a pod out
+// only stops new facts arriving, so without the retention pass of ADR 0018 the
+// record already held would keep shipping for as long as the controller ran.
 func checkOptOutRemovesTheRecord(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, controllerPod string) {
 	t.Helper()
 	pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: "app=goworkload"})

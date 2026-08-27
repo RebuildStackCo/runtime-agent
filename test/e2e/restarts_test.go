@@ -27,15 +27,11 @@ const (
 
 // TestContainerRestartsEndToEnd runs a container that exits immediately and
 // asserts the controller's restart journal in a real cluster (ADR 0020): the
-// crash loop is counted, attributed to its workload and container, and the
-// termination reason and exit code are carried.
+// crash loop is counted, attributed, and its reason and exit code carried.
 //
-// The controller is deployed *before* the crash-looping workload on purpose. A
-// container the agent has never seen is only baselined, so a pod that was
-// already looping before the agent started would legitimately produce nothing
-// until its next restart — the property this test would otherwise flake on.
-//
-// Gated on E2E_AGENT_IMAGE (kind-loaded); use `make restarts-e2e`.
+// The controller is deployed before the workload on purpose: a container the
+// agent has never seen is only baselined, so a pod already looping at startup
+// produces nothing until its next restart. Gated on E2E_AGENT_IMAGE.
 func TestContainerRestartsEndToEnd(t *testing.T) {
 	agentImage := os.Getenv("E2E_AGENT_IMAGE")
 	if agentImage == "" {
@@ -106,19 +102,11 @@ func TestContainerRestartsEndToEnd(t *testing.T) {
 }
 
 // TestRestartCountersCarryTheHistoryTheAgentDidNotWatch is the install-day
-// scenario, staged the only way it can be: the crash loop runs first and the
-// agent arrives afterwards, into a cluster that has already been failing.
-//
-// It is the exact inverse of the test above, and deliberately so. There the
-// controller is deployed first so the journal can baseline before the first
-// restart; here it is deployed last, which is what every real installation
-// looks like. The journal is silent about everything that happened before it
-// started — correctly, since Kubernetes does not timestamp those restarts — and
-// `restart_counters` is what carries them out of the cluster anyway (ADR 0034).
-//
-// The same shape covers a controller that was rescheduled: an agent that lost
-// its spool and its accumulators is, from the cluster's point of view, an agent
-// being installed.
+// scenario: the crash loop runs first, the agent arrives into a cluster already
+// failing. The exact inverse of the test above, where the controller is deployed
+// first so the journal can baseline before the first restart. The journal stays
+// correctly silent about what preceded it, and `restart_counters` is what
+// carries those restarts out anyway (ADR 0034).
 //
 // Gated on E2E_AGENT_IMAGE (kind-loaded); use `make restarts-e2e`.
 func TestRestartCountersCarryTheHistoryTheAgentDidNotWatch(t *testing.T) {

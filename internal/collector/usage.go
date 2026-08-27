@@ -76,17 +76,13 @@ type UsagePoller struct {
 }
 
 // Observation is what the agent knows about its own collection: the polling
-// cadence, how many kubelet requests it has made and how many failed, and
-// which signals this cluster exposes. It ships with the usage payloads
-// (provenance `measured`, ADR 0012) because only the agent can know that a
-// scrape failed — from outside the cluster, a failed scrape and a quiet
-// container are indistinguishable, and the difference is unrecoverable after
-// the fact.
+// cadence, how many kubelet requests it made and how many failed, and which
+// signals this cluster exposes. It ships with the usage payloads (ADR 0012)
+// because only the agent can know a scrape failed — from outside, a failed
+// scrape and a quiet container are indistinguishable.
 //
-// The counters are cumulative since agent start, like every other counter this
-// agent reports: the backend takes differences between deliveries. They are
-// cluster-wide; per-record coverage lives in the record's own sample counts and
-// CoveredNanoseconds.
+// Counters are cumulative since agent start and cluster-wide; per-record
+// coverage lives in the record's own sample counts and CoveredNanoseconds.
 type Observation struct {
 	PollIntervalSeconds int64    `json:"poll_interval_seconds"`
 	PollsAttempted      int64    `json:"polls_attempted"`

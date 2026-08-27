@@ -83,6 +83,12 @@ A PR is mergeable when:
   has to be argued for in a diff that changes a test. When you widen the chart,
   expect to widen a list there; that is the mechanism working, not a test in the
   way.
+- **Prose has a mechanism too** (ADR 0044). `docs/prose_test.go` fails on a
+  comment run longer than eight lines and on a `security.md` past its ceiling.
+  Both are ratchets: raising one is a decision that appears in a diff. If a
+  comment does not fit, the reasoning belongs in an ADR with a pointer left
+  behind — ADR 0024 settled that for `security.md` and it regressed from 750
+  lines to 1139 in five days, because a rule without a failing test is a habit.
 - **End-to-end on kind installs the chart.** The agent runs against a local kind
   cluster with synthetic workloads; assertions are made on the spool contents,
   not on logs. The suites install `charts/runtime-agent` rather than a copy of

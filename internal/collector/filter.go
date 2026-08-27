@@ -103,14 +103,11 @@ func NewFilter(allowNamespaces, denyNamespaces []string) *Filter {
 // AdmitPod reports whether the pod passes the filters and, when it does not,
 // the first filter that rejected it.
 //
-// The workload step is deliberately fail-open: a pod whose controller could
-// not be read is admitted, and the reason it could not be read is counted.
-// This product is opt-out — an empty allow list collects everything — so an
-// unreadable controller is not evidence that anyone opted out; an annotation
-// is a rare deliberate act. Failing closed here would silently collect
-// nothing on every cluster running an operator the agent does not know, which
-// is most of the sophisticated ones (ADR 0028). The customer keeps two
-// working controls in that case, the namespace and the pod.
+// The workload step is deliberately fail-open: an unreadable controller is not
+// evidence that anyone opted out, and failing closed would silently collect
+// nothing on every cluster running an operator the agent does not know
+// (ADR 0028). The reason is counted, and the customer keeps two working
+// controls, the namespace and the pod.
 func (f *Filter) AdmitPod(pod *corev1.Pod, nsAnnotations map[string]string, workload WorkloadLookup) (bool, ExclusionReason) {
 	if !f.namespaceAllowed(pod.Namespace) {
 		return false, ExcludedByNamespaceFilter
@@ -129,16 +126,12 @@ func (f *Filter) AdmitPod(pod *corev1.Pod, nsAnnotations map[string]string, work
 
 // AdmitJob reports whether a finished Job's facts may be collected.
 //
-// It is the pod decision with one step added. The workload step is the Job's
-// owning CronJob; the object step is the Job's own annotations; and the last
-// step reads the Job's **pod template**, which is what excluded this run's pods
-// if the customer opted out the way security.md documented before ADR 0028.
-//
-// Without that last step the agent would ship `job_runs` for a workload whose
-// pods it refuses to measure — collected and sent, which is worse than
-// collected and dropped. Reading `spec.template.metadata.annotations` is
-// metadata, never the `env`, `args` or `command` beneath it (CLAUDE.md
-// invariant 4).
+// The pod decision with one step added: the workload step is the owning CronJob,
+// the object step the Job's own annotations, and the last step the Job's pod
+// template, which is what excluded this run's pods if the customer opted out the
+// way security.md documented before ADR 0028. Without it the agent ships
+// `job_runs` for a workload whose pods it refuses to measure. Template
+// annotations are metadata, never the `env` beneath them (invariant 4).
 func (f *Filter) AdmitJob(job *batchv1.Job, nsAnnotations map[string]string, workload WorkloadLookup) (bool, ExclusionReason) {
 	if !f.namespaceAllowed(job.Namespace) {
 		return false, ExcludedByNamespaceFilter

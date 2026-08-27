@@ -23,31 +23,20 @@ import (
 )
 
 // The node→controller channel authenticates a *node*, not just the node role
-// (ADR 0040). This suite proves it against a real cluster, a real kubelet-issued
-// token and the real receiver, because the property is about what the kubelet
-// puts in a token — which no unit test can establish.
+// (ADR 0040), and the property is about what the kubelet puts in a token, which
+// no unit test can establish. Requests come from inside the cluster through a
+// shell sidecar on the DaemonSet, using the node's own mounted token.
 //
-// Requests are made from inside the cluster with the node's own mounted token,
-// through a shell sidecar added to the DaemonSet: the receiver is a ClusterIP
-// Service, and a token replayed from the test process would not be the same
-// experiment.
-//
-// What this cannot show, and does not pretend to: kind's default CNI does not
-// implement NetworkPolicy, so the policy the chart now ships is created here and
-// enforced by nothing. Reachability is out of scope for this suite; identity is
-// the whole of it.
+// What it cannot show: kind's default CNI does not implement NetworkPolicy, so
+// the policy the chart ships is created here and enforced by nothing.
+// Reachability is out of scope; identity is the whole of it.
 
 const probeContainer = "channel-probe"
 
-// TestANodeCannotSpeakForAnotherNode is the cross-node case, end to end. A
-// genuine node token — the one the kubelet projected into the DaemonSet pod —
-// is used to ask each endpoint about a node that is not the caller's. Every one
-// must refuse.
-//
-// Before ADR 0040 every request below returned data: the node name came from
-// the request body, so one node's token was a cluster-wide key to the
-// controller's admitted-pod index and a way to file facts against workloads
-// anywhere.
+// TestANodeCannotSpeakForAnotherNode is the cross-node case end to end: a
+// genuine kubelet-projected token is used to ask each endpoint about a node that
+// is not the caller's, and every one must refuse. Before ADR 0040 they all
+// returned data, because the node name came from the request body.
 //
 // Gated on E2E_AGENT_IMAGE (kind-loaded); use `make identity-e2e`.
 func TestANodeCannotSpeakForAnotherNode(t *testing.T) {

@@ -20,15 +20,11 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
 
-// What this file is for.
-//
 // The chart is the only installer, so a mistake in it is a mistake in the
-// product: a missing grant, a capability nobody meant to add, a config key the
-// agent will reject at startup. None of that is visible in a diff of Go code,
-// and the e2e proves only the profile it happens to install.
-//
-// So the promises docs/security.md makes about an installation are asserted
-// here, against the rendered manifests, for every profile.
+// product — a missing grant, a config key the agent rejects at startup — and
+// none of it is visible in a diff of Go code. So the promises docs/security.md
+// makes about an installation are asserted here against the rendered manifests,
+// for every profile. The absences are in guardrail_test.go.
 
 // chartDir is the chart's path from this package.
 const chartDir = "../../" + chartrender.Dir
@@ -403,22 +399,14 @@ func TestTheInstallNotesAreNotAManifest(t *testing.T) {
 	}
 }
 
-// TestTheReceiverIsRestrictedToTheNodeDaemonSet is the policy ADR 0010, 0011
-// and 0015 described as shipped for months while it did not exist (ADR 0039).
-// It is asserted rather than reviewed for exactly that reason: the failure mode
-// was not that someone wrote the wrong policy, it was that everyone believed
-// there was one.
+// TestTheReceiverIsRestrictedToTheNodeDaemonSet is the policy three ADRs
+// described as shipped for months while it did not exist (ADR 0039) — asserted
+// rather than reviewed, because the failure was not a wrong policy but a
+// believed one.
 //
-// What the assertions insist on, and why each would be a silent hole:
-//   - `policyTypes: [Ingress]` with a non-empty rule — an absent policyTypes on
-//     an object with no ingress rules allows everything;
-//   - exactly one `from` peer, and it a podSelector — a second peer, or an
-//     empty `from: [{}]`, re-opens the port to the cluster;
-//   - the peer selects the node component of this release — a selector that
-//     matches nothing denies the node itself, and a broader one admits
-//     strangers;
-//   - the port is the receiver's — a policy on the wrong port is a policy on
-//     nothing.
+// Each assertion closes a silent hole: an absent policyTypes allows everything;
+// a second or empty `from` peer reopens the port; a peer selecting nothing
+// denies the node itself; a policy on the wrong port is a policy on nothing.
 func TestTheReceiverIsRestrictedToTheNodeDaemonSet(t *testing.T) {
 	for name, values := range profiles() {
 		if name == "metrics-only" {
@@ -651,17 +639,13 @@ func TestTheChartsVersionFloorIsTheBaselineWePromise(t *testing.T) {
 	}
 }
 
-// Root is one role's exception, not the product's default (ADR 0037).
+// Root is one role's exception, not the product's default (ADR 0037). The
+// controller needs no privilege and takes the image's non-root uid; the node
+// overrides back to root because a capability granted to a non-root process does
+// not survive execve without the ambient set, which Kubernetes does not populate.
 //
-// The controller reads the API and writes a spool; it needs no privilege, so it
-// takes the image's non-root uid and asserts it. The node overrides back to root
-// because reading another container's /proc/<pid>/exe cannot be bought with
-// CAP_SYS_PTRACE alone — a capability granted to a non-root process does not
-// survive execve without the ambient set, and Kubernetes does not populate it.
-//
-// Both halves are asserted, and the second matters as much as the first: the
-// exception must stay explicit, so that a node silently inheriting root from a
-// changed image is a failure rather than a continuation.
+// Both halves are asserted: the exception must stay explicit, so a node silently
+// inheriting root from a changed image is a failure rather than a continuation.
 func TestRootIsOneRolesExceptionAndTheControllerDoesNotTakeIt(t *testing.T) {
 	for name, values := range profiles() {
 		t.Run(name, func(t *testing.T) {

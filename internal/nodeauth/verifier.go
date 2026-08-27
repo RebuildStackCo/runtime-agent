@@ -47,23 +47,12 @@ type Identity struct {
 }
 
 // nodeBoundClaims is the subset of a projected ServiceAccount token this
-// verifier reads: the registered claims, plus the node half of Kubernetes'
-// private claim block.
+// verifier reads: the registered claims plus the node half of Kubernetes'
+// private claim block. Measured on 1.36.1, that block is keyed "kubernetes.io"
+// and carries namespace, node{name,uid}, pod{name,uid}, serviceaccount{name,uid}.
 //
-// The block is keyed "kubernetes.io" and carries namespace, pod, serviceaccount
-// and node sub-objects. Measured on Kubernetes 1.36.1, for a token projected
-// into a pod with a non-default audience:
-//
-//	"kubernetes.io": {
-//	  "namespace": "…",
-//	  "node": {"name": "…", "uid": "…"},
-//	  "pod": {"name": "…", "uid": "…"},
-//	  "serviceaccount": {"name": "…", "uid": "…"}
-//	}
-//
-// Only "node" is decoded. The pod identity would pin harder still, but it is
-// not what any decision here turns on, and a claim that is read is a claim that
-// has to keep being true.
+// Only "node" is decoded. The pod identity would pin harder, but no decision
+// here turns on it, and a claim that is read has to keep being true.
 type nodeBoundClaims struct {
 	jwt.RegisteredClaims
 	Kubernetes struct {

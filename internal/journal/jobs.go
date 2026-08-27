@@ -57,11 +57,10 @@ type jobRunKey struct {
 // safe for concurrent use: observations arrive on the informer goroutine while
 // the flush goroutine reads snapshots.
 //
-// Like Disruptions it accumulates records rather than counters — a run finishes
-// once and there is nothing to add up. The window bounds the payload's file
-// count, which matters here because a fleet of CronJobs can finish hundreds of
-// runs an hour and one file per run would put the spool's file count under the
-// cluster's control (ADR 0021's reasoning, same shape).
+// Like Disruptions it accumulates records rather than counters. The window
+// bounds the payload's file count, which matters here because a fleet of
+// CronJobs finishing hundreds of runs an hour would otherwise put that count
+// under the cluster's control (ADR 0021).
 type JobRuns struct {
 	mu           sync.Mutex
 	windowLength time.Duration

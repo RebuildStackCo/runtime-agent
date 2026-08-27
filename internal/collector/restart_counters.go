@@ -11,13 +11,11 @@ import (
 // RestartCounter is the kubelet's restart counter for one container as it
 // stands, together with what the agent knows about how much of it it watched.
 //
-// It is the counterpart of the restart journal, not a duplicate of it. The
-// journal reports advances the agent observed, placed in the window it observed
-// them in; this reports the total, which includes the restarts that happened
-// before the agent existed and cannot be placed in any window. Both are needed
-// because neither can be derived from the other: a total cannot be spread over
-// time, and a sum of windows cannot recover what preceded the first one
-// (ADR 0034).
+// The counterpart of the restart journal, not a duplicate: the journal reports
+// advances placed in the window they were observed in, this reports the total,
+// including restarts that predate the agent. Neither derives from the other — a
+// total cannot be spread over time, and a sum of windows cannot recover what
+// preceded the first (ADR 0034).
 type RestartCounter struct {
 	Namespace string      `json:"namespace"`
 	Pod       string      `json:"pod"`
@@ -67,17 +65,12 @@ type RestartTermination struct {
 
 // RestartCounters returns the current counter reading for every collected
 // container that has ever restarted, sorted so the payload bytes are
-// deterministic (the golden contract).
+// deterministic.
 //
-// A container that has never restarted contributes no record. The payload is a
-// superseding snapshot, so absence is a statement — "this container's counter
-// is zero" — and one worth making implicitly rather than with a record per
-// container in the cluster.
-//
-// Scope runs through the admitted pod index, like every other payload assembled
-// at flush time: a pod the filters or the opt-out annotation excluded is not in
-// the index, so it is unreachable here by construction rather than by a second
-// check (ADR 0030, ADR 0032).
+// A container that has never restarted contributes no record: the payload is a
+// superseding snapshot, so absence says "zero". Scope runs through the admitted
+// pod index like every other flush-time payload, so an excluded pod is
+// unreachable here by construction rather than by a second check.
 func (w *PodWatcher) RestartCounters() []RestartCounter {
 	if w.podLister == nil {
 		return nil
@@ -114,19 +107,13 @@ func (w *PodWatcher) RestartCounters() []RestartCounter {
 				Pod:       pod.Name,
 				Container: status.Name,
 				Workload:  workload,
-				// Both counter values come from the one baseline read above,
-				// never one from the baseline and one from the lister (ADR
-				// 0043). The lister is the informer's shared store, which
-				// client-go updates *before* it dispatches to the handler that
-				// maintains this baseline, so for the span of one dispatch the
-				// store holds a counter the baseline has not seen. Reading them
-				// from different places produced a payload asserting that forty
-				// restarts predate an observation of a counter now standing at
-				// two — the pair ADR 0034 §2–3 tells a consumer to subtract.
-				//
+				// Both values come from the one baseline read above, never one
+				// from the baseline and one from the lister (ADR 0043): the
+				// lister is the shared store, which client-go updates before
+				// dispatching to the handler that maintains this baseline.
 				// Taking both from one struct makes the ordering hold by
-				// construction: a rebaseline sets last and atFirstSight
-				// together, and an advance only ever raises last.
+				// construction — a rebaseline sets the two together, and an
+				// advance only ever raises last.
 				Restarts:                  int64(base.last),
 				RestartsBeforeObservation: int64(base.atFirstSight),
 				ObservedSince:             base.firstSeen.UTC(),

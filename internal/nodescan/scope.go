@@ -3,19 +3,11 @@ package nodescan
 // Scope is the set of pods the node is permitted to scan: the pod UIDs on this
 // node that passed the controller's namespace filters and opt-out annotations.
 //
-// The node cannot compute this itself. It has zero Kubernetes API access (ADR
-// 0009) and reads only /proc, where a process resolves to a pod UID and a
-// container ID through its cgroup — never to a namespace. So the eligible set
-// arrives from the controller, which holds the filters, exactly as the profiling
-// targets do (ADR 0011 §3).
-//
-// The zero Scope admits nothing. That is deliberate: a node that has not
-// obtained a scope must not scan, because "the process is in a namespace you
-// allow-listed" is a claim it cannot make on its own, and docs/security.md §10.2
-// promises customers that node-level samples outside their filters are dropped
-// on the node before transport. Failing closed costs one scan pass, which the
-// next pass recovers (loss-harmless, ADR 0003); failing open would break a
-// published promise silently.
+// The node cannot compute it: zero API access (ADR 0009), and /proc resolves a
+// process to a pod UID but never to a namespace. The set arrives from the
+// controller, as profiling targets do (ADR 0011 §3). The zero Scope admits
+// nothing: failing closed costs one pass (ADR 0003), failing open would break
+// security.md §10.2 silently.
 type Scope struct {
 	uids map[string]struct{}
 }

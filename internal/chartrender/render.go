@@ -1,13 +1,10 @@
 // Package chartrender renders the repository's Helm chart in process.
 //
 // It exists so that the guardrail tests and the e2e suite install the chart
-// itself rather than a copy of its output. Before the chart, `deploy/*.yaml`
-// were both the reference an operator followed and the thing the e2e parsed by
-// hand — two artifacts that were supposed to agree and had nothing checking
-// that they did (ADR 0036).
-//
-// Values pass through the chart's JSON schema, so a test that renders invalid
-// values fails the same way an operator's `helm install` would.
+// itself rather than a copy of its output: `deploy/*.yaml` were the operator's
+// reference and the e2e's hand-parsed input at once, with nothing checking they
+// agreed (ADR 0036). Values pass through the chart's JSON schema, so invalid
+// values fail the way an operator's `helm install` would.
 package chartrender
 
 import (

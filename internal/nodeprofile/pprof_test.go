@@ -107,21 +107,14 @@ func TestNoShippedFunctionCarriesADirectory(t *testing.T) {
 	}
 }
 
-// TestFilesOfTheSameNameInDifferentPackagesStayDistinct pins what makes the
-// base name sufficient (ADR 0041).
+// TestFilesOfTheSameNameInDifferentPackagesStayDistinct pins what makes the base
+// name sufficient (ADR 0041): a symbolized Go function name carries its package
+// path, and a Go package is a directory, so two files of the same name cannot
+// share one. Package path plus base name is what `go build -trimpath` records.
 //
-// An application with three files called server.go is the obvious objection to
-// shipping base names, and the answer is that a symbolized Go function name
-// carries its package path — and a Go package is a directory, so two files of
-// the same name cannot share one. Package path plus base name identifies the
-// file exactly; what was removed is only the prefix before the package path,
-// which is the build machine's part. A consumer that rejoins the two gets what
-// `go build -trimpath` would have recorded in the first place.
-//
-// What that rests on is the serializer keying a function on its *name* and not
-// on its file alone. Were the key ever narrowed to the file, these three frames
-// would collapse into one entry and the base name really would be losing
-// information — which is the case this test exists to catch.
+// It rests on the serializer keying a function on its name, not its file alone.
+// Narrow the key to the file and these three frames collapse into one entry —
+// which is the case this test exists to catch.
 func TestFilesOfTheSameNameInDifferentPackagesStayDistinct(t *testing.T) {
 	data, err := Serialize([]Sample{{Value: 4, Frames: []Frame{
 		{Function: "github.com/acme/app/api.(*Server).Serve", File: "server.go", Line: 41, Kind: "native"},

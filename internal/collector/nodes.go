@@ -13,18 +13,14 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// NodeInfo is the collected view of one node: its size (allocatable and
-// capacity, normalized to millicores and bytes), the labels the cost model
-// needs — instance type, capacity type, and topology (zone and region) — the
-// kernel version, which determines whether the node can run the eBPF profile
-// (CAP_BPF needs kernel 5.8+), and the CPU architecture, which is what a
-// build's GOARCH is compared against. Nothing else is read from node objects
-// (see docs/security.md §4).
+// NodeInfo is the collected view of one node: allocatable and capacity
+// normalized to millicores and bytes, the labels the cost model needs (instance
+// type, capacity type, zone, region), the kernel version that decides whether
+// the eBPF profile can run, and the CPU architecture a build's GOARCH is
+// compared against. Nothing else is read from node objects (security.md §4).
 //
-// Zone and region are the join keys for anything the backend attributes to a
-// placement: which replicas sit in which failure domain, and which lines of a
-// cloud bill a workload belongs to. They are labels the cluster already
-// publishes; the agent copies them and draws no conclusion from them.
+// Zone and region are join keys the cluster already publishes; the agent copies
+// them and draws no conclusion from them.
 type NodeInfo struct {
 	Name          string `json:"name"`
 	InstanceType  string `json:"instance_type,omitempty"`

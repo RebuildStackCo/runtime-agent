@@ -7,14 +7,12 @@ import (
 )
 
 // Serialize turns filtered samples into a gzipped pprof profile with a
-// cpu/nanoseconds sample type. The eBPF profiler reports sample counts; we
-// convert to CPU nanoseconds using the sampling period (1e9/rate ns per sample)
-// so the result matches the cpu/nanoseconds contract the profile is validated
-// and documented against (ADR 0011 §5, security.md §8). The function and
-// location tables are built in first-seen order for a deterministic encoding.
+// cpu/nanoseconds sample type. The profiler reports sample counts, converted
+// with the sampling period (1e9/rate ns per sample) to match the contract the
+// profile is validated against (ADR 0011 §5). Function and location tables are
+// built in first-seen order, for a deterministic encoding.
 //
-// Input samples are expected to be already allow-list-filtered (slice 4);
-// serialization does not itself redact anything.
+// Input samples must already be allow-list-filtered; this redacts nothing.
 func Serialize(samples []Sample, samplesPerSecond int) ([]byte, error) {
 	if samplesPerSecond <= 0 {
 		samplesPerSecond = 20

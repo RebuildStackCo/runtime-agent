@@ -1,14 +1,11 @@
 // Package nodeprofile drives the embedded eBPF CPU profiler
-// (go.opentelemetry.io/ebpf-profiler) on the node and accumulates the
-// symbolized samples it returns (ADR 0011). Symbolization happens on the node,
-// inside the profiler; this package never copies or uploads a binary.
+// (go.opentelemetry.io/ebpf-profiler) on the node and accumulates the symbolized
+// samples it returns (ADR 0011). Symbolization happens inside the profiler on
+// the node; this package never copies or uploads a binary.
 //
-// Invariant (ADR 0011 §4, constraint a): before the allow-list filter runs
-// (a later slice), a captured profile exists nowhere but the in-memory Buffer
-// here. Nothing in this package logs or ships a frame's function name or file —
-// only aggregate counts. The filter and pprof serialization that let symbols
-// leave the node arrive in later slices and operate on the decoupled Frame /
-// Sample types below, not on the upstream profiler types.
+// Invariant (ADR 0011 §4): before the allow-list filter runs, a captured profile
+// exists nowhere but the in-memory Buffer here, and nothing in this package logs
+// or ships a frame's function name or file — only aggregate counts.
 package nodeprofile
 
 import "sync"

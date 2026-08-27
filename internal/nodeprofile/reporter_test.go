@@ -86,17 +86,13 @@ func traceWithSourceFile(fn, sourceFile string) *libpf.Trace {
 	return tr
 }
 
-// TestTheBuildMachinesPathNeverEntersTheBuffer is the leak this slice closes
-// (ADR 0041).
+// TestTheBuildMachinesPathNeverEntersTheBuffer pins ADR 0041: a Go binary built
+// without -trimpath records absolute paths from whatever machine compiled it,
+// and those reached the shipped profile verbatim — CI workspace, internal VCS
+// host, source-tree layout, none of it the customer's code structure.
 //
-// A Go binary built without -trimpath — the default — records absolute paths
-// from whatever machine compiled it. Those reached the shipped profile
-// verbatim: the CI workspace, the internal VCS host, the layout of the
-// customer's source tree. None of it is the customer's code structure, which is
-// what a profile is for; it is our build machine leaking through their profile.
-//
-// The assertion is on the buffer rather than on the wire, because the point is
-// that the path is cut at the seam and the agent never holds it.
+// The assertion is on the buffer rather than the wire, because the point is that
+// the path is cut at the seam and the agent never holds it.
 func TestTheBuildMachinesPathNeverEntersTheBuffer(t *testing.T) {
 	cases := []struct {
 		name string

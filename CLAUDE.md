@@ -46,6 +46,33 @@ reduction, not judgment.
 - Behavior changes require tests; rollup math changes must keep the
   merge-property tests passing.
 
+## Writing
+
+ADR 0024 settled this and it regressed: `security.md` went back from 750 to
+1139 lines in five days, all of it restated decisions. The rule is one fact in
+one place, and the places are:
+
+- **ADR** — why. Alternatives, threat models, measurements, what was given up.
+  The only place rationale lives.
+- **`docs/security.md`** — what the customer is promised. Not how it works, not
+  why it was chosen. A section that grows means another shrinks.
+- **`docs/backend-requirements.md`** — what the other side of the wire must do.
+  Its reader implements ingest and reads neither our ADRs nor `security.md`, so
+  restating an obligation here is the contract working, not drift. Normative
+  voice only: no history, no rationale beyond a citation.
+- **Code comments** — what a reader of these lines cannot see in them. Cite the
+  ADR by number; never retell it.
+
+One fact in one place applies within an audience, not across them.
+
+- A comment over ~8 lines means the content belongs in an ADR. Leave a pointer.
+- Never narrate history in code (`this used to…`, `the old version…`). That is
+  git and an ADR's Context section.
+- Never restate the code. A comment earns its place; its absence does not.
+- A measured fact is one line with its number, not a paragraph.
+- Commit messages and PR bodies: what changed and why, briefly. Evidence is a
+  command and its result, not a transcript.
+
 ## Local-only files
 
 `CONTEXT.md` (repo root, gitignored) contains private project notes. Never

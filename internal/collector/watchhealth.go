@@ -10,21 +10,14 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// The watch-health machinery answers a question `HasSynced` cannot: is this
-// cache still being fed?
+// The watch-health machinery answers what `HasSynced` cannot: is this cache
+// still being fed?
 //
-// `HasSynced` is a one-way latch. It turns true when the first LIST succeeds
-// and never turns back, so a cache whose watch is refused afterwards keeps
-// reporting availability while serving whatever it last held. The reflector
-// retries forever and the store answers every query, which means the agent goes
-// blind without noticing and every payload it assembles still claims to be
-// current (ADR 0035).
-//
-// The only signal client-go offers is the other direction: SetWatchErrorHandler
-// fires on every failed ListAndWatch, including a failed LIST. There is no
-// matching "it succeeded" callback, so recovery has to be inferred from
-// silence — which is exactly what the reflector itself does, and with the same
-// number (see watchStreakGap).
+// `HasSynced` is a one-way latch, so a cache whose watch is refused after the
+// first LIST keeps reporting availability while serving what it last held — the
+// agent goes blind and every payload still claims to be current (ADR 0035).
+// client-go offers only the failure direction (SetWatchErrorHandler), so
+// recovery is inferred from silence, with the reflector's own number.
 
 const (
 	// watchStreakGap is how long without a failure means the failures stopped.
@@ -151,10 +144,9 @@ func (h *watchHealth) failedWithin(now time.Time, d time.Duration) bool {
 // the error that must stop the agent.
 //
 // Stopping is the honest response for a cache that gates a signal: the pod
-// index, the owner chain and the node list are what every other payload is
-// assembled from, so serving them from a frozen store produces payloads of
-// entirely ordinary shape that describe a cluster as it was. A visibly crashing
-// pod is a worse day for the customer and a better one for the data.
+// index, owner chain and node list are what every other payload is assembled
+// from, so a frozen store produces ordinary-looking payloads describing a
+// cluster as it was. A visibly crashing pod is better for the data.
 func watchdog(ctx context.Context, now func() time.Time, limits watchLimits, gating map[string]*watchHealth) error {
 	if len(gating) == 0 {
 		<-ctx.Done()
@@ -215,12 +207,9 @@ func takeWatchFailure(fatal <-chan error) error {
 // recordWatchFailures returns the handler an informer calls when ListAndWatch
 // drops, bound to one cache's health record.
 //
-// The cause is deliberately not examined. ADR 0033 §2 already decided that the
-// agent does not classify why a source is unreadable — RBAC, a webhook, a
-// removed API version and an unreachable API server are one state, "not
-// available", and telling them apart buys nothing the payload can express.
-// Persistence does the work that classification would: a transient error
-// happens once, a refusal repeats until it is fixed.
+// The cause is deliberately not examined: ADR 0033 §2 decided the agent does not
+// classify why a source is unreadable. Persistence does the work classification
+// would — a transient error happens once, a refusal repeats until it is fixed.
 func recordWatchFailures(h *watchHealth, now func() time.Time) cache.WatchErrorHandler {
 	return func(_ *cache.Reflector, err error) {
 		h.record(now(), err)

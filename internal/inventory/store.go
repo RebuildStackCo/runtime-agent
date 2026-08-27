@@ -43,17 +43,13 @@ type GoRecord struct {
 }
 
 // BuildFacts is everything immutable the agent knows about one build, keyed by
-// the image digest that identifies it: the toolchain, the dependency module set,
-// and the allow-listed build settings. It is deliberately not a field on
-// GoRecord: a record merges across every replica and node running the build, and
-// the same image usually backs several workloads, so hanging hundreds of module
-// paths off each record would duplicate them across the inventory snapshot on
-// every flush. Keyed by digest instead, the facts are written once and joined
-// back through GoRecord.ImageDigest (ADR 0017, ADR 0019).
+// the image digest that identifies it. Deliberately not a field on GoRecord: a
+// record merges across every replica and node, and one image usually backs
+// several workloads, so hanging hundreds of module paths off each record would
+// duplicate them on every flush (ADR 0017, ADR 0019).
 //
-// Module paths only, never versions: a path says what a build is made of, a
-// path with a version is a vulnerability-scanning input, which this agent does
-// not collect (docs/security.md §8).
+// Module paths only, never versions: a path with a version is a
+// vulnerability-scanning input, which this agent does not collect.
 type BuildFacts struct {
 	ImageDigest string `json:"image_digest"`
 	GoVersion   string `json:"go_version"`
@@ -136,14 +132,11 @@ func NewStore(since time.Time) *Store {
 
 // Ingest joins one node report against the resolver, upserting a record for
 // every attributable binary and counting the rest as unjoined. A later report
-// for the same container overwrites the record — the inventory reflects the
-// current build, and snapshots supersede downstream (ADR 0010), so a rollout
-// flips the record as nodes re-scan. Multiple replicas reporting the same build
-// collapse to one record (idempotent upsert).
+// for the same container overwrites the record, so a rollout flips it as nodes
+// re-scan and multiple replicas of one build collapse to one record (ADR 0010).
 //
-// It also files each binary's build facts under the image digest of the
-// container it was joined to, and remembers which nodes have reported at all —
-// both for the payloads of ADR 0017.
+// It also files each binary's build facts under the image digest it was joined
+// to, and remembers which nodes have reported at all (ADR 0017).
 func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -221,15 +214,13 @@ func (s *Store) PendingBuilds() []BuildFacts {
 	return out
 }
 
-// LiveKeys is the set of record keys the controller's own filtered pod index
-// currently supports: one per container of every pod that passed the customer's
-// filters. It is the same index workload metadata is derived from, which is the
-// point — the two payloads then agree by construction rather than by
-// convention (ADR 0018).
+// LiveKeys is the set of record keys the controller's filtered pod index
+// currently supports: one per container of every admitted pod. It is the same
+// index workload metadata is derived from, so the two payloads agree by
+// construction rather than by convention (ADR 0018).
 //
-// Init containers are included. A native sidecar is declared as one and runs
-// for the pod's whole life, so excluding them would evict its record on every
-// flush and re-add it on the next node scan.
+// Init containers are included: a native sidecar is declared as one and runs for
+// the pod's whole life, so excluding them would evict its record every flush.
 func LiveKeys(pods []collector.PodInfo) []Key {
 	out := make([]Key, 0, len(pods))
 	for _, p := range pods {
@@ -256,25 +247,11 @@ type Evicted struct {
 // Retain drops every record whose key is absent from live, and then the build
 // facts no surviving record still references.
 //
-// The store accumulates records from facts the nodes push, so without this it
-// only ever grows: a deleted workload's record would keep shipping in every
-// snapshot until the controller restarted, and — the reason this is not merely
-// stale data — so would the record of a pod the customer opted out of. Once the
-// pod leaves the scan scope (ADR 0015) no new fact arrives to correct or remove
-// it, and the opt-out that was supposed to apply at collection would apply only
-// to facts not yet collected. Retaining against the live index is what makes
-// "the exclusion applies at the collection stage" true of this payload too.
-//
-// live may legitimately be empty — a cluster where nothing passes the filters
-// has an empty inventory — so this does not guard against it. That is safe
-// because the pod index is only ever mutated by informer events, never wiped:
-// PodWatcher registers its handlers after the caches sync, and a relist replays
-// as adds and updates. An empty index therefore means an empty cluster, not an
-// unsynced one.
-//
-// A record for a pod whose node scanned it before the controller's informer saw
-// it survives at most one flush cycle: it is evicted here, and re-added by the
-// next scan once the informer has caught up.
+// Without it the store only grows, and the record that matters is the one for a
+// pod the customer opted out of: once it leaves the scan scope no new fact
+// arrives to remove it (ADR 0015, ADR 0018). An empty live cannot mean
+// "unsynced" — the pod index is only ever mutated by informer events, never
+// wiped — so it is not guarded against.
 func (s *Store) Retain(live []Key) Evicted {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -401,16 +378,14 @@ func (s *Store) Counters() Counters {
 	}
 }
 
-// Coverage is what the Go-inventory payload says about its own completeness.
-// The inventory is assembled from facts the nodes push, so a record can be
-// missing for reasons the record set cannot express: a node whose DaemonSet
-// never started reports nothing, and a fact whose pod the controller cannot
-// resolve is dropped. Both are counts here, never identities (CLAUDE.md
-// invariant 6).
+// Coverage is what the Go-inventory payload says about its own completeness. The
+// inventory is assembled from facts the nodes push, so a record can be missing
+// for reasons the record set cannot express: a DaemonSet that never started
+// reports nothing, an unresolvable fact is dropped. Both are counts, never
+// identities (CLAUDE.md invariant 6).
 //
-// The fact counters are cumulative from Since, which is carried alongside them
-// so a consumer never has to know the base from documentation (ADR 0013's
-// principle, applied to a structural payload).
+// The fact counters are cumulative from Since, carried alongside them so the
+// base is in the bytes rather than in documentation.
 type Coverage struct {
 	Since time.Time `json:"since"`
 	// NodesReported is how many nodes *currently in the cluster* have reported

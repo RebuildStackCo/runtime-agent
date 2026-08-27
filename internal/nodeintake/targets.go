@@ -34,26 +34,11 @@ type NodeTargeter interface {
 // TargetsHandler answers a node's targets query with the container IDs to
 // profile on that node.
 //
-// This is the one node↔controller endpoint whose reply carries data the node
-// acts on — a deliberate, config-bounded exception to the one-way reply
-// discipline of ADR 0010 §1 (ADR 0011 §3). It does not break invariant 1: the
-// reply is container identifiers derived from the cluster's own rollups and
-// PodWatcher, never configuration or a command, and the external backend is
-// untouched.
-//
-// Where the bound sits is worth stating precisely, because ADR 0011 §3 stated it
-// differently (ADR 0025). **Scope is the collection filter**, applied long
-// before this handler: the ranking is computed from usage rollups, which exist
-// only for pods those filters admitted, and the expansion to container IDs reads
-// PodWatcher's admitted index. A workload the customer excluded was never
-// measured and is not in this index, so it cannot be named here.
-//
-// What the node adds is what the node holds: the symbol allow-list that decides
-// what may leave it, its cost ceilings, and profile validation (ADR 0011 §4–5).
-// Those bound a hostile controller. This reply and the scan scope do not — they
-// are the controller's own answers — and no node-side re-check could change
-// that, since a node with no API access (ADR 0009) cannot test a namespace claim
-// it was handed.
+// The one endpoint whose reply carries data the node acts on: a config-bounded
+// exception to ADR 0010 §1, not a control channel, since the reply is container
+// identifiers from the cluster's own rollups (ADR 0011 §3). The bound is the
+// collection filter — an excluded workload was never measured, so it is in
+// neither the rollups nor the admitted index (ADR 0025).
 type TargetsHandler struct {
 	verifier TokenVerifier
 	targeter NodeTargeter

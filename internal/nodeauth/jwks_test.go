@@ -173,17 +173,12 @@ func (s *blockingSource) Fetch(ctx context.Context) (*KeySet, error) {
 
 // TestARefreshIsBoundedByItsOwnDeadlineNotTheCallers is the whole of this fix.
 //
-// A signing-key rotation is an operation on the control plane, so it tends to
-// coincide with an API server that is rolling. Every node's token carries the
-// new kid at once, every verification misses the cache, and the refresh they
-// are all waiting behind is talking to the unwell API server. Before this, the
-// refresh had no deadline of its own: the only bound was the caller's request
-// context, so a hung fetch froze node authentication for as long as the caller
-// was willing to wait — 30s for the node client, and unbounded for anything
-// that waits longer.
-//
-// The caller here never gives up (context.Background()). The refresh must
-// still end.
+// A signing-key rotation tends to coincide with a rolling API server: every
+// node's token carries the new kid at once and every verification waits behind
+// one refresh. That refresh had no deadline of its own — the only bound was the
+// caller's context, 30s for the node client and unbounded for anything slower.
+// Here the caller never gives up (context.Background()); the refresh must still
+// end.
 func TestARefreshIsBoundedByItsOwnDeadlineNotTheCallers(t *testing.T) {
 	src := &blockingSource{entered: make(chan struct{})}
 	c := &CachingKeySource{Source: src, FetchTimeout: 50 * time.Millisecond}

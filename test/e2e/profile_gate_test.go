@@ -19,12 +19,10 @@ import (
 )
 
 // TestEBPFGateRefusesGracefully is the gate-refusal e2e that runs anywhere,
-// including kind on Docker Desktop / linuxkit where the kernel has no BTF. It
-// deploys the `ebpf` node variant and asserts the graceful path (ADR 0011 §2):
-// the pod still starts (so the manifest does not hard-require BTF), the eBPF
-// profiler refuses with a distinct reason (btf_absent or kernel_too_old), and
-// the Go-binary scanner keeps running. The full capture path needs a Linux+BTF
-// host and is a separate target.
+// including kind on linuxkit where the kernel has no BTF. It asserts the
+// graceful path of ADR 0011 §2: the pod still starts, the profiler refuses with
+// a distinct reason, and the Go-binary scanner keeps running. The full capture
+// path needs a Linux+BTF host and is a separate target.
 //
 // Gated on E2E_AGENT_IMAGE (kind-loaded); use `make profile-gate-e2e`.
 func TestEBPFGateRefusesGracefully(t *testing.T) {

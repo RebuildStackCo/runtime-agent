@@ -11,13 +11,10 @@ import (
 // paired with the termination that most recently caused one. It is the raw
 // journal fact; the windowed aggregate is assembled downstream (ADR 0020).
 //
-// Restarts and Reason are of deliberately different quality, and the split is
-// the point. Restarts is exact: `restartCount` is a counter, so its delta since
-// the previous observation counts every restart even if several happened
-// between two status updates. Reason is a sample: a container status carries
-// only its most recent termination, so a burst of restarts with different
-// reasons reports one of them. Downstream the difference is a number, never a
-// silent approximation.
+// Restarts and Reason are of deliberately different quality. Restarts is exact —
+// a counter delta counts every restart even if several happened between two
+// status updates. Reason is a sample: a status carries only its most recent
+// termination, so a burst with different reasons reports one of them.
 type ContainerRestart struct {
 	Namespace string
 	Pod       string
@@ -63,22 +60,11 @@ func (w *PodWatcher) OnContainerRestart(fn func(ContainerRestart)) {
 // reportRestarts compares each container's restart counter against the last
 // value seen and reports the advance.
 //
-// A container seen for the first time is only baselined, never reported as an
-// advance. Its counter may already stand at 40, but those restarts happened at
-// moments Kubernetes does not record — placing them in the window that happens
-// to be open when the agent starts would invent a history.
-//
-// The number itself is not lost. It is kept here as `atFirstSight` and shipped
-// by `restart_counters` as a counter reading rather than as events in a window,
-// which is the shape that can carry an untimed total honestly (ADR 0034).
-//
-// A counter that does not advance reports nothing, and one that goes backwards
-// rebaselines silently — the same rule the usage poller applies to every
-// counter it reads (see usage.go, "Container restarted: rebaseline").
-//
-// The baseline is recorded whether or not anyone is listening for advances: it
-// is state about what the agent has seen, and `restart_counters` reads it
-// (ADR 0034). Only the callback is conditional.
+// A container seen for the first time is only baselined, never reported: those
+// restarts happened at moments Kubernetes does not record, so putting them in
+// the open window would invent a history. The number is kept as `atFirstSight`
+// and shipped by `restart_counters` instead (ADR 0034). A counter that does not
+// advance reports nothing; one that goes backwards rebaselines silently.
 func (w *PodWatcher) reportRestarts(pod *corev1.Pod) {
 	observedAt := time.Now()
 	statuses := make([]corev1.ContainerStatus, 0, len(pod.Status.InitContainerStatuses)+len(pod.Status.ContainerStatuses))

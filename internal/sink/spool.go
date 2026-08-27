@@ -31,15 +31,12 @@ import (
 const DefaultMaxAge = 24 * time.Hour
 
 // The spool's hard bounds, enforced oldest-first after the age cutoff
-// (ADR 0042). Age alone bounds nothing an adversary controls: the number of
-// payloads is driven by cluster events, and a pod restarting in a tight loop
-// produces a file per restart. Without these the spool grows until the node's
-// ephemeral storage is gone, at which point the kubelet starts evicting pods —
-// other people's pods, on a node this agent is a guest of.
+// (ADR 0042). Age alone bounds nothing an adversary controls — a pod restarting
+// in a tight loop produces a file per restart — and an unbounded spool ends with
+// the kubelet evicting other people's pods off the node.
 //
-// Both are constants rather than values. The spool is always an emptyDir and no
-// setting changes that (ADR 0026), so a knob here would be a promise about a
-// volume the operator does not choose.
+// Constants rather than values: the spool is always an emptyDir (ADR 0026), so a
+// knob here would be a promise about a volume the operator does not choose.
 const (
 	// DefaultMaxBytes is the total size of payload files the spool will hold.
 	// Sized to be comfortably larger than an active cluster's day and
@@ -128,16 +125,13 @@ type oomPayload struct {
 	Event  collector.OOMKill `json:"event"`
 }
 
-// goInventoryPayload is the current Go inventory of the cluster — one record
-// per (namespace, workload, container), joined from node facts (ADR 0010). It
-// is a single superseding batch: each write replaces the previous one under its
-// fixed natural key (the payload kind), the on-disk mirror of the backend's
-// upsert-by-key ingest. There is no ordering field: the spool holds one version
-// of a key at a time, so the newest write is the only one there is (ADR 0027).
+// goInventoryPayload is the current Go inventory of the cluster — one record per
+// (namespace, workload, container), joined from node facts (ADR 0010). A single
+// superseding batch under a fixed key, with no ordering field: the spool holds
+// one version of a key at a time (ADR 0027).
 //
-// CapturedAt dates the assembly of the snapshot, not each fact in it: the node
-// facts were collected by scans that finished at various moments before it.
-// How much of the fleet those scans covered is what Coverage answers.
+// CapturedAt dates the assembly, not each fact in it; how much of the fleet the
+// underlying scans covered is what Coverage answers.
 type goInventoryPayload struct {
 	Kind       string               `json:"kind"`
 	Source     string               `json:"source"`
@@ -147,14 +141,12 @@ type goInventoryPayload struct {
 }
 
 // goBuildPayload is what one build is made of and how it was built, keyed by its
-// image digest: the toolchain, the dependency module set, and the allow-listed
-// build settings. Unlike every other structural payload it neither supersedes
-// nor carries a capture time — these are properties of the build, fixed the
-// moment the image was produced, so the payload is immutable given its key and a
-// redelivery is byte-identical (ADR 0017).
+// image digest. Alone among the structural payloads it neither supersedes nor
+// carries a capture time — these are properties of the build, fixed when the
+// image was produced, so a redelivery is byte-identical (ADR 0017).
 //
 // Settings may be absent: the toolchain records vcs.* only when it can, which in
-// container builds is the exception rather than the rule (ADR 0019).
+// container builds is the exception (ADR 0019).
 type goBuildPayload struct {
 	Kind        string            `json:"kind"`
 	Source      string            `json:"source"`
@@ -165,21 +157,14 @@ type goBuildPayload struct {
 	Settings    map[string]string `json:"settings,omitempty"`
 }
 
-// containerRestartsPayload is every collected container's restart history
-// within one window: one file per window holding many records, exactly as a
-// usage snapshot is (ADR 0020).
+// containerRestartsPayload is every collected container's restart history within
+// one window: one file per window holding many records (ADR 0020).
 //
-// Grouping by window rather than filing one payload per restart is the decision
-// the shape encodes. A per-event payload would put the spool's file count under
-// the control of a crash loop — a hundred containers in CrashLoopBackOff would
-// write thousands of files an hour into a spool bounded only by age — while the
-// question a restart answers ("how often, and why") is a property of the window,
-// not of the individual restart.
-//
-// It supersedes within its window: each flush replaces the window's file, and
-// the last write before the window closes is its final value. Unlike usage
-// there is no separate closed-window kind, because a restart count only grows
-// and the final write needs no different shape.
+// Grouping by window is the decision the shape encodes — a payload per restart
+// would put the spool's file count under the control of a crash loop — and the
+// question a restart answers ("how often, and why") is a property of the window.
+// It supersedes within its window, and there is no separate closed-window kind,
+// because a restart count only grows.
 type containerRestartsPayload struct {
 	Kind          string                  `json:"kind"`
 	Source        string                  `json:"source"`
@@ -191,19 +176,11 @@ type containerRestartsPayload struct {
 // restartCountersPayload is the restart counter of every collected container
 // that has ever restarted, as it stands at this capture (ADR 0034).
 //
-// It is journal provenance like the restart windows beside it, and the opposite
-// shape. A window says what the agent watched happen between two instants; this
-// says what the counter reads, including the restarts that happened before the
-// agent was watching and therefore belong to no window at all. That is the fact
-// a freshly installed agent can state and a journal cannot.
-//
-// The two must never be added. `restarts` is the total; the windows are a
-// subset of it, and `restarts_before_observation` is the part of the total that
-// no window will ever hold.
-//
-// Superseding batch under a fixed key, like the structural snapshots: it
-// describes the counter's current value, so the newest reading replaces its
-// predecessor rather than accumulating.
+// Journal provenance like the windows beside it, and the opposite shape: a
+// window says what the agent watched happen, this says what the counter reads,
+// including restarts that belong to no window at all. The two must never be
+// added — the windows are a subset of `restarts`. Superseding batch under a
+// fixed key: the newest reading replaces its predecessor.
 type restartCountersPayload struct {
 	Kind       string                     `json:"kind"`
 	Source     string                     `json:"source"`
@@ -212,15 +189,12 @@ type restartCountersPayload struct {
 }
 
 // podDisruptionsPayload is every pod the cluster removed within one window:
-// preempted to make room, evicted under node pressure, drained, or deleted
-// through the eviction API (ADR 0021). One file per window holding many
-// records, like the restart journal.
+// preempted, evicted under node pressure, drained, or deleted through the
+// eviction API (ADR 0021). One file per window holding many records.
 //
-// Windows here are a delivery boundary rather than an aggregation: a pod is
-// disrupted once, so each record stands alone and carries the instant
-// Kubernetes recorded. Grouping them keeps the spool's file count bounded by
-// time rather than by how bad an incident is — a node evicting forty pods must
-// not write forty files.
+// The window is a delivery boundary rather than an aggregation — a pod is
+// disrupted once and each record carries its own instant — and it keeps the
+// spool's file count bounded by time rather than by how bad an incident is.
 type podDisruptionsPayload struct {
 	Kind          string                     `json:"kind"`
 	Source        string                     `json:"source"`
@@ -232,12 +206,9 @@ type podDisruptionsPayload struct {
 // jobRunsPayload is every finished Job run of one window: one file per window
 // holding many records, like the restart and disruption journals (ADR 0029).
 //
-// The window is a delivery boundary rather than an aggregation — a run finishes
-// once and carries its own instants — and it exists to keep the spool's file
+// The window is a delivery boundary, not an aggregation, and keeps the file
 // count bounded by time rather than by how many CronJobs the cluster schedules.
-//
-// It supersedes within its window: a run reported again while its object still
-// exists rewrites its own record, so the file's newest write is its value.
+// It supersedes within its window: a run reported again rewrites its own record.
 type jobRunsPayload struct {
 	Kind          string                 `json:"kind"`
 	Source        string                 `json:"source"`
@@ -274,19 +245,13 @@ type nodeMetadataPayload struct {
 }
 
 // deploymentRevisionsPayload is the current revision history of every collected
-// Deployment: which ReplicaSets exist, what each runs, and how many replicas
-// each is carrying (ADR 0030).
+// Deployment: which ReplicaSets exist, what each runs, how many replicas each
+// carries (ADR 0030).
 //
-// A superseding batch under a fixed key, the same shape as workload metadata and
-// for the same reason: it describes current cluster state, so the newest
-// snapshot replaces its predecessor rather than accumulating. Kubernetes keeps
-// only `revisionHistoryLimit` revisions, so history beyond that is the backend's
-// to accumulate across snapshots, exactly as ADR 0018 decided for the Go
-// inventory.
-//
-// Scope is Deployments alone. StatefulSet and DaemonSet revisions live in
-// `controllerrevisions`, which the agent has no RBAC for; the kind's name says
-// so rather than implying a generality it lacks.
+// Superseding batch under a fixed key. Kubernetes keeps only
+// `revisionHistoryLimit` revisions, so history beyond that is the backend's to
+// accumulate (ADR 0018). Deployments alone: StatefulSet and DaemonSet revisions
+// live in `controllerrevisions`, which the agent has no RBAC for.
 type deploymentRevisionsPayload struct {
 	Kind       string             `json:"kind"`
 	Source     string             `json:"source"`
@@ -306,14 +271,10 @@ type workloadPolicyPayload struct {
 	Source     string    `json:"source"`
 	CapturedAt time.Time `json:"captured_at"`
 	// UnavailableSources names the caches this payload could not read at this
-	// capture — a denied permission, most often. It is what keeps every
-	// absence below conditional: without it, "this workload has no budget" and
-	// "we were not allowed to look for budgets" are the same silence, and a
-	// workload whose only constraint was a budget disappears from `records`
-	// entirely rather than appearing with a field missing (ADR 0033).
-	//
-	// Empty on an ordinary cluster, and empty is itself a statement: every
-	// source was read, so what is not here does not exist.
+	// capture. It is what keeps every absence below conditional: without it,
+	// "this workload has no budget" and "we were not allowed to look" are the
+	// same silence (ADR 0033). Empty is itself a statement — every source was
+	// read, so what is not here does not exist.
 	UnavailableSources []string                   `json:"unavailable_sources,omitempty"`
 	Records            []collector.WorkloadPolicy `json:"records"`
 }
@@ -503,15 +464,12 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 }
 
 // WriteRestartCounters writes the current restart-counter reading of every
-// collected container as one superseding batch. records must already be in a
-// deterministic order (PodWatcher.RestartCounters sorts them) so the payload
-// bytes are stable — the golden contract.
+// collected container as one superseding batch. records must already be sorted
+// (PodWatcher.RestartCounters does it) so the payload bytes are stable.
 //
 // A cluster where nothing has ever restarted writes an empty record list rather
-// than nothing at all, unlike the journals: the reading is a snapshot, and for a
-// snapshot "no container has restarted" is an answer worth stating. A journal
-// window with no events says only that the agent was watching, which the open
-// usage window already says.
+// than nothing, unlike the journals: for a snapshot, "no container has
+// restarted" is an answer worth stating.
 func (s *Spool) WriteRestartCounters(capturedAt time.Time, records []collector.RestartCounter) error {
 	if records == nil {
 		records = []collector.RestartCounter{}
@@ -675,16 +633,13 @@ func (s *Spool) WriteClusterPolicy(capturedAt time.Time, policy collector.Cluste
 	return s.write("cluster-policy.json", payload)
 }
 
-// WriteProfile writes one captured eBPF CPU profile. Unlike the superseding
-// go-inventory, each capture is its own file: profiles accumulate and are
-// bounded by the maxAge sweep, never overwritten (ADR 0011 §6). The pprof bytes
-// must already be allow-list-filtered and validated (ADR 0011 §4–5).
+// WriteProfile writes one captured eBPF CPU profile. Each capture is its own
+// file, bounded by the age sweep rather than overwritten (ADR 0011 §6); the
+// pprof bytes must already be filtered and validated (ADR 0011 §4–5).
 //
-// The filename carries the whole natural key, image digest included. Without it
-// two captures of one workload's container in one window — two replicas on the
-// same node, or two builds during a rollout — produce the same name and the
-// second silently replaces the first, since the node cuts every window on the
-// same boundaries and ships one report per container (ADR 0023).
+// The filename carries the whole natural key, image digest included: without it
+// two captures of one container in one window — two replicas on a node, or two
+// builds during a rollout — collide and the second replaces the first (ADR 0023).
 func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
 	payload := profilePayload{
 		Kind:         "ebpf_profile",
@@ -753,17 +708,11 @@ const unnamed = "unnamed"
 // fileToken reduces a caller-supplied string to something safe to put in a
 // filename (ADR 0042).
 //
-// The one that made this necessary is the workload name, which comes from
-// `ownerReferences[].name` — and the API server validates that field only for
-// non-emptiness, no DNS-1123, no character set. So a pod created with an owner
-// reference named "x/../../../../etc/cron.d/evil" put that straight into a path
-// that filepath.Join then resolved. The namespace, pod and container names
-// beside it happen to be DNS-1123 and were safe by luck rather than by
-// anything this package did.
-//
-// Rather than sanitize the one field that is known to be attacker-controlled,
-// every component goes through here: which Kubernetes fields are validated is
-// not this package's business to track.
+// The field that made it necessary is the workload name, taken from
+// `ownerReferences[].name`, which the API server validates only for
+// non-emptiness — so "x/../../../../etc/cron.d/evil" went straight into a path
+// filepath.Join then resolved. Every component goes through here rather than
+// that one: which fields Kubernetes validates is not this package's to track.
 func fileToken(s string) string {
 	var b strings.Builder
 	allDots := true
@@ -821,18 +770,10 @@ func (s *Spool) write(name string, payload any) error {
 // temp files a crash left behind go, and whatever still exceeds the size or
 // count budget goes oldest-first.
 //
-// It is exported and called on the agent's own cadence (ADR 0042). It used to
-// be private and called from WriteUsageSnapshot, which rode the snapshot
-// cadence "so no extra timer exists" — a saving that quietly made the whole
-// bound conditional. WriteUsageSnapshot runs only when there are usage records
-// to write, so on a cluster where the kubelet cannot be polled — the
-// nodes/proxy grant withheld, or every kubelet unreachable — nothing swept at
-// all, and the spool grew without any limit while the agent looked healthy.
-//
-// Oldest-first is the right loss. The oldest payload is the one most likely to
-// have been superseded, and every payload here is loss-harmless by design
-// (ADR 0007): what the spool holds is a convenience, never a fact that exists
-// nowhere else.
+// Exported and called on the agent's own cadence, because riding the usage
+// snapshot made the bound conditional on the kubelet being pollable (ADR 0042).
+// Oldest-first is the right loss: the oldest payload is the likeliest to have
+// been superseded, and every payload here is loss-harmless (ADR 0007).
 func (s *Spool) Sweep(now time.Time) error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
