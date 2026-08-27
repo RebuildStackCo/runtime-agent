@@ -14,8 +14,13 @@ imagePullSecrets:
 ---
 # The controller's access is read-only. Every rule here is get/list/watch, and
 # there is no create, update, patch, delete or deletecollection anywhere — a
-# property docs/security.md §1 promises and charts/runtime-agent/render_test.go
+# property docs/security.md §1 promises and internal/chartrender/chart_test.go
 # enforces mechanically rather than by review.
+#
+# This list is closed, not a floor: internal/chartrender/guardrail_test.go names
+# the resources permitted here and fails on anything else, so a word added to a
+# rule below is a red build rather than a quiet widening of what the agent can
+# read.
 #
 # The two nonResourceURL GETs are OIDC discovery and JWKS, used to validate node
 # tokens locally (ADR 0010). They are reads, and specifically NOT

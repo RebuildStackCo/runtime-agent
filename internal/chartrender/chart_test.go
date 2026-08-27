@@ -220,23 +220,22 @@ func TestNoContainerIsPrivilegedAndCapabilitiesAreExactlyWhatIsPromised(t *testi
 	}
 }
 
-// No host path is ever writable, in any profile. This is the difference between
-// reading a node and being able to change one.
+// No host path is ever writable, in any profile, in any pod the chart renders.
+// This is the difference between reading a node and being able to change one.
 func TestEveryHostMountIsReadOnly(t *testing.T) {
 	for name, values := range profiles() {
 		t.Run(name, func(t *testing.T) {
-			docs := render(t, values)
-			for _, ds := range decode[appsv1.DaemonSet](t, docs, "DaemonSet") {
+			for _, pod := range allPodSpecs(t, render(t, values)) {
 				hostPaths := map[string]bool{}
-				for _, volume := range ds.Spec.Template.Spec.Volumes {
+				for _, volume := range pod.spec.Volumes {
 					if volume.HostPath != nil {
 						hostPaths[volume.Name] = true
 					}
 				}
-				for _, container := range ds.Spec.Template.Spec.Containers {
+				for _, container := range pod.containers() {
 					for _, mount := range container.VolumeMounts {
 						if hostPaths[mount.Name] && !mount.ReadOnly {
-							t.Errorf("host mount %q is writable in %q", mount.Name, container.Name)
+							t.Errorf("%s: host mount %q is writable in %q", pod, mount.Name, container.Name)
 						}
 					}
 				}
@@ -566,14 +565,43 @@ func loadControllerConfig(t *testing.T, cm corev1.ConfigMap) config.Config {
 	return cfg
 }
 
+// podSpec is one rendered pod template with enough identity to name it in a
+// failure. Every workload the chart renders is one of these, so a test written
+// against allPodSpecs cannot miss a component the chart grows later.
+type podSpec struct {
+	kind string // Deployment or DaemonSet
+	name string
+	spec corev1.PodSpec
+}
+
+func (p podSpec) String() string { return p.kind + " " + p.name }
+
+func allPodSpecs(t *testing.T, docs []string) []podSpec {
+	t.Helper()
+	var out []podSpec
+	for _, deploy := range decode[appsv1.Deployment](t, docs, "Deployment") {
+		out = append(out, podSpec{"Deployment", deploy.Name, deploy.Spec.Template.Spec})
+	}
+	for _, ds := range decode[appsv1.DaemonSet](t, docs, "DaemonSet") {
+		out = append(out, podSpec{"DaemonSet", ds.Name, ds.Spec.Template.Spec})
+	}
+	return out
+}
+
+// containers returns the init containers as well as the regular ones. An init
+// container runs with its own securityContext and can hold privileges the
+// containers beside it do not, so a check that walks only Spec.Containers is a
+// check with a hole in it. The chart renders none today; this is what makes the
+// first one that appears subject to the same assertions as everything else.
+func (p podSpec) containers() []corev1.Container {
+	return append(append([]corev1.Container{}, p.spec.InitContainers...), p.spec.Containers...)
+}
+
 func allContainers(t *testing.T, docs []string) []corev1.Container {
 	t.Helper()
 	var out []corev1.Container
-	for _, deploy := range decode[appsv1.Deployment](t, docs, "Deployment") {
-		out = append(out, deploy.Spec.Template.Spec.Containers...)
-	}
-	for _, ds := range decode[appsv1.DaemonSet](t, docs, "DaemonSet") {
-		out = append(out, ds.Spec.Template.Spec.Containers...)
+	for _, p := range allPodSpecs(t, docs) {
+		out = append(out, p.containers()...)
 	}
 	return out
 }

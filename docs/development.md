@@ -74,6 +74,15 @@ A PR is mergeable when:
   emptyDir. It also feeds the rendered configuration to the agent's own strict
   parser, so a chart that would CrashLoop at startup fails here instead
   (ADR 0036). `make chart-lint` adds the helm CLI's own opinion, per profile.
+- **And the absences are asserted too.** A test that enumerates what must be
+  present is indifferent to an addition standing next to it: `secrets` added to
+  an existing read-only rule, `hostPID` on the controller, a capability added
+  beside `drop: [ALL]`, a privileged init container — all five measured passing
+  the whole suite green before `internal/chartrender/guardrail_test.go` existed.
+  It names the complete permitted set instead, per rendered pod, so an addition
+  has to be argued for in a diff that changes a test. When you widen the chart,
+  expect to widen a list there; that is the mechanism working, not a test in the
+  way.
 - **End-to-end on kind installs the chart.** The agent runs against a local kind
   cluster with synthetic workloads; assertions are made on the spool contents,
   not on logs. The suites install `charts/runtime-agent` rather than a copy of
