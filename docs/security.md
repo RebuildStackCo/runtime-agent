@@ -521,9 +521,14 @@ section describes each in detail.
   carries a cloud account identifier, a region, your repository taxonomy, and
   whatever your CI writes into a tag.
 - From pod specs: `metadata`, `spec.containers[].resources` and `[].ports`, the
-  nine placement fields below, `ownerReferences`, and `status`. `env`, `args` and
-  `command` are discarded before anything is stored or transported, because they
-  frequently contain inline credentials. From `status`: the image digest, the
+  nine placement fields below, `ownerReferences`, and `status`. `env`, `envFrom`,
+  `args` and `command` are removed as each object arrives, before it enters the
+  agent's cache, because they frequently contain inline credentials — so they are
+  not held in memory either, not merely kept out of payloads
+  ([ADR 0046](adr/0046-the-cache-is-the-source.md)). The
+  `kubectl.kubernetes.io/last-applied-configuration` annotation is dropped with
+  them: it is a verbatim copy of the object as applied, environment included.
+  From `status`: the image digest, the
   restart counter, a terminated state's reason and exit code, the reason and
   transition time of exactly two conditions — `PodScheduled` and
   `DisruptionTarget` — and `status.reason` when it says `Evicted`. Nothing else.
@@ -544,13 +549,10 @@ section describes each in detail.
   bounded at 128 bytes and lists at fixed counts, and anything past a bound is
   dropped whole rather than truncated. What was dropped is counted and never
   named. From `volumes` only `persistentVolumeClaim` names are read
-  ([ADR 0032](adr/0032-cluster-policy.md)) — a bound claim on a zonal volume pins
-  its pod to that zone, which no field of the spec states; a Secret, ConfigMap or
-  projected volume is skipped without its name being touched.
+  ([ADR 0032](adr/0032-cluster-policy.md)); a Secret, ConfigMap or projected
+  volume is skipped without its name being touched.
 - From ReplicaSets: `metadata`, the replica counts, and from `spec.template`
-  exactly one field per container — the image reference. Not `env`, not `args`,
-  not `command`, and it is checked against the encoded bytes, so a field added
-  later that carries the template through fails a test
+  exactly one field per container — the image reference
   ([ADR 0030](adr/0030-deployment-revisions.md)).
 - From Jobs: `metadata`, the terminal condition's type, reason and transition
   time, the start and completion times, the succeeded and failed counts, and
