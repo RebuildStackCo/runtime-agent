@@ -4,7 +4,7 @@
 # told to do.
 #
 # The agent parses it strictly: a key it does not know is a startup error rather
-# than a setting silently ignored. charts/runtime-agent/render_test.go feeds this
+# than a setting silently ignored. internal/chartrender/chart_test.go feeds this
 # rendered text to the agent's own parser, so a chart that would fail at startup
 # fails in CI instead.
 #

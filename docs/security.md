@@ -74,6 +74,11 @@ runtime-agent node         # DaemonSet (optional) — eBPF profiling and Go bina
   stable name, and a StatefulSet would hold a replacement back while a node is
   unreachable, stopping collection cluster-wide (ADR 0026).
 - The node role sends data to the controller over the cluster network only.
+- The host boundary runs between the two roles, and only the node role crosses
+  it. The controller shares no namespace with the node it lands on, mounts no
+  host path, and adds no capability — asserted per rendered pod in
+  `internal/chartrender/guardrail_test.go`, so §7's blast-radius paragraphs stay
+  paragraphs about the DaemonSet.
 - The controller exposes an in-cluster-only HTTP receiver for those node
   reports (ADR 0010): it accepts data pushes from the node DaemonSet and
   answers ack/error only. It is not reachable from outside the cluster and
@@ -948,7 +953,10 @@ now say which one they are (ADR 0039).
 
 - No `secrets`, no `configmaps` — no RBAC for either exists anywhere, so the
   controller cannot read one through the API server, and the API server is what
-  enforces that rather than agent configuration. This is a statement about the
+  enforces that rather than agent configuration. The ClusterRole's resource list
+  is closed rather than merely reviewed: `internal/chartrender/guardrail_test.go`
+  names every resource the chart may request and fails on anything else, in every
+  install profile. This is a statement about the
   API path only: secret *contents* remain reachable by the controller's identity
   through `nodes/proxy` (below), and on a node by the DaemonSet's `/proc` access
   ([§7.1](#71-the-go-binary-scanner-the-current-node-role)). What keeps them out
