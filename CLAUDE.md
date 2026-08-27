@@ -56,8 +56,14 @@ one place, and the places are:
   The only place rationale lives.
 - **`docs/security.md`** — what the customer is promised. Not how it works, not
   why it was chosen. A section that grows means another shrinks.
+- **`docs/backend-requirements.md`** — what the other side of the wire must do.
+  Its reader implements ingest and reads neither our ADRs nor `security.md`, so
+  restating an obligation here is the contract working, not drift. Normative
+  voice only: no history, no rationale beyond a citation.
 - **Code comments** — what a reader of these lines cannot see in them. Cite the
   ADR by number; never retell it.
+
+One fact in one place applies within an audience, not across them.
 
 - A comment over ~8 lines means the content belongs in an ADR. Leave a pointer.
 - Never narrate history in code (`this used to…`, `the old version…`). That is

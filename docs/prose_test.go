@@ -17,18 +17,24 @@ import (
 	"testing"
 )
 
-const (
-	// A comment longer than this is rationale, and rationale belongs in an ADR
-	// with a pointer left behind (ADR 0044).
-	maxCommentRun = 8
+// A comment longer than this is rationale, and rationale belongs in an ADR with
+// a pointer left behind (ADR 0044).
+const maxCommentRun = 8
 
-	// Where `security.md` and its largest section landed once the restated ADRs
-	// were removed. Not ADR 0024's 750: five payload kinds have been added since
-	// (ADR 0029, 0030, 0032, 0034), and each is a row in the disclosure table and
-	// a paragraph under it. The rest of §8 is what a security review reads.
-	maxSecurityLines   = 920
-	maxSecuritySection = 290
-)
+// The two documents that grow with every payload kind, at the size each landed
+// once the restated ADRs came out (ADR 0044). `security.md` is deliberately not
+// back at ADR 0024's 750: five kinds have been added since, each a table row and
+// a paragraph. `backend-requirements.md` restates decisions on purpose — its
+// reader implements ingest and reads neither our ADRs nor `security.md` — so
+// what is bounded there is growth, not duplication.
+var ceilings = []struct {
+	file    string
+	lines   int
+	section int
+}{
+	{"security.md", 920, 290},
+	{"backend-requirements.md", 460, 320},
+}
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {
 	for _, path := range goFiles(t) {
@@ -59,33 +65,36 @@ func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {
 	}
 }
 
-func TestTheSecurityDocumentStaysUnderItsCeiling(t *testing.T) {
-	body, err := os.ReadFile("security.md")
-	if err != nil {
-		t.Fatalf("reading security.md: %v", err)
-	}
-	lines := strings.Split(string(body), "\n")
-	if len(lines) > maxSecurityLines {
-		t.Errorf("security.md is %d lines, ceiling %d; a section that grows means another shrinks (ADR 0024, ADR 0044)",
-			len(lines), maxSecurityLines)
-	}
+func TestTheLongDocumentsStayUnderTheirCeilings(t *testing.T) {
+	for _, c := range ceilings {
+		// #nosec G304 -- the filename is a literal in the table above
+		body, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", c.file, err)
+		}
+		lines := strings.Split(string(body), "\n")
+		if len(lines) > c.lines {
+			t.Errorf("%s is %d lines, ceiling %d; a section that grows means another shrinks (ADR 0024, ADR 0044)",
+				c.file, len(lines), c.lines)
+		}
 
-	heading, count := "", 0
-	check := func() {
-		if heading != "" && count > maxSecuritySection {
-			t.Errorf("security.md section %q is %d lines, ceiling %d; the customer reads this document, "+
-				"so the detail belongs in the ADR it cites", heading, count, maxSecuritySection)
+		heading, count := "", 0
+		check := func() {
+			if heading != "" && count > c.section {
+				t.Errorf("%s section %q is %d lines, ceiling %d; the detail belongs in the ADR it cites",
+					c.file, heading, count, c.section)
+			}
 		}
-	}
-	for _, line := range lines {
-		if strings.HasPrefix(line, "## ") {
-			check()
-			heading, count = strings.TrimPrefix(line, "## "), 0
-			continue
+		for _, line := range lines {
+			if strings.HasPrefix(line, "## ") {
+				check()
+				heading, count = strings.TrimPrefix(line, "## "), 0
+				continue
+			}
+			count++
 		}
-		count++
+		check()
 	}
-	check()
 }
 
 // goFiles returns every Go file in the repository. Tests are included: a test
