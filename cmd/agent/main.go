@@ -122,6 +122,10 @@ func connect() (kubernetes.Interface, *rest.Config, error) {
 			return nil, nil, fmt.Errorf("no in-cluster config and no kubeconfig: %w", err)
 		}
 	}
+	// Client-side throttling defaults to 5 QPS, which one usage poll of a
+	// 75-node cluster already exceeds — and a request that waits on the limiter
+	// spends its own deadline waiting (ADR 0045).
+	config.QPS, config.Burst = 50, 100
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, nil, err
