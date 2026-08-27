@@ -242,7 +242,8 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	// on its own goroutine and calls ReplicaSets, WorkloadPolicies and
 	// ClusterPolicy while Run is still starting. Assigning the lister fields
 	// inside Run would be a write racing those reads.
-	factory := informers.NewSharedInformerFactory(clientset, 0)
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0,
+		informers.WithTransform(dropUncollectedFields))
 	w := &PodWatcher{
 		clientset:           clientset,
 		onPod:               onPod,
