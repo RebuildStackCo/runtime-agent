@@ -57,6 +57,9 @@ type throttleState struct {
 // proxy — the second of the exactly two stats paths the agent ever requests
 // via nodes/proxy (docs/security.md §4) — and returns the throttling samples.
 func (p *UsagePoller) fetchCadvisor(ctx context.Context, node string) (map[cadvisorKey]*cadvisorSample, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.requestTimeout)
+	defer cancel()
+
 	stream, err := p.clientset.CoreV1().RESTClient().Get().
 		Resource("nodes").Name(node).SubResource("proxy").
 		Suffix("metrics/cadvisor").Stream(ctx)
@@ -64,7 +67,9 @@ func (p *UsagePoller) fetchCadvisor(ctx context.Context, node string) (map[cadvi
 		return nil, fmt.Errorf("fetching cadvisor metrics: %w", err)
 	}
 	defer func() { _ = stream.Close() }()
-	samples, err := parseCadvisor(stream)
+	// Decoded family by family off the wire rather than buffered: this is the
+	// larger of the two reads by an order of magnitude (ADR 0045).
+	samples, err := parseCadvisor(&cappedReader{r: stream, limit: maxCadvisorBytes})
 	if err != nil {
 		return nil, fmt.Errorf("decoding cadvisor metrics: %w", err)
 	}

@@ -102,3 +102,4 @@ line to paste.
 - [0042. The spool is bounded, and its bound does not depend on the cluster being healthy](0042-the-spool-is-bounded.md)
 - [0043. Both halves of the counter reading come from one observation](0043-the-counter-reading-comes-from-one-observation.md)
 - [0044. One fact in one place, and the places have ceilings](0044-prose-has-a-ceiling.md)
+- [0045. A kubelet read is bounded in time and in size, and one node's silence costs one node](0045-a-kubelet-read-is-bounded.md)

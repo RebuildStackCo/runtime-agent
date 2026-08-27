@@ -56,6 +56,10 @@ type UsagePoller struct {
 	nodes     func() []string
 	pods      PodResolver
 
+	// requestTimeout bounds one kubelet read; a field rather than a constant
+	// so a test can hang a kubelet without hanging for kubeletRequestTimeout.
+	requestTimeout time.Duration
+
 	onSnapshot func(records []*rollup.Record)
 	onClosed   func(records []*rollup.Record)
 	onError    func(node string, err error)
@@ -123,9 +127,11 @@ func NewUsagePoller(
 	onError func(node string, err error),
 ) *UsagePoller {
 	return &UsagePoller{
-		clientset:  clientset,
-		nodes:      nodes,
-		pods:       pods,
+		clientset:      clientset,
+		nodes:          nodes,
+		pods:           pods,
+		requestTimeout: kubeletRequestTimeout,
+
 		onSnapshot: onSnapshot,
 		onClosed:   onClosed,
 		onError:    onError,
@@ -209,41 +215,86 @@ func (p *UsagePoller) countPoll(failed bool) {
 	p.obsMu.Unlock()
 }
 
-// pollOnce fetches and ingests every node's summary. A failing node is
+// nodeReads is what one node's two kubelet paths returned. The paths fail
+// independently, so each carries its own error.
+type nodeReads struct {
+	node        string
+	summary     *statsapi.Summary
+	samples     map[cadvisorKey]*cadvisorSample
+	summaryErr  error
+	cadvisorErr error
+}
+
+// pollOnce reads every node and ingests the results. A failing node is
 // reported and skipped: its counters are cumulative, so the next successful
 // poll recovers the full interval.
 func (p *UsagePoller) pollOnce(ctx context.Context, now time.Time) {
-	for _, node := range p.nodes() {
-		if ctx.Err() != nil {
-			return
-		}
-		summary, err := p.fetchSummary(ctx, node)
-		p.countPoll(err != nil)
-		if err != nil {
-			p.reportError(node, err)
+	reads := p.fetchAll(ctx, p.nodes())
+	if ctx.Err() != nil {
+		return // shutting down: these are cancellations, not kubelet failures
+	}
+	for i := range reads {
+		r := &reads[i]
+		p.countPoll(r.summaryErr != nil)
+		if r.summaryErr != nil {
+			p.reportError(r.node, r.summaryErr)
 		} else {
-			p.ingest(summary, now)
+			p.ingest(r.summary, now)
 		}
-		samples, err := p.fetchCadvisor(ctx, node)
-		p.countPoll(err != nil)
-		if err != nil {
-			p.reportError(node, err)
+		p.countPoll(r.cadvisorErr != nil)
+		if r.cadvisorErr != nil {
+			p.reportError(r.node, r.cadvisorErr)
 		} else {
-			p.ingestCadvisor(samples, now)
+			p.ingestCadvisor(r.samples, now)
 		}
 	}
 	p.sweep(now)
+}
+
+// fetchAll reads the nodes concurrently and returns them in the order given.
+// Only the reading is concurrent: the accumulator and the counter baselines
+// have a single owner and no mutex, which is the caller's goroutine (ADR 0045).
+func (p *UsagePoller) fetchAll(ctx context.Context, nodes []string) []nodeReads {
+	reads := make([]nodeReads, len(nodes))
+	queue := make(chan int)
+	var wg sync.WaitGroup
+	for range min(kubeletFetchConcurrency, len(nodes)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range queue {
+				r := &reads[i]
+				r.node = nodes[i]
+				r.summary, r.summaryErr = p.fetchSummary(ctx, r.node)
+				r.samples, r.cadvisorErr = p.fetchCadvisor(ctx, r.node)
+			}
+		}()
+	}
+	for i := range nodes {
+		queue <- i
+	}
+	close(queue)
+	wg.Wait()
+	return reads
 }
 
 // fetchSummary reads one kubelet's /stats/summary through the API server
 // proxy — one of the exactly two stats paths the agent ever requests via
 // nodes/proxy (docs/security.md §4).
 func (p *UsagePoller) fetchSummary(ctx context.Context, node string) (*statsapi.Summary, error) {
-	raw, err := p.clientset.CoreV1().RESTClient().Get().
+	ctx, cancel := context.WithTimeout(ctx, p.requestTimeout)
+	defer cancel()
+
+	stream, err := p.clientset.CoreV1().RESTClient().Get().
 		Resource("nodes").Name(node).SubResource("proxy").
-		Suffix("stats/summary").Do(ctx).Raw()
+		Suffix("stats/summary").Stream(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching stats summary: %w", err)
+	}
+	defer func() { _ = stream.Close() }()
+	raw, err := readCapped(stream, maxSummaryBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading stats summary: %w", err)
 	}
 	var summary statsapi.Summary
 	if err := json.Unmarshal(raw, &summary); err != nil {
