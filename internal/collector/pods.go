@@ -59,8 +59,9 @@ type ContainerPort struct {
 }
 
 // Container is the collected view of a container: name, image, the image
-// digest once the container has started, declared resources, and declared
-// ports. Env, args, and command are deliberately never read (filter early).
+// digest once the container has started, declared resources, declared ports,
+// and the runtime knobs named in ADR 0047. Args and command are never read, and
+// neither is any other environment variable (filter early).
 type Container struct {
 	Name  string `json:"name"`
 	Image string `json:"image"`
@@ -71,6 +72,13 @@ type Container struct {
 	Init        bool            `json:"init,omitempty"`
 	Resources   Resources       `json:"resources"`
 	Ports       []ContainerPort `json:"ports,omitempty"`
+	// RuntimeEnv holds the Go runtime knobs from the container's environment,
+	// and only those: the names are a closed list, and a variable whose value
+	// comes from a Secret or ConfigMap is not read (ADR 0047). A knob set from
+	// the container's own limits carries the field path it derives from rather
+	// than a value, because the value does not exist until the kubelet resolves
+	// it.
+	RuntimeEnv map[string]string `json:"runtime_env,omitempty"`
 }
 
 // PodInfo is the collected view of one pod.
@@ -850,12 +858,14 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 		info.Containers = append(info.Containers, Container{
 			Name: c.Name, Image: c.Image, Init: true,
 			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
+			RuntimeEnv: runtimeEnvOf(&c),
 		})
 	}
 	for _, c := range pod.Spec.Containers {
 		info.Containers = append(info.Containers, Container{
 			Name: c.Name, Image: c.Image,
 			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
+			RuntimeEnv: runtimeEnvOf(&c),
 		})
 	}
 	return info
@@ -952,6 +962,31 @@ func portsOf(c *corev1.Container) []ContainerPort {
 		})
 	}
 	return ports
+}
+
+// runtimeEnvOf reads the runtime knobs the cache transform kept. A knob set
+// through the downward API has no value in the spec, so the field path it reads
+// is recorded instead — "limits.cpu" is the answer to whether GOMAXPROCS
+// follows the limit, and it is the answer the finding needs (ADR 0047).
+func runtimeEnvOf(c *corev1.Container) map[string]string {
+	var env map[string]string
+	for _, v := range c.Env {
+		value := v.Value
+		switch {
+		case v.ValueFrom == nil:
+		case v.ValueFrom.ResourceFieldRef != nil:
+			value = "resource:" + v.ValueFrom.ResourceFieldRef.Resource
+		case v.ValueFrom.FieldRef != nil:
+			value = "field:" + v.ValueFrom.FieldRef.FieldPath
+		default:
+			continue
+		}
+		if env == nil {
+			env = make(map[string]string, len(c.Env))
+		}
+		env[v.Name] = value
+	}
+	return env
 }
 
 // resourcesOf normalizes a container's declared requests and limits:

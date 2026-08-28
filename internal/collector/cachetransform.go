@@ -57,9 +57,44 @@ func dropPodSpecFields(spec *corev1.PodSpec) {
 	}
 }
 
+// runtimeEnvNames is the closed list of environment variables the agent keeps.
+// Every one is a Go runtime knob whose value is a number, a size or a
+// comma-separated set of switches, and whose setting is the whole content of
+// several findings (ADR 0047).
+var runtimeEnvNames = map[string]bool{
+	"GOMAXPROCS":  true,
+	"GOGC":        true,
+	"GOMEMLIMIT":  true,
+	"GODEBUG":     true,
+	"GOTRACEBACK": true,
+}
+
 func dropContainerFields(c *corev1.Container) {
-	c.Env = nil
+	c.Env = keptEnv(c.Env)
+	// envFrom names a Secret or ConfigMap and imports it whole. There is no
+	// name to filter on before the import happens, so it is never kept.
 	c.EnvFrom = nil
 	c.Command = nil
 	c.Args = nil
+}
+
+// keptEnv returns the allow-listed variables, dropping any whose value the
+// agent would have to resolve through a Secret or ConfigMap to read — a
+// runtime knob is written inline or derived from the container's own limits,
+// and one that is not is not worth reaching for (ADR 0047).
+func keptEnv(env []corev1.EnvVar) []corev1.EnvVar {
+	var kept []corev1.EnvVar
+	for _, v := range env {
+		if !runtimeEnvNames[v.Name] {
+			continue
+		}
+		if v.ValueFrom != nil && v.ValueFrom.SecretKeyRef == nil && v.ValueFrom.ConfigMapKeyRef == nil {
+			kept = append(kept, v)
+			continue
+		}
+		if v.ValueFrom == nil {
+			kept = append(kept, v)
+		}
+	}
+	return kept
 }

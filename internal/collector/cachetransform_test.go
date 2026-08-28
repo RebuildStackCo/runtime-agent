@@ -24,7 +24,10 @@ func loadedContainer(name string) corev1.Container {
 		Image:   "example.com/app:1.2.3",
 		Command: []string{"/bin/sh", "-c"},
 		Args:    []string{"exec /app --token=t0ps3cret"},
-		Env:     []corev1.EnvVar{{Name: "DATABASE_URL", Value: secretish}},
+		Env: []corev1.EnvVar{
+			{Name: "DATABASE_URL", Value: secretish},
+			{Name: "GOMAXPROCS", Value: "2"},
+		},
 		EnvFrom: []corev1.EnvFromSource{{
 			SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "db"}},
 		}},
@@ -85,6 +88,47 @@ func containersIn(obj any) []corev1.Container {
 	return out
 }
 
+func envNames(env []corev1.EnvVar) []string {
+	var names []string
+	for _, v := range env {
+		names = append(names, v.Name)
+	}
+	return names
+}
+
+// The allow-list is a list of names, and a name is not a promise about where
+// the value came from: a variable called GOGC that reads a Secret is a Secret
+// read (ADR 0047).
+func TestARuntimeKnobIsKeptOnlyWhenItsValueIsNotASecret(t *testing.T) {
+	secretRef := &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "db"}, Key: "url",
+	}}
+	configRef := &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "tuning"}, Key: "gogc",
+	}}
+	limitRef := &corev1.EnvVarSource{ResourceFieldRef: &corev1.ResourceFieldSelector{Resource: "limits.cpu"}}
+
+	c := corev1.Container{Name: "app", Env: []corev1.EnvVar{
+		{Name: "GOGC", ValueFrom: secretRef},
+		{Name: "GOTRACEBACK", ValueFrom: configRef},
+		{Name: "GOMAXPROCS", ValueFrom: limitRef},
+		{Name: "GOMEMLIMIT", Value: "900MiB"},
+		{Name: "DATABASE_URL", Value: secretish},
+		{Name: "GOPATH", Value: "/go"},
+	}}
+	dropContainerFields(&c)
+
+	if got, want := envNames(c.Env), []string{"GOMAXPROCS", "GOMEMLIMIT"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("kept %v, want %v", got, want)
+	}
+	if got := runtimeEnvOf(&c); !reflect.DeepEqual(got, map[string]string{
+		"GOMAXPROCS": "resource:limits.cpu",
+		"GOMEMLIMIT": "900MiB",
+	}) {
+		t.Errorf("runtime env = %v; a knob read from the container's own limits must name the field", got)
+	}
+}
+
 // "Not collected" beats "collected and dropped": the cache is the source, so
 // the fields have to go before the object is stored, not before it is
 // serialized (CLAUDE.md invariant 4, ADR 0046).
@@ -120,9 +164,12 @@ func TestNoWatchedKindEntersTheCacheCarryingEnvArgsOrCommand(t *testing.T) {
 			t.Fatalf("%s: %v", kind, err)
 		}
 		for _, c := range containersIn(stored) {
-			if c.Env != nil || c.EnvFrom != nil || c.Command != nil || c.Args != nil {
-				t.Errorf("%s: container %q reached the cache with env=%v envFrom=%v command=%v args=%v",
-					kind, c.Name, c.Env, c.EnvFrom, c.Command, c.Args)
+			if c.EnvFrom != nil || c.Command != nil || c.Args != nil {
+				t.Errorf("%s: container %q reached the cache with envFrom=%v command=%v args=%v",
+					kind, c.Name, c.EnvFrom, c.Command, c.Args)
+			}
+			if names := envNames(c.Env); !reflect.DeepEqual(names, []string{"GOMAXPROCS"}) {
+				t.Errorf("%s: container %q kept env %v, want only the allow-listed knob", kind, c.Name, names)
 			}
 			if c.Image == "" || c.Name == "" {
 				t.Errorf("%s: container %q lost a field the payloads are built from", kind, c.Name)

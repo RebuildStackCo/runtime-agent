@@ -6,6 +6,8 @@ Status: Accepted
 
 Amends: 0031 §7
 
+Amended by: 0047
+
 Moves the drop of `env`, `args` and `command` from the payload seam to the
 informer's transform, so the values are never held rather than never shipped.
 No payload changes.

@@ -1,6 +1,7 @@
 // Package metadata reduces the controller's live pod index to the workload
 // metadata payload: the declared shape of every collected workload container —
-// requests, limits, QoS, declared ports — and where its replicas currently run.
+// requests, limits, QoS, declared ports, runtime knobs — and where its replicas
+// currently run.
 //
 // Reduction, not judgment: nothing here compares a request to an observation or
 // decides that anything is misconfigured. The package holds no state — every
@@ -98,6 +99,10 @@ type Record struct {
 	// Ports are the container's declared ports. Declaring a port is not using
 	// it; that inference belongs to the backend.
 	Ports []collector.ContainerPort `json:"ports,omitempty"`
+	// RuntimeEnv is the Go runtime knobs this container sets, from the closed
+	// list in ADR 0047. Absent means none of them is set, which is the state
+	// most findings about this field are about.
+	RuntimeEnv map[string]string `json:"runtime_env,omitempty"`
 	// Pod carries the facts that belong to the pod, not to this container.
 	Pod PodScope `json:"pod"`
 }
@@ -123,11 +128,12 @@ func Aggregate(pods []collector.PodInfo) []Record {
 			rec, ok := byKey[key]
 			if !ok {
 				rec = &Record{
-					Key:       key,
-					Image:     c.Image,
-					Init:      c.Init,
-					Resources: c.Resources,
-					Ports:     c.Ports,
+					Key:        key,
+					Image:      c.Image,
+					Init:       c.Init,
+					Resources:  c.Resources,
+					Ports:      c.Ports,
+					RuntimeEnv: c.RuntimeEnv,
 					Pod: PodScope{
 						QOSClass:    pod.QOSClass,
 						Placement:   pod.Placement,
