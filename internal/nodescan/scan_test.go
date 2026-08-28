@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -186,21 +187,31 @@ func TestScopeAdmits(t *testing.T) {
 	}
 }
 
-func TestDependencyPaths(t *testing.T) {
+// A replaced module is reported under what the build required, never under the
+// replacement: a local `replace` puts a build-machine directory in Replace.Path
+// (ADR 0048 §3).
+func TestDependencyModules(t *testing.T) {
 	info := &buildinfo.BuildInfo{
 		Deps: []*debug.Module{
 			{Path: "example.com/a", Version: "v1.0.0"},
 			nil, // the toolchain can leave holes; must be skipped, not panic
 			{Path: "example.com/b", Version: "v2.3.4"},
+			{Path: "example.com/c", Version: "v0.1.0", Replace: &debug.Module{
+				Path: "/home/builder/src/c", Version: "",
+			}},
 		},
 	}
-	got := dependencyPaths(info)
-	want := []string{"example.com/a", "example.com/b"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("dependencyPaths = %v, want %v", got, want)
+	got := dependencyModules(info)
+	want := []Module{
+		{Path: "example.com/a", Version: "v1.0.0"},
+		{Path: "example.com/b", Version: "v2.3.4"},
+		{Path: "example.com/c", Version: "v0.1.0", Replaced: true},
 	}
-	if dependencyPaths(&buildinfo.BuildInfo{}) != nil {
-		t.Error("dependencyPaths of a depless binary should be nil")
+	if !slices.Equal(got, want) {
+		t.Errorf("dependencyModules = %v, want %v", got, want)
+	}
+	if dependencyModules(&buildinfo.BuildInfo{}) != nil {
+		t.Error("dependencyModules of a depless binary should be nil")
 	}
 }
 

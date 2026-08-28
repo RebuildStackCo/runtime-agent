@@ -24,7 +24,7 @@ type BinaryInfo struct {
 	PID          int      `json:"pid"`
 	GoVersion    string   `json:"go_version"`
 	MainModule   string   `json:"main_module"`
-	Dependencies []string `json:"dependencies,omitempty"`
+	Dependencies []Module `json:"dependencies,omitempty"`
 	// Settings is the allow-listed subset of the binary's build settings —
 	// toolchain and target facts only, never the free-form flags the build
 	// operator wrote (see buildSettingsAllowList). Absent keys mean the toolchain
@@ -38,6 +38,19 @@ type BinaryInfo struct {
 	// for a host process outside the kubepods hierarchy.
 	PodUID      string `json:"pod_uid,omitempty"`
 	ContainerID string `json:"container_id,omitempty"`
+}
+
+// Module is one dependency of a build: the module path and the version the
+// toolchain recorded for it (ADR 0048 §3).
+type Module struct {
+	Path    string `json:"path"`
+	Version string `json:"version,omitempty"`
+	// Replaced marks a dependency a `replace` directive redirected, so a version
+	// that does not match what is linked is legible as such rather than wrong.
+	// The replacement's own path and version are not read: a local replacement's
+	// path is a directory on the build machine, which is the class of string the
+	// build-settings allow-list exists to keep out (ADR 0019).
+	Replaced bool `json:"replaced,omitempty"`
 }
 
 // Counters are the only thing the scanner reports about what it did not keep.
@@ -149,7 +162,7 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 		PID:          pid,
 		GoVersion:    info.GoVersion,
 		MainModule:   mainModule,
-		Dependencies: dependencyPaths(info),
+		Dependencies: dependencyModules(info),
 		Settings:     buildSettings(info),
 		PGO:          hasPGO(info),
 		PodUID:       binding.PodUID,
@@ -177,19 +190,21 @@ func ReadBinding(procRoot string, pid int) PodBinding {
 	return parseCgroup(string(raw))
 }
 
-// dependencyPaths returns the module paths of the binary's dependencies, in the
-// order the toolchain recorded them.
-func dependencyPaths(info *buildinfo.BuildInfo) []string {
+// dependencyModules returns the binary's dependencies, in the order the
+// toolchain recorded them. A replaced module is reported under the path and
+// version the build required, flagged, and never under its replacement's.
+func dependencyModules(info *buildinfo.BuildInfo) []Module {
 	if len(info.Deps) == 0 {
 		return nil
 	}
-	paths := make([]string, 0, len(info.Deps))
+	mods := make([]Module, 0, len(info.Deps))
 	for _, d := range info.Deps {
-		if d != nil {
-			paths = append(paths, d.Path)
+		if d == nil {
+			continue
 		}
+		mods = append(mods, Module{Path: d.Path, Version: d.Version, Replaced: d.Replace != nil})
 	}
-	return paths
+	return mods
 }
 
 // buildSettingsAllowList is the exhaustive set of build settings the scanner

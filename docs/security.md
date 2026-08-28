@@ -140,6 +140,7 @@ bound to nothing and its token is not mounted — so it appears in no row here.
 | `replicasets`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs` | get/list/watch | Resolve the `ownerReferences` chain (Pod → ReplicaSet → Deployment) so findings are aggregated per workload, not per pod; read each workload's own annotations to honor an opt-out written there ([ADR 0028](adr/0028-workload-level-opt-out.md)); and read finished Jobs' timings and outcomes for `job_runs` ([ADR 0029](adr/0029-job-runs.md)) |
 | `nodes` | get/list/watch | `allocatable`/`capacity` for node idle computation; labels `node.kubernetes.io/instance-type` and capacity-type (spot/on-demand) for the cost model; `status.nodeInfo.kernelVersion` to report whether nodes meet the kernel floor for the eBPF profile (`CAP_BPF` requires kernel 5.8+, see [§7](#7-node-privileges)) |
 | `namespaces` | get/list/watch | Evaluate namespace allow/deny filters and the opt-out annotation |
+| `services` | get/list/watch | Report that traffic is routed to a workload at all ([ADR 0048](adr/0048-findings-name-the-fields-they-need.md)): one replica is a batch size or an outage depending on whether anything sends it requests, and a declared `containerPort` is an announcement rather than a route. The selector is resolved against pods that passed your filters and never reported as such. Addresses are not read — a ClusterIP is compared against `None` to tell a headless Service apart, and nothing else |
 | `poddisruptionbudgets`, `horizontalpodautoscalers` | get/list/watch | Report what bounds a workload from outside its own spec ([ADR 0032](adr/0032-cluster-policy.md)): a budget can forbid eviction outright, so a node covered by one cannot be drained at all; an autoscaler targeting CPU *utilization* targets a percentage of the request, so the request cannot be read safely without it. A budget's selector is resolved against pods that passed your filters and never reported as such |
 | `limitranges`, `resourcequotas` | get/list/watch | Distinguish a request a team chose from one the namespace supplied on their behalf, and report the ceiling a namespace sits under and how much of it is spent (ADR 0032). Read only for namespaces that pass your filters |
 | `persistentvolumeclaims`, `storageclasses` | get/list/watch | A bound claim on a zonal volume pins its pod to that zone, which no field of the pod spec states (ADR 0032). A StorageClass's `parameters` are **not** read — that is the one field here carrying provider configuration (endpoints, key identifiers); what is read is how the class behaves: provisioner, reclaim policy, `volumeBindingMode`, expansion |
@@ -156,8 +157,8 @@ does run as root is the node role, in
 [§7.1](#71-the-go-binary-scanner-the-current-node-role).
 
 **Declining a policy grant degrades one payload, not the agent.** The caches
-behind `poddisruptionbudgets`, `horizontalpodautoscalers`, `limitranges`,
-`resourcequotas`, `persistentvolumeclaims`, `priorityclasses` and
+behind `services`, `poddisruptionbudgets`, `horizontalpodautoscalers`,
+`limitranges`, `resourcequotas`, `persistentvolumeclaims`, `priorityclasses` and
 `storageclasses` gate nothing else, so withholding one costs the corresponding
 facts and nothing more. The payload then names the source it could not read in
 `unavailable_sources`, so the absence is legible rather than indistinguishable
@@ -470,16 +471,14 @@ classes with different sensitivity and different default policies:
 | Data class | Examples | Sensitivity | Default policy |
 |---|---|---|---|
 | Resource metrics | CPU usage, working set, throttling ratios, requests/limits, node allocatable | Low (numbers) | Collected for everything visible, minus the infrastructure deny-list and your filters |
-| Workload metadata | Workload names, namespaces, image digests, Go version, module path, node zone and instance type | Medium | Same as metrics |
+| Workload metadata | Workload names, namespaces, image digests, Go version, module paths and versions, node zone and instance type | Medium | Same as metrics |
 | Object history (journal) | Pod names, container names, restart counts, termination reasons and exit codes | Medium | Same as metrics. This is the one class that names individual **pods** — see below |
 | Profiles (stack traces) | Function names, call graphs | **High** — function names reveal the structure of your code | **Explicit allow-list only.** A stack trace never leaves the cluster unless its module path is on the allow-list you configured |
 
 ### Every payload the agent produces
 
-This is the complete list — there is no other channel and no other shape. It is
-generated from the same registry the code writes payloads through
-(`internal/sink/registry.go`), and a test fails if a kind ships without
-appearing here (ADR 0022).
+This is the complete list — there is no other channel and no other shape, and a
+test fails if a kind ships without appearing here (ADR 0022).
 
 | Payload | What it carries | Names pods? |
 |---|---|---|
@@ -491,12 +490,12 @@ appearing here (ADR 0022).
 | `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
-| `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, the five runtime knobs of the field-minimization list below, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
-| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032); plus `unavailable_sources`, naming any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035) | not directly — but a claim is named, and a StatefulSet's claim is `<template>-<set>-<ordinal>`, so `data-db-0` identifies pod `db-0` (ADR 0039) |
+| `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, probe schedules without what any probe checks, the five runtime knobs of the field-minimization list below, QoS, replica counts by phase, by node, and by unscheduled reason, the pod's reduced placement constraints (ADR 0031), and how the workload replaces its own replicas — or, for a controller the agent does not read, that it did not read it ([ADR 0048](adr/0048-findings-name-the-fields-they-need.md)) | no |
+| `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, the volume claims its pods mount (ADR 0032), and the Services routing to it (ADR 0048); plus `unavailable_sources`, naming any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035) | not directly — but a claim is named, and a StatefulSet's claim is `<template>-<set>-<ordinal>`, so `data-db-0` identifies pod `db-0` (ADR 0039) |
 | `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035). StorageClass `parameters` are never read | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture. The **name** is your cluster's, and on EKS and on GKE's legacy naming it encodes the node's private address — `ip-10-42-13-201.eu-west-1.compute.internal`. The agent reads no address field; the name it does read may be one (ADR 0039) | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
-| `go_build` | Per image digest, written once: Go version, main module, dependency module **paths**, allow-listed build settings | no |
+| `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
 
 Each declares its provenance in a `source` field — `structural` (read from a
@@ -512,19 +511,25 @@ spec), `measured` (polled from the kubelet), `journal` (from object history) or
   non-API paths by which secret material is nonetheless reachable, see
   [§9](#9-what-the-agent-does-not-request).
 - **The image reference ships verbatim, and it is the one free-form string here
-  with no length bound and no allow-list** (ADR 0039). Everything else
-  operator-authored is truncated or reduced; a truncated image reference is not
-  an image reference. Know what your registry path encodes:
-  `123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/fraud-scoring:pr-4471-hotfix`
-  carries a cloud account identifier, a region, your repository taxonomy, and
-  whatever your CI writes into a tag.
-- From pod specs: `metadata`, `spec.containers[].resources` and `[].ports`, the
-  nine placement fields below, `ownerReferences`, and `status`. `envFrom`, `args`
-  and `command` are removed as each object arrives, before it enters the agent's
-  cache, so they are not held in memory either, not merely kept out of payloads
+  with no length bound and no allow-list** (ADR 0039). Know what your registry
+  path encodes: a cloud account identifier, a region, your repository taxonomy,
+  and whatever your CI writes into a tag.
+- From pod specs: `metadata`, `spec.containers[].resources`, `[].ports`, the
+  probe schedules and the nine placement fields below, `ownerReferences`, and
+  `status`. `envFrom`, `args` and `command` are removed as each object arrives,
+  before it enters the agent's cache, so they are not held in memory either, not
+  merely kept out of payloads
   ([ADR 0046](adr/0046-the-cache-is-the-source.md)). The
   `kubectl.kubernetes.io/last-applied-configuration` annotation goes with them —
   a verbatim copy of the object as applied, environment included.
+- **A probe's schedule is kept; what it checks is not**
+  ([ADR 0048](adr/0048-findings-name-the-fields-they-need.md)). Each container's
+  liveness, readiness and startup probe ships as its delays, period, timeout and
+  thresholds, plus the *kind* of check — `exec`, `httpGet`, `tcpSocket`, `grpc`.
+  The handler's contents are cleared as the object arrives, before it enters the
+  agent's cache: the exec command, the HTTP path, host and headers (where an
+  `Authorization` value is written by hand), the TCP host, the gRPC service. The
+  `lifecycle` hooks are removed whole.
 - **Five environment variables are kept by name, and no other one is**
   ([ADR 0047](adr/0047-runtime-knobs-are-named-and-kept.md)): `GOMAXPROCS`,
   `GOGC`, `GOMEMLIMIT`, `GODEBUG`, `GOTRACEBACK`. They ship in
@@ -573,11 +578,9 @@ spec), `measured` (polled from the kubelet), `journal` (from object history) or
 Both are snapshots of current state that replace their predecessor rather than
 accumulating history, and neither names a pod: replicas are counted, not listed.
 A multi-container pod appears as one `workload_metadata` record per container,
-each repeating the same pod-scoped block, nested so that summing it across a
-pod's containers is visibly meaningless
-([ADR 0014](adr/0014-scoped-facts-are-nested.md)). That block also counts the
-replicas *not* on a node, by the reason the scheduler gave
-([ADR 0021](adr/0021-pod-lifecycle-journal.md)).
+each repeating the same pod-scoped and workload-scoped blocks
+([ADR 0014](adr/0014-scoped-facts-are-nested.md)). The pod block also counts the
+replicas *not* on a node, by the reason the scheduler gave (ADR 0021).
 
 Both are limited to what passes your filters — an excluded pod is absent
 entirely, and its identity appears in neither payload — and both carry
@@ -601,21 +604,16 @@ provenance and all four name the **pod**. `pod_disruptions` is what the *cluster
 did to a pod — preempted, evicted, drained, removed via the eviction API; a pod
 that failed on its own belongs to the restart journal.
 
-`restart_counters` is the counter itself rather than a record of restarts. The
-journal reports the restarts the agent watched, in the hour it watched them; the
-counter is the kubelet's running total, including restarts from before the agent
-was installed. Those have no instants, so they can be reported as a total or not
-at all, and the payload says how many of them the agent watched
-([ADR 0034](adr/0034-restart-counter-readings.md)). It is not a new read: the
+`restart_counters` is the counter itself rather than a record of restarts: the
+kubelet's running total, including restarts from before the agent was installed,
+with how many of them the agent watched
+([ADR 0034](adr/0034-restart-counter-readings.md)). It is not a new read — the
 counter arrives in the pod status the agent has always watched.
 
-**Why the pod is named here and nowhere else.** Every other payload counts
-replicas instead of listing them, because a workload-level number answers the
-question. A crash loop is different: "one of your twelve replicas restarts every
-thirty seconds" is not actionable without knowing which one. The pod name is the
-smallest identifier that makes the record useful, and it is a name your cluster
-generated, never workload content. An excluded pod produces no journal record,
-and the exclusion also removes what was already collected
+**Why the pod is named here and nowhere else.** A crash loop is not actionable
+without knowing which replica, and the pod name is one your cluster generated,
+never workload content. An excluded pod produces no journal record, and the
+exclusion also removes what was already collected
 ([§11](#11-your-controls-and-what-the-agent-says-about-itself)).
 
 Reason breakdowns use a fixed set (`OOMKilled`, `Error`, `Completed`,
@@ -632,9 +630,8 @@ cluster: an `observation` block per payload (poll cadence, cumulative kubelet
 requests attempted and failed, which kubelet signals this cluster exposes), and
 per record, how much of the window that container was observed for.
 
-Without it, a container that was never throttled and a container whose node could
-not be scraped produce identical records, and the distinction is unrecoverable
-once the moment has passed.
+Without it, "never throttled" and "never scraped" produce identical records, and
+the distinction is unrecoverable once the moment has passed.
 
 The same honesty applies to the API server. A cache the agent cannot read is
 declared in `unavailable_sources` on the payload that reads it — whether never
@@ -657,10 +654,8 @@ and nothing else; the underlying error stays in the agent's log.
   (ADR 0041). What you exclude from collection you exclude with namespace filters
   and opt-out annotations; profiling scope follows collection scope (ADR 0025).
 - A kept frame carries its source file's **base name and line number** —
-  `server.go`, never a directory — taken where the profiler hands the frame over,
-  so the compiler-recorded path never enters the agent. Without it, a binary
-  built without `-trimpath` would ship the absolute path of the machine that
-  compiled it: CI workspace, internal VCS hostname, source-tree layout.
+  `server.go`, never a directory — cut where the profiler hands the frame over,
+  so the path the compiler recorded never enters the agent (ADR 0041).
 - Profiles are **validated on the node before they are queued to leave**: shipped
   only if the profile parses, carries a `cpu`/`nanoseconds` sample type, and has
   a non-`runtime.*` function in its top. A failure is dropped and counted. What
@@ -684,10 +679,10 @@ the filter-early rule there, before any record is formed.
   cgroup is resolved to its pod first, and a pod outside the scope the controller
   supplied is skipped with its executable unopened. A node with no scope scans
   nothing ([§10.2](#102-node-level-visibility-cannot-be-namespace-scoped)).
-- **Kept — customer workload binaries.** Go version, main module path, dependency
-  module paths (paths only; versions are discarded on the node), an allow-listed
-  subset of build settings, and the pod UID and container ID from the cgroup.
-  Never source, never environment, never arguments.
+- **Kept — customer workload binaries.** Go version, main module path, each
+  dependency's module path and recorded version, an allow-listed subset of build
+  settings, and the pod UID and container ID from the cgroup. Never source, never
+  environment, never arguments.
 - **Dropped — infrastructure.** A main module on the built-in deny-list
   (`k8s.io/`, `sigs.k8s.io/`, the container runtime, the CNI, `go.etcd.io/`,
   coredns, prometheus, grafana, … and this agent's own module) is dropped on the
@@ -719,9 +714,11 @@ survives as a boolean. A value over 128 characters is dropped whole rather than
 truncated.
 
 The controller joins the kept facts into `go_inventory` and `go_build`
-(ADR 0010). `go_build` carries module paths only, so it is not and cannot be used
-as a vulnerability-scanning feed. A record exists only while its workload does,
-so a deleted or opted-out workload leaves the payload rather than lingering
+(ADR 0010). A module a `replace` directive redirected ships under the path and
+version the build *required*, flagged `replaced`; the replacement's own path is
+never read, because a local one is a directory on the build machine. A record
+exists only while its workload does, so a deleted or opted-out workload leaves
+the payload rather than lingering
 ([ADR 0018](adr/0018-inventory-records-live-only-while-their-workload-does.md)).
 A fact that cannot be resolved is counted rather than guessed, and its pod UID,
 container ID and module path never appear. The `coverage` block is cluster-wide
@@ -847,6 +844,17 @@ pprof endpoints means the controller makes HTTP requests to pods, which network
 monitoring may flag as internal scanning. Probing will be restricted to workloads
 that pass your filters and to ports declared in `containerPorts`. Coordinate with
 your security team before enabling the `pprof` profile.
+
+### 10.4 The build inventory is a bill of materials
+
+Each dependency in `go_build` ships with the version the toolchain recorded, so
+the payload is a bill of materials for every Go build in your cluster, and known
+vulnerabilities can be derived from it by anyone holding it. This is a deliberate
+widening of a narrower earlier promise, argued in
+[ADR 0048](adr/0048-findings-name-the-fields-they-need.md) §3. The agent ships no
+vulnerability finding of its own: it reports what a build is made of, never what
+that implies.
+
 ---
 
 ## 11. Your controls, and what the agent says about itself

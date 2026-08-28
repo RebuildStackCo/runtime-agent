@@ -5,9 +5,19 @@
   "go_version": "go1.26.1",
   "main_module": "github.com/acme/web",
   "modules": [
-    "github.com/cespare/xxhash/v2",
-    "go.uber.org/automaxprocs",
-    "golang.org/x/sync"
+    {
+      "path": "github.com/cespare/xxhash/v2",
+      "version": "v2.3.0"
+    },
+    {
+      "path": "go.uber.org/automaxprocs",
+      "version": "v1.6.0"
+    },
+    {
+      "path": "golang.org/x/sync",
+      "version": "v0.9.0",
+      "replaced": true
+    }
   ],
   "settings": {
     "CGO_ENABLED": "0",

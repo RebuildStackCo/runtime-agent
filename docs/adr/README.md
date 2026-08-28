@@ -105,3 +105,4 @@ line to paste.
 - [0045. A kubelet read is bounded in time and in size, and one node's silence costs one node](0045-a-kubelet-read-is-bounded.md)
 - [0046. The informer cache is the source, so the fields the agent promises not to collect are removed there](0046-the-cache-is-the-source.md)
 - [0047. Five environment variables are named, kept and shipped; every other one is still dropped](0047-runtime-knobs-are-named-and-kept.md)
+- [0048. Four first-hour findings name fields the agent did not collect](0048-findings-name-the-fields-they-need.md)

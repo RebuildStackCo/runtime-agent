@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -263,11 +262,15 @@ func checkSampleBuild(ctx context.Context, t *testing.T, config *rest.Config, cs
 		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, path)
 		if ok {
 			var payload struct {
-				Kind        string            `json:"kind"`
-				ImageDigest string            `json:"image_digest"`
-				MainModule  string            `json:"main_module"`
-				Modules     []string          `json:"modules"`
-				Settings    map[string]string `json:"settings"`
+				Kind        string `json:"kind"`
+				ImageDigest string `json:"image_digest"`
+				MainModule  string `json:"main_module"`
+				Modules     []struct {
+					Path     string `json:"path"`
+					Version  string `json:"version"`
+					Replaced bool   `json:"replaced"`
+				} `json:"modules"`
+				Settings map[string]string `json:"settings"`
 			}
 			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 				t.Fatalf("build payload not valid JSON: %v", err)
@@ -284,15 +287,28 @@ func checkSampleBuild(ctx context.Context, t *testing.T, config *rest.Config, cs
 			}
 			// The sample really imports this module (test/e2e/sample/go.mod), so
 			// its absence means the dependency set was lost in the join — the
-			// defect this payload exists to close.
-			if !slices.Contains(payload.Modules, sampleDependency) {
-				t.Errorf("modules = %v, want it to contain %q", payload.Modules, sampleDependency)
-			}
-			// Paths only: a version would make this a vulnerability-scanning
-			// feed, which the agent does not collect (docs/security.md §8).
+			// defect this payload exists to close. It carries the version the
+			// toolchain recorded (ADR 0048 §3).
+			found := false
 			for _, m := range payload.Modules {
-				if strings.Contains(m, " ") || strings.Contains(m, "@") {
-					t.Errorf("module %q carries more than a path; only module paths are collected", m)
+				if m.Path == sampleDependency {
+					found = true
+					if m.Version == "" {
+						t.Errorf("module %q carries no version", m.Path)
+					}
+				}
+				// A `replace` may redirect a module to a directory on the build
+				// machine. What ships is the required path, never that.
+				if strings.HasPrefix(m.Path, "/") || strings.HasPrefix(m.Path, ".") {
+					t.Errorf("module %q is a filesystem path, not a module path", m.Path)
+				}
+			}
+			if !found {
+				t.Errorf("modules = %v, want one with path %q", payload.Modules, sampleDependency)
+			}
+			for _, m := range payload.Modules {
+				if m.Path == sampleDependency {
+					t.Logf("sample dependency: %s %s (of %d modules)", m.Path, m.Version, len(payload.Modules))
 				}
 			}
 			checkBuildSettings(t, payload.Settings)

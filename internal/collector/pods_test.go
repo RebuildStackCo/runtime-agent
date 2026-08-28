@@ -2,8 +2,10 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -590,5 +592,68 @@ func TestContainersOnNode(t *testing.T) {
 	}
 	if cs := watcher.ContainersOnNode("other-node"); len(cs) != 0 {
 		t.Errorf("other-node should have no containers, got %+v", cs)
+	}
+}
+
+// The probe schedule is what a finding reads, and the handler kind is what says
+// two probes are the same check. Both survive the reduction the cache applies;
+// nothing the handler pointed at does (ADR 0048 §1).
+func TestPodWatcherReportsProbeSchedulesWithoutWhatTheyCheck(t *testing.T) {
+	p := pod("web-1", nil)
+	p.Spec.Containers[0].LivenessProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path:        "/internal/health?key=t0ps3cret",
+			HTTPHeaders: []corev1.HTTPHeader{{Name: "Authorization", Value: "Bearer secret"}},
+		}},
+		PeriodSeconds: 10, TimeoutSeconds: 1, FailureThreshold: 3, SuccessThreshold: 1,
+	}
+	p.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
+		ProbeHandler:  corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"/bin/ready"}}},
+		PeriodSeconds: 5, InitialDelaySeconds: 15, FailureThreshold: 6, SuccessThreshold: 1,
+	}
+
+	got := collectPods(t, 1, p)["shop/web-1"]
+	var app Container
+	for _, c := range got.Containers {
+		if c.Name == "app" {
+			app = c
+		}
+	}
+	want := Probes{
+		Liveness: &Probe{
+			Kind: "httpGet", PeriodSeconds: 10, TimeoutSeconds: 1,
+			FailureThreshold: 3, SuccessThreshold: 1,
+		},
+		Readiness: &Probe{
+			Kind: "exec", PeriodSeconds: 5, InitialDelaySeconds: 15,
+			FailureThreshold: 6, SuccessThreshold: 1,
+		},
+	}
+	if !reflect.DeepEqual(app.Probes, want) {
+		t.Errorf("probes = %+v / %+v, want %+v / %+v",
+			app.Probes.Liveness, app.Probes.Readiness, want.Liveness, want.Readiness)
+	}
+	// The encoded record must carry nothing of what either probe called.
+	encoded, err := json.Marshal(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{"t0ps3cret", "Authorization", "/bin/ready", "internal/health"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Errorf("the container record carries %q: %s", leaked, encoded)
+		}
+	}
+}
+
+// A container that declares no probe carries no probe object at all, so "has no
+// liveness probe" is legible as absence rather than as a block of zeros.
+func TestAContainerWithNoProbesCarriesNoProbeObject(t *testing.T) {
+	got := collectPods(t, 1, pod("web-1", nil))["shop/web-1"]
+	encoded, err := json.Marshal(got.Containers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "probes") {
+		t.Errorf("a container with no probes still carries a probes object: %s", encoded)
 	}
 }

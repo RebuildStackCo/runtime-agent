@@ -86,8 +86,33 @@ type VolumeClaim struct {
 	Phase          string   `json:"phase,omitempty"`
 }
 
+// ServiceExposure is a Service whose selector matches this workload's admitted
+// pods.
+//
+// It is what separates a workload whose replica count is an availability
+// decision from one where it is a batch size: nothing else the agent collects
+// says that traffic is routed to a workload at all (ADR 0048 §4). The selector
+// is resolved through admitted pods, so a Service pointing only at excluded
+// pods attaches to nothing and is never named (CLAUDE.md invariant 6).
+type ServiceExposure struct {
+	Name string `json:"name"`
+	// Type is ClusterIP, NodePort, LoadBalancer or ExternalName.
+	Type string `json:"type,omitempty"`
+	// Headless is a ClusterIP of "None": clients resolve the pods themselves,
+	// so there is no virtual address to fail over and a single replica is a
+	// single address.
+	Headless bool `json:"headless,omitempty"`
+	// The two traffic policies say whether traffic may cross a node to reach a
+	// replica. `Local` on either turns "the workload has replicas elsewhere"
+	// into "the workload has no replica on this node", which is a different
+	// answer to what a drain costs.
+	InternalTrafficPolicy string `json:"internal_traffic_policy,omitempty"`
+	ExternalTrafficPolicy string `json:"external_traffic_policy,omitempty"`
+}
+
 // WorkloadPolicy is everything outside a workload's own spec that bounds it:
-// what may disrupt it, what scales it, and what storage holds it in place.
+// what may disrupt it, what scales it, what storage holds it in place, and what
+// sends it traffic.
 type WorkloadPolicy struct {
 	Namespace string      `json:"namespace"`
 	Workload  WorkloadRef `json:"workload"`
@@ -98,6 +123,9 @@ type WorkloadPolicy struct {
 	Budgets     []DisruptionBudget `json:"budgets,omitempty"`
 	Autoscalers []Autoscaler       `json:"autoscalers,omitempty"`
 	Claims      []VolumeClaim      `json:"claims,omitempty"`
+	// Services is plural for the same reason Budgets is: selectors overlap, and
+	// one workload is routinely reachable through several.
+	Services []ServiceExposure `json:"services,omitempty"`
 }
 
 // LimitRangeItem is one entry of a LimitRange: what a namespace injects into a
@@ -216,10 +244,11 @@ func (w *PodWatcher) WorkloadPolicies() ([]WorkloadPolicy, []string) {
 	w.attachBudgets(byKey)
 	w.attachAutoscalers(byKey)
 	w.attachClaims(byKey, claimsByWorkload)
+	w.attachServices(byKey)
 
 	out := make([]WorkloadPolicy, 0, len(byKey))
 	for _, p := range byKey {
-		if len(p.Budgets) == 0 && len(p.Autoscalers) == 0 && len(p.Claims) == 0 {
+		if len(p.Budgets) == 0 && len(p.Autoscalers) == 0 && len(p.Claims) == 0 && len(p.Services) == 0 {
 			// A workload nothing constrains contributes no record. Silence here
 			// is a fact — the payload is a snapshot, so an absent workload is
 			// one with no policy attached, not one that went unobserved.
@@ -248,7 +277,8 @@ func (w *PodWatcher) WorkloadPolicies() ([]WorkloadPolicy, []string) {
 // cluster-policy question.
 var (
 	workloadPolicySources = []string{
-		"pod_disruption_budgets", "horizontal_pod_autoscalers", "persistent_volume_claims",
+		"services", "pod_disruption_budgets", "horizontal_pod_autoscalers",
+		"persistent_volume_claims",
 	}
 	clusterPolicySources = []string{
 		"limit_ranges", "resource_quotas", "priority_classes", "storage_classes",
@@ -311,6 +341,56 @@ func (w *PodWatcher) attachBudgets(byKey map[workloadKey]*WorkloadPolicy) {
 	for _, p := range byKey {
 		sort.Slice(p.Budgets, func(i, j int) bool { return p.Budgets[i].Name < p.Budgets[j].Name })
 	}
+}
+
+// attachServices matches every Service to the workloads its selector covers,
+// through the same admitted-pod resolution a budget uses.
+//
+// A Service with no selector is skipped: an ExternalName, or one whose
+// EndpointSlices are written by hand, points at something this agent cannot see
+// from a label.
+func (w *PodWatcher) attachServices(byKey map[workloadKey]*WorkloadPolicy) {
+	if w.svcLister == nil {
+		return
+	}
+	services, err := w.svcLister.List(labels.Everything())
+	if err != nil {
+		return
+	}
+	for _, svc := range services {
+		if len(svc.Spec.Selector) == 0 {
+			continue
+		}
+		reduced := describeService(svc)
+		for _, key := range w.workloadsSelecting(svc.Namespace, labels.SelectorFromSet(svc.Spec.Selector)) {
+			if p, ok := byKey[key]; ok {
+				p.Services = append(p.Services, reduced)
+			}
+		}
+	}
+	for _, p := range byKey {
+		sort.Slice(p.Services, func(i, j int) bool { return p.Services[i].Name < p.Services[j].Name })
+	}
+}
+
+// describeService reduces a Service to how it routes. Its addresses are not
+// read: a ClusterIP is cluster-internal and a load balancer's is the customer's
+// public address, and no finding needs either.
+func describeService(svc *corev1.Service) ServiceExposure {
+	return ServiceExposure{
+		Name:                  svc.Name,
+		Type:                  string(svc.Spec.Type),
+		Headless:              svc.Spec.ClusterIP == corev1.ClusterIPNone,
+		InternalTrafficPolicy: internalTrafficPolicy(svc),
+		ExternalTrafficPolicy: string(svc.Spec.ExternalTrafficPolicy),
+	}
+}
+
+func internalTrafficPolicy(svc *corev1.Service) string {
+	if svc.Spec.InternalTrafficPolicy == nil {
+		return ""
+	}
+	return string(*svc.Spec.InternalTrafficPolicy)
 }
 
 // workloadsSelecting resolves a label selector to the workloads of the admitted

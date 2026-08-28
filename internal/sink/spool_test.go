@@ -17,6 +17,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -545,10 +546,13 @@ func fixedBuild() inventory.BuildFacts {
 		ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 		GoVersion:   "go1.26.1",
 		MainModule:  "github.com/acme/web",
-		Modules: []string{
-			"github.com/cespare/xxhash/v2",
-			"go.uber.org/automaxprocs",
-			"golang.org/x/sync",
+		// One module replaced, so the golden shows the flag and shows that the
+		// version reported is the required one and not the replacement's
+		// (ADR 0048 §3).
+		Modules: []nodescan.Module{
+			{Path: "github.com/cespare/xxhash/v2", Version: "v2.3.0"},
+			{Path: "go.uber.org/automaxprocs", Version: "v1.6.0"},
+			{Path: "golang.org/x/sync", Version: "v0.9.0", Replaced: true},
 		},
 		Settings: map[string]string{
 			"CGO_ENABLED":  "0",
@@ -648,7 +652,17 @@ func TestGoBuildRejectsMissingDigest(t *testing.T) {
 // has to express at once: a workload mid-rollout (two builds of "app" with
 // different requests), a build with no limits declared, and a meshed pod whose
 // sidecar is a second record repeating the same pod facts.
+//
+// The workload block repeats on every record for the same reason the pod block
+// does, and the golden is what shows it (ADR 0014).
 func fixedWorkloadMetadata() []metadata.Record {
+	// A rollout that replaces a quarter of the fleet at a time and waits no
+	// time at all before calling a new replica available (ADR 0048 §2).
+	rolling := metadata.WorkloadScope{Rollout: collector.Rollout{
+		Type:           "RollingUpdate",
+		MaxUnavailable: "25%",
+		MaxSurge:       "25%",
+	}}
 	running := metadata.PodScope{
 		QOSClass: "Burstable",
 		Replicas: 2,
@@ -685,7 +699,22 @@ func fixedWorkloadMetadata() []metadata.Record {
 				MemoryLimitBytes:   ptr.To[int64](1 << 30),
 			},
 			Ports: []collector.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}},
-			Pod:   running,
+			// A liveness probe that gives up sooner than the readiness probe
+			// does — three failures at ten seconds against six at five — is a
+			// restart on a timer. The payload carries the two schedules and
+			// nothing about what either checks (ADR 0048 §1).
+			Probes: collector.Probes{
+				Liveness: &collector.Probe{
+					Kind: "httpGet", PeriodSeconds: 10, TimeoutSeconds: 1,
+					FailureThreshold: 3, SuccessThreshold: 1,
+				},
+				Readiness: &collector.Probe{
+					Kind: "httpGet", InitialDelaySeconds: 5, PeriodSeconds: 5,
+					TimeoutSeconds: 1, FailureThreshold: 6, SuccessThreshold: 1,
+				},
+			},
+			Pod:      running,
+			Workload: rolling,
 		},
 		{
 			Key: metadata.Key{
@@ -732,6 +761,7 @@ func fixedWorkloadMetadata() []metadata.Record {
 					PriorityClass: "high",
 				},
 			},
+			Workload: rolling,
 		},
 		{
 			// The sidecar of the same pods. Its pod block is identical to the
@@ -746,6 +776,27 @@ func fixedWorkloadMetadata() []metadata.Record {
 			Image:     "docker.io/istio/proxyv2:1.24.0",
 			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](100)},
 			Pod:       running,
+			Workload:  rolling,
+		},
+		{
+			// An Argo Rollout: it has an update strategy and the agent holds no
+			// RBAC to read it. The golden carries this shape because absence
+			// would say "this does not roll", which is the opposite of true
+			// (ADR 0048 §2).
+			Key: metadata.Key{
+				Namespace: "shop", WorkloadKind: "Rollout", WorkloadName: "payments",
+				Container:   "app",
+				ImageDigest: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			},
+			Image:     "example.com/payments:2.0.1",
+			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](250)},
+			Pod: metadata.PodScope{
+				QOSClass: "Burstable",
+				Replicas: 1,
+				Phases:   map[string]int{"Running": 1},
+				Nodes:    map[string]int{"node-1": 1},
+			},
+			Workload: metadata.WorkloadScope{Rollout: collector.Rollout{Unread: true}},
 		},
 	}
 }
@@ -1146,10 +1197,10 @@ func TestSweepDropsExpiredAndTempFiles(t *testing.T) {
 	}
 }
 
-// fixedWorkloadPolicy is a workload held in place by all three mechanisms at
-// once: a budget that permits no disruption today, an autoscaler pinned at its
-// ceiling, and a bound zonal claim. Each alone changes what may be concluded
-// from the same usage numbers.
+// fixedWorkloadPolicy is a workload held in place by every mechanism at once: a
+// budget that permits no disruption today, an autoscaler pinned at its ceiling,
+// a bound zonal claim, and a Service routing to it. Each alone changes what may
+// be concluded from the same usage numbers.
 func fixedWorkloadPolicy() []collector.WorkloadPolicy {
 	return []collector.WorkloadPolicy{
 		{
@@ -1169,6 +1220,9 @@ func fixedWorkloadPolicy() []collector.WorkloadPolicy {
 				}},
 				LimitedReason: "TooManyReplicas",
 			}},
+			Services: []collector.ServiceExposure{{
+				Name: "web", Type: "ClusterIP", InternalTrafficPolicy: "Cluster",
+			}},
 		},
 		{
 			Namespace: "shop",
@@ -1176,6 +1230,11 @@ func fixedWorkloadPolicy() []collector.WorkloadPolicy {
 			Claims: []collector.VolumeClaim{{
 				Name: "data-db-0", StorageClass: "gp3-zonal",
 				AccessModes: []string{"ReadWriteOnce"}, RequestedBytes: 100 << 30, Phase: "Bound",
+			}},
+			// A headless Service: clients resolve the pods themselves, so a
+			// single replica is a single address with nothing in front of it.
+			Services: []collector.ServiceExposure{{
+				Name: "db", Type: "ClusterIP", Headless: true,
 			}},
 		},
 	}

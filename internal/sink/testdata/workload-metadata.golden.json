@@ -23,6 +23,23 @@
           "protocol": "TCP"
         }
       ],
+      "probes": {
+        "liveness": {
+          "kind": "httpGet",
+          "period_seconds": 10,
+          "timeout_seconds": 1,
+          "failure_threshold": 3,
+          "success_threshold": 1
+        },
+        "readiness": {
+          "kind": "httpGet",
+          "initial_delay_seconds": 5,
+          "period_seconds": 5,
+          "timeout_seconds": 1,
+          "failure_threshold": 6,
+          "success_threshold": 1
+        }
+      },
       "pod": {
         "qos_class": "Burstable",
         "replicas": 2,
@@ -52,6 +69,13 @@
           ],
           "priority_class": "high",
           "termination_grace_seconds": 300
+        }
+      },
+      "workload": {
+        "rollout": {
+          "type": "RollingUpdate",
+          "max_unavailable": "25%",
+          "max_surge": "25%"
         }
       }
     },
@@ -97,6 +121,13 @@
           ],
           "priority_class": "high"
         }
+      },
+      "workload": {
+        "rollout": {
+          "type": "RollingUpdate",
+          "max_unavailable": "25%",
+          "max_surge": "25%"
+        }
       }
     },
     {
@@ -138,6 +169,39 @@
           ],
           "priority_class": "high",
           "termination_grace_seconds": 300
+        }
+      },
+      "workload": {
+        "rollout": {
+          "type": "RollingUpdate",
+          "max_unavailable": "25%",
+          "max_surge": "25%"
+        }
+      }
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "Rollout",
+      "workload_name": "payments",
+      "container": "app",
+      "image_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "image": "example.com/payments:2.0.1",
+      "resources": {
+        "cpu_request_milli": 250
+      },
+      "pod": {
+        "qos_class": "Burstable",
+        "replicas": 1,
+        "phases": {
+          "Running": 1
+        },
+        "nodes": {
+          "node-1": 1
+        }
+      },
+      "workload": {
+        "rollout": {
+          "unread": true
         }
       }
     }

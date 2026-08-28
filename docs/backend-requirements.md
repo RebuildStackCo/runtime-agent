@@ -276,6 +276,15 @@ was taken away, which is the normal state.
   `EvictionByEvictionAPI`, `Evicted`) plus `other`. The backend MUST tolerate
   `other` and MUST NOT assume the set never grows.
 
+**`workload_metadata.workload` and `.pod` are two different scopes, and neither
+is per record** (ADR 0014). A pod's containers each produce a record repeating
+both blocks, so **the backend MUST NOT sum either across one workload's
+records**. `rollout` is absent for a kind that replaces no replicas — a Job, a
+CronJob, a bare ReplicaSet, an owner-less pod — and MUST NOT be rendered as one
+that replaces everything at once. A `rollout` carrying only `unread: true` is a
+workload managed by a custom resource the agent holds no RBAC for, such as an
+Argo Rollout: **unobserved, not absent**, and MUST NOT be read as no strategy.
+
 **`workload_metadata.pod.unscheduled` explains the replica shortfall, it does
 not restate it.** The gap between `replicas` and the sum of `nodes` has always
 shown how many replicas are unplaced; `unscheduled` counts those by the
@@ -324,9 +333,11 @@ immutable given its key and the agent sends it once per distinct build. The
 backend MUST upsert it by image digest and MUST NOT expect it on every flush or
 treat a redelivery (after an agent restart) as a change. It carries no
 `captured_at` for the same reason. Join it to workloads through
-`go_inventory.records[].image_digest`. It contains module *paths* only, never
-versions — it is not a dependency-version inventory and MUST NOT be presented as
-one.
+`go_inventory.records[].image_digest`. Each entry of `modules` is an object with
+`path` and the `version` the toolchain recorded; one flagged `replaced` was
+redirected by a `replace` directive, so its version names what the build
+*required* rather than what is linked, and MUST NOT be presented as the running
+version ([ADR 0048](adr/0048-findings-name-the-fields-they-need.md)).
 
 **`go_build.settings` is a bounded allow-list, and its keys are optional**
 ([ADR 0019](adr/0019-build-settings-by-allow-list.md)). The agent keeps only the

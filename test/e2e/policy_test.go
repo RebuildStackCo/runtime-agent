@@ -29,7 +29,14 @@ const (
 	workloadPolicySpoolPath = spoolDir + "/workload-policy.json"
 	clusterPolicySpoolPath  = spoolDir + "/cluster-policy.json"
 	jobRunsSpoolGlob        = spoolDir + "/job-runs-*.json"
+	workloadMetadataPath    = spoolDir + "/workload-metadata.json"
 )
+
+// probeSecret is written into a probe's exec command in the fixture and asserted
+// absent from every payload: a probe handler is the second place a command is
+// written (ADR 0048 §1).
+// #nosec G101 -- a fixture marker, and finding it in a payload is the failure
+const probeSecret = "--token=e2e-probe-must-not-ship"
 
 // TestPolicyAndJournalsEndToEnd exercises the four payload kinds that had golden
 // bytes but had never met a real API server: `job_runs` (ADR 0029),
@@ -76,6 +83,7 @@ func TestPolicyAndJournalsEndToEnd(t *testing.T) {
 	checkWorkloadPolicyReported(ctx, t, config, clientset, ns, controllerPod, fixtureNS)
 	checkClusterPolicyReported(ctx, t, config, clientset, ns, controllerPod, fixtureNS)
 	checkJobRunReported(ctx, t, config, clientset, ns, controllerPod, fixtureNS)
+	checkWorkloadShapeReported(ctx, t, config, clientset, ns, controllerPod, fixtureNS)
 }
 
 // createPolicyFixtures builds one workload wrapped in every policy object the
@@ -88,6 +96,15 @@ func createPolicyFixtures(ctx context.Context, t *testing.T, cs kubernetes.Inter
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(int32(2)),
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+			// A rollout that replaces everything at once. No eviction is
+			// involved, so the budget above does not bound it (ADR 0048 §2).
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxUnavailable: ptr.To(intstr.FromString("100%")),
+					MaxSurge:       ptr.To(intstr.FromInt32(0)),
+				},
+			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}},
 				Spec: corev1.PodSpec{
@@ -110,6 +127,15 @@ func createPolicyFixtures(ctx context.Context, t *testing.T, cs kubernetes.Inter
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m")},
 						},
+						// The probe never succeeds against pause, which does not
+						// matter: the schedule is the fact under test, and the
+						// command is what must not come back (ADR 0048 §1).
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+								Command: []string{"/bin/true", probeSecret},
+							}},
+							PeriodSeconds: 11, FailureThreshold: 4,
+						},
 					}},
 				},
 			},
@@ -117,6 +143,18 @@ func createPolicyFixtures(ctx context.Context, t *testing.T, cs kubernetes.Inter
 	}
 	if _, err := cs.AppsV1().Deployments(ns).Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("creating deployment: %v", err)
+	}
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "web"},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{"app": "web"},
+			Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromInt32(8080)}},
+		},
+	}
+	if _, err := cs.CoreV1().Services(ns).Create(ctx, service, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating service: %v", err)
 	}
 
 	budget := &policyv1.PodDisruptionBudget{
@@ -277,12 +315,17 @@ func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest
 					TargetValue string `json:"target_value"`
 				} `json:"metrics"`
 			} `json:"autoscalers"`
+			Services []struct {
+				Name     string `json:"name"`
+				Type     string `json:"type"`
+				Headless bool   `json:"headless"`
+			} `json:"services"`
 		} `json:"records"`
 	}
 	find := func() (int, bool) {
 		for i, r := range payload.Records {
 			if r.Namespace == fixtureNS && r.Workload.Name == "web" &&
-				len(r.Budgets) > 0 && len(r.Autoscalers) > 0 {
+				len(r.Budgets) > 0 && len(r.Autoscalers) > 0 && len(r.Services) > 0 {
 				return i, true
 			}
 		}
@@ -291,7 +334,7 @@ func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest
 	waitForSpoolJSON(ctx, t, config, cs, ns, pod, workloadPolicySpoolPath, &payload, func() bool {
 		_, ok := find()
 		return ok
-	}, "workload policy with a budget and an autoscaler")
+	}, "workload policy with a budget, an autoscaler and a service")
 
 	if payload.Kind != "workload_policy" {
 		t.Errorf("kind = %q", payload.Kind)
@@ -307,6 +350,12 @@ func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest
 	budget := record.Budgets[0]
 	if budget.Name != "web-pdb" || budget.MinAvailable != "100%" {
 		t.Errorf("budget = %+v", budget)
+	}
+	// Something routes to this workload, which is what makes its replica count
+	// an availability decision rather than a batch size (ADR 0048 §4).
+	svc := record.Services[0]
+	if svc.Name != "web" || svc.Type != "ClusterIP" || svc.Headless {
+		t.Errorf("service = %+v, want the ClusterIP named web", svc)
 	}
 	// A budget demanding every replica leaves no room to evict one: the node
 	// cannot be drained, whatever spare capacity exists elsewhere.
@@ -329,8 +378,8 @@ func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest
 	if m := hpa.Metrics[0]; m.Name != "cpu" || m.TargetType != "Utilization" || m.TargetValue != "75" {
 		t.Errorf("autoscaler metric = %+v", m)
 	}
-	t.Logf("policy for %s/web: budget %s allows %d disruptions, autoscaler %s caps at %d",
-		fixtureNS, budget.Name, budget.DisruptionsAllowed, hpa.Name, hpa.MaxReplicas)
+	t.Logf("policy for %s/web: budget %s allows %d disruptions, autoscaler %s caps at %d, service %s (%s) routes to it",
+		fixtureNS, budget.Name, budget.DisruptionsAllowed, hpa.Name, hpa.MaxReplicas, svc.Name, svc.Type)
 }
 
 func checkClusterPolicyReported(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, fixtureNS string) {
@@ -488,4 +537,75 @@ func waitForSpoolJSON(ctx context.Context, t *testing.T, config *rest.Config, cs
 		time.Sleep(5 * time.Second)
 	}
 	t.Fatalf("no %s in %s before timeout", what, path)
+}
+
+// checkWorkloadShapeReported is the other half of ADR 0048: the two facts that
+// ride in `workload_metadata` rather than in the policy payload — the probe
+// schedule, without the command the probe runs, and the rollout the workload
+// performs on itself.
+func checkWorkloadShapeReported(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, fixtureNS string) {
+	t.Helper()
+	var payload struct {
+		Kind    string `json:"kind"`
+		Records []struct {
+			Namespace    string `json:"namespace"`
+			WorkloadName string `json:"workload_name"`
+			Container    string `json:"container"`
+			Probes       struct {
+				Liveness *struct {
+					Kind             string `json:"kind"`
+					PeriodSeconds    int32  `json:"period_seconds"`
+					FailureThreshold int32  `json:"failure_threshold"`
+				} `json:"liveness"`
+			} `json:"probes"`
+			Workload struct {
+				Rollout struct {
+					Type           string `json:"type"`
+					MaxUnavailable string `json:"max_unavailable"`
+					MaxSurge       string `json:"max_surge"`
+				} `json:"rollout"`
+			} `json:"workload"`
+		} `json:"records"`
+	}
+	find := func() (int, bool) {
+		for i, r := range payload.Records {
+			if r.Namespace == fixtureNS && r.WorkloadName == "web" && r.Container == "app" &&
+				r.Probes.Liveness != nil {
+				return i, true
+			}
+		}
+		return 0, false
+	}
+	waitForSpoolJSON(ctx, t, config, cs, ns, pod, workloadMetadataPath, &payload, func() bool {
+		_, ok := find()
+		return ok
+	}, "workload metadata carrying the probe schedule")
+
+	if payload.Kind != "workload_metadata" {
+		t.Errorf("kind = %q", payload.Kind)
+	}
+	i, _ := find()
+	record := payload.Records[i]
+
+	probe := record.Probes.Liveness
+	if probe.Kind != "exec" || probe.PeriodSeconds != 11 || probe.FailureThreshold != 4 {
+		t.Errorf("liveness probe = %+v, want the exec schedule the fixture declared", probe)
+	}
+	rollout := record.Workload.Rollout
+	if rollout.Type != "RollingUpdate" || rollout.MaxUnavailable != "100%" || rollout.MaxSurge != "0" {
+		t.Errorf("rollout = %+v, want the declared 100%%/0 rolling update", rollout)
+	}
+
+	// The whole payload, not this record: a probe command must not reach the
+	// spool through any field of any kind.
+	raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, workloadMetadataPath)
+	if !ok {
+		t.Fatal("workload metadata disappeared between the wait and the read")
+	}
+	if strings.Contains(raw, probeSecret) {
+		t.Error("the probe's exec command reached the spool; it must be cleared before the object is cached")
+	}
+	t.Logf("shape of %s/web: liveness %s every %ds ×%d, rollout %s %s/%s, and the probe command is absent",
+		fixtureNS, probe.Kind, probe.PeriodSeconds, probe.FailureThreshold,
+		rollout.Type, rollout.MaxUnavailable, rollout.MaxSurge)
 }
