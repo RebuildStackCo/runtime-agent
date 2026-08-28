@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,14 +49,15 @@ type GoRecord struct {
 // several workloads, so hanging hundreds of module paths off each record would
 // duplicate them on every flush (ADR 0017, ADR 0019).
 //
-// Module paths only, never versions: a path with a version is a
-// vulnerability-scanning input, which this agent does not collect.
+// Each module carries the version the toolchain recorded, at the price
+// ADR 0048 §3 weighs.
 type BuildFacts struct {
 	ImageDigest string `json:"image_digest"`
 	GoVersion   string `json:"go_version"`
 	MainModule  string `json:"main_module"`
-	// Modules is sorted, so the payload bytes are deterministic.
-	Modules []string `json:"modules"`
+	// Modules is sorted by path and then version, so the payload bytes are
+	// deterministic.
+	Modules []nodescan.Module `json:"modules"`
 	// Settings is the allow-listed build settings the node kept. It is what the
 	// scanner sent: the filtering happened there, before the channel, so nothing
 	// outside the allow-list ever reached this struct (ADR 0019).
@@ -184,7 +186,7 @@ func (s *Store) ingestBuild(b nodescan.BinaryInfo, digest string) {
 		return // same digest, same build, same facts — nothing to recompute
 	}
 	modules := slices.Clone(b.Dependencies)
-	slices.Sort(modules)
+	slices.SortFunc(modules, compareModules)
 	modules = slices.Compact(modules)
 	s.builds[digest] = BuildFacts{
 		ImageDigest: digest,
@@ -430,4 +432,13 @@ func lessKey(a, b Key) bool {
 		return a.WorkloadName < b.WorkloadName
 	}
 	return a.Container < b.Container
+}
+
+// compareModules orders a build's dependencies by path and then version, so the
+// payload bytes do not depend on the order the toolchain recorded them in.
+func compareModules(a, b nodescan.Module) int {
+	if a.Path != b.Path {
+		return strings.Compare(a.Path, b.Path)
+	}
+	return strings.Compare(a.Version, b.Version)
 }

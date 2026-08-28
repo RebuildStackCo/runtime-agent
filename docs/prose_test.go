@@ -26,13 +26,14 @@ const maxCommentRun = 8
 // back at ADR 0024's 750: five kinds have been added since, each a table row and
 // a paragraph. `backend-requirements.md` restates decisions on purpose — its
 // reader implements ingest and reads neither our ADRs nor `security.md` — so
-// what is bounded there is growth, not duplication.
+// what is bounded there is growth, not duplication. The file ceiling moved
+// 920 → 930 for obligations the document did not have before (ADR 0048).
 var ceilings = []struct {
 	file    string
 	lines   int
 	section int
 }{
-	{"security.md", 920, 290},
+	{"security.md", 930, 290},
 	{"backend-requirements.md", 460, 320},
 }
 

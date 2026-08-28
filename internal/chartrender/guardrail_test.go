@@ -26,7 +26,7 @@ import (
 // from the thing it tests asserts nothing.
 func TestTheClusterRoleNamesNothingBeyondThisList(t *testing.T) {
 	permitted := map[string][]string{
-		"":                  {"pods", "namespaces", "nodes", "nodes/proxy", "limitranges", "resourcequotas", "persistentvolumeclaims"},
+		"":                  {"pods", "namespaces", "nodes", "nodes/proxy", "services", "limitranges", "resourcequotas", "persistentvolumeclaims"},
 		"apps":              {"replicasets", "deployments", "statefulsets", "daemonsets"},
 		"batch":             {"jobs", "cronjobs"},
 		"policy":            {"poddisruptionbudgets"},

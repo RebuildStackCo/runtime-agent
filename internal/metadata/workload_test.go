@@ -41,7 +41,7 @@ func TestAggregateCountsReplicasPhasesAndNodes(t *testing.T) {
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
 		pod("acme", "api-2", "node-a", "Running", "sha256:aaa", burstable()),
 		pod("acme", "api-3", "node-b", "Pending", "sha256:aaa", burstable()),
-	})
+	}, nil)
 
 	if len(got) != 1 {
 		t.Fatalf("records = %d, want 1 (same workload, same build)", len(got))
@@ -70,7 +70,7 @@ func TestAggregateSplitsBuildsDuringRollout(t *testing.T) {
 	got := Aggregate([]collector.PodInfo{
 		pod("acme", "api-old", "node-a", "Running", "sha256:aaa", old),
 		pod("acme", "api-new", "node-b", "Running", "sha256:bbb", updated),
-	})
+	}, nil)
 
 	if len(got) != 2 {
 		t.Fatalf("records = %d, want 2 (one per build)", len(got))
@@ -91,7 +91,7 @@ func TestAggregatePreservesUnsetVersusZero(t *testing.T) {
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", collector.Resources{
 			CPURequestMilli: ptr.To[int64](0),
 		}),
-	})
+	}, nil)
 
 	rec := got[0]
 	if rec.Resources.CPURequestMilli == nil || *rec.Resources.CPURequestMilli != 0 {
@@ -121,7 +121,7 @@ func TestAggregatePreservesUnsetVersusZero(t *testing.T) {
 func TestAggregateUnscheduledPodCountsAsReplicaWithoutNode(t *testing.T) {
 	got := Aggregate([]collector.PodInfo{
 		pod("acme", "api-1", "", "Pending", "", collector.Resources{}),
-	})
+	}, nil)
 
 	rec := got[0]
 	if rec.Pod.Replicas != 1 {
@@ -145,7 +145,7 @@ func TestAggregateCountsUnscheduledPodsByReason(t *testing.T) {
 	gated.Unscheduled = "SchedulingGated"
 	running := pod("acme", "api-3", "node-1", "Running", "", collector.Resources{})
 
-	got := Aggregate([]collector.PodInfo{unschedulable, gated, running})
+	got := Aggregate([]collector.PodInfo{unschedulable, gated, running}, nil)
 
 	rec := got[0]
 	if rec.Pod.Replicas != 3 {
@@ -171,11 +171,11 @@ func TestAggregateIsOrderIndependent(t *testing.T) {
 	}
 	reversed := []collector.PodInfo{pods[2], pods[1], pods[0]}
 
-	first, err := json.Marshal(Aggregate(pods))
+	first, err := json.Marshal(Aggregate(pods, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := json.Marshal(Aggregate(reversed))
+	second, err := json.Marshal(Aggregate(reversed, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestAggregatePodFactsRepeatPerContainerWithoutMultiplying(t *testing.T) {
 	got := Aggregate([]collector.PodInfo{
 		withSidecar("api-1", "node-a"),
 		withSidecar("api-2", "node-b"),
-	})
+	}, nil)
 
 	if len(got) != 2 {
 		t.Fatalf("records = %d, want 2 (one per container of the same two pods)", len(got))
@@ -226,7 +226,7 @@ func TestAggregateReportsTerminatedPodsInTheBreakdown(t *testing.T) {
 		pod("acme", "job-1", "node-a", "Succeeded", "sha256:aaa", burstable()),
 		pod("acme", "job-2", "node-a", "Failed", "sha256:aaa", burstable()),
 		pod("acme", "job-3", "node-a", "Running", "sha256:aaa", burstable()),
-	})
+	}, nil)
 
 	rec := got[0]
 	if rec.Pod.Replicas != 3 {
@@ -248,7 +248,7 @@ func TestAggregateKeepsInitContainersDistinct(t *testing.T) {
 		ImageDigest: "sha256:ccc", Init: true,
 	})
 
-	got := Aggregate([]collector.PodInfo{p})
+	got := Aggregate([]collector.PodInfo{p}, nil)
 	if len(got) != 2 {
 		t.Fatalf("records = %d, want 2 (init and regular container)", len(got))
 	}
@@ -275,7 +275,7 @@ func TestAggregateCarriesPlacementIntoThePodBlock(t *testing.T) {
 		PriorityClass: "high",
 	}
 
-	got := Aggregate([]collector.PodInfo{p})
+	got := Aggregate([]collector.PodInfo{p}, nil)
 	if len(got) != 1 {
 		t.Fatalf("records = %d, want 1", len(got))
 	}
@@ -299,7 +299,7 @@ func TestAggregateKeepsEachBuildsPlacementDuringRollout(t *testing.T) {
 		NodeSelector:  map[string]string{"pool": "reserved"},
 	}
 
-	got := Aggregate([]collector.PodInfo{old, fresh})
+	got := Aggregate([]collector.PodInfo{old, fresh}, nil)
 	if len(got) != 2 {
 		t.Fatalf("records = %d, want one per build", len(got))
 	}
@@ -320,12 +320,41 @@ func TestAggregateKeepsEachBuildsPlacementDuringRollout(t *testing.T) {
 func TestAggregateOmitsPlacementForAnUnconstrainedWorkload(t *testing.T) {
 	got := Aggregate([]collector.PodInfo{
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
-	})
+	}, nil)
 	encoded, err := json.Marshal(got[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes := string(encoded); strings.Contains(bytes, "placement") {
 		t.Errorf("unconstrained workload encoded a placement block:\n%s", bytes)
+	}
+}
+
+// A workload whose kind has no update strategy carries no `workload` object at
+// all. A block of zeros would read as a rollout that replaces every replica at
+// once, which is the opposite of what an absent strategy means (ADR 0048 §2).
+func TestARecordWithNoRolloutCarriesNoWorkloadObject(t *testing.T) {
+	withRollout := Aggregate([]collector.PodInfo{
+		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
+	}, map[collector.WorkloadKey]collector.Rollout{
+		{Namespace: "acme", Kind: "Deployment", Name: "api"}: {Type: "RollingUpdate"},
+	})
+	encoded, err := json.Marshal(withRollout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"workload":{"rollout":{"type":"RollingUpdate"}}`) {
+		t.Fatalf("a known rollout must ship nested under workload: %s", encoded)
+	}
+
+	without := Aggregate([]collector.PodInfo{
+		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
+	}, nil)
+	encoded, err = json.Marshal(without)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"workload"`) {
+		t.Errorf("a record with no rollout still carries a workload object: %s", encoded)
 	}
 }

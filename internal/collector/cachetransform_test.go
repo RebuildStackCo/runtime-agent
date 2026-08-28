@@ -31,6 +31,31 @@ func loadedContainer(name string) corev1.Container {
 		EnvFrom: []corev1.EnvFromSource{{
 			SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "db"}},
 		}},
+		// A probe's handler is the second place a command is written and the
+		// only place an operator writes an HTTP header (ADR 0048 §1).
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+				Command: []string{"/bin/health", "--token=t0ps3cret"},
+			}},
+			PeriodSeconds: 10, FailureThreshold: 3,
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/internal/ready?key=t0ps3cret",
+				Host: "db.internal",
+				HTTPHeaders: []corev1.HTTPHeader{
+					{Name: "Authorization", Value: "Bearer " + secretish},
+				},
+			}},
+			PeriodSeconds: 5, FailureThreshold: 6,
+		},
+		StartupProbe: &corev1.Probe{
+			ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Host: "db.internal"}},
+			PeriodSeconds: 1, FailureThreshold: 30,
+		},
+		Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{
+			Exec: &corev1.ExecAction{Command: []string{"/bin/drain", "--token=t0ps3cret"}},
+		}},
 	}
 }
 
@@ -132,7 +157,7 @@ func TestARuntimeKnobIsKeptOnlyWhenItsValueIsNotASecret(t *testing.T) {
 // "Not collected" beats "collected and dropped": the cache is the source, so
 // the fields have to go before the object is stored, not before it is
 // serialized (CLAUDE.md invariant 4, ADR 0046).
-func TestNoWatchedKindEntersTheCacheCarryingEnvArgsOrCommand(t *testing.T) {
+func TestNoWatchedKindEntersTheCacheCarryingEnvArgsOrCommand(t *testing.T) { //nolint:gocognit // one loop over every watched kind
 	podWithEphemeral := &corev1.Pod{ObjectMeta: loadedMeta("web")}
 	podWithEphemeral.Spec.Containers = []corev1.Container{loadedContainer("app")}
 	podWithEphemeral.Spec.InitContainers = []corev1.Container{loadedContainer("init")}
@@ -174,6 +199,7 @@ func TestNoWatchedKindEntersTheCacheCarryingEnvArgsOrCommand(t *testing.T) {
 			if c.Image == "" || c.Name == "" {
 				t.Errorf("%s: container %q lost a field the payloads are built from", kind, c.Name)
 			}
+			checkProbesReduced(t, kind, c)
 		}
 
 		meta := reflect.ValueOf(stored).Elem().FieldByName("ObjectMeta").Interface().(metav1.ObjectMeta)
@@ -221,6 +247,41 @@ func TestTheStrippedObjectIsWhatTheListersServe(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("the pod never reached the cache: %v", err)
 		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// checkProbesReduced is the other half of the same promise: a probe's handler
+// holds a command and an operator's headers, and the schedule beside it is what
+// the finding reads. So the handler must arrive emptied and the schedule intact
+// (ADR 0048 §1).
+func checkProbesReduced(t *testing.T, kind string, c corev1.Container) {
+	t.Helper()
+	if c.Lifecycle != nil {
+		t.Errorf("%s: container %q reached the cache with lifecycle hooks; they hold commands nothing reads", kind, c.Name)
+	}
+	for name, p := range map[string]*corev1.Probe{
+		"liveness": c.LivenessProbe, "readiness": c.ReadinessProbe, "startup": c.StartupProbe,
+	} {
+		if p == nil {
+			t.Errorf("%s: container %q lost its %s probe; the schedule is what the finding reads", kind, c.Name, name)
+			continue
+		}
+		if p.PeriodSeconds == 0 || p.FailureThreshold == 0 {
+			t.Errorf("%s: container %q %s probe lost its schedule (%+v)", kind, c.Name, name, p)
+		}
+		if h := p.Exec; h != nil && h.Command != nil {
+			t.Errorf("%s: container %q %s probe reached the cache with a command %v", kind, c.Name, name, h.Command)
+		}
+		if h := p.HTTPGet; h != nil && (h.Path != "" || h.Host != "" || h.HTTPHeaders != nil) {
+			t.Errorf("%s: container %q %s probe reached the cache with path=%q host=%q headers=%v",
+				kind, c.Name, name, h.Path, h.Host, h.HTTPHeaders)
+		}
+		if h := p.TCPSocket; h != nil && h.Host != "" {
+			t.Errorf("%s: container %q %s probe reached the cache with host %q", kind, c.Name, name, h.Host)
+		}
+		if h := p.GRPC; h != nil && h.Service != nil {
+			t.Errorf("%s: container %q %s probe reached the cache with service %q", kind, c.Name, name, *h.Service)
 		}
 	}
 }

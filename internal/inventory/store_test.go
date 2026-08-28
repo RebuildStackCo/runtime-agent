@@ -34,8 +34,19 @@ func binary(podUID, containerID, goVersion, module string, pgo bool) nodescan.Bi
 	}
 }
 
-func withDeps(b nodescan.BinaryInfo, deps ...string) nodescan.BinaryInfo {
-	b.Dependencies = deps
+// withDeps attaches dependencies by path, at one version, for the tests whose
+// subject is the join rather than the module list itself.
+func withDeps(b nodescan.BinaryInfo, paths ...string) nodescan.BinaryInfo {
+	mods := make([]nodescan.Module, 0, len(paths))
+	for _, path := range paths {
+		mods = append(mods, nodescan.Module{Path: path, Version: "v1.0.0"})
+	}
+	b.Dependencies = mods
+	return b
+}
+
+func withModules(b nodescan.BinaryInfo, mods ...nodescan.Module) nodescan.BinaryInfo {
+	b.Dependencies = mods
 	return b
 }
 
@@ -45,8 +56,15 @@ func TestIngestKeepsBuildFactsPerBuild(t *testing.T) {
 	}
 	s := NewStore(testSince)
 	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
-		withDeps(binary("pod-web", "cid-web", "go1.26.1", "github.com/acme/web", true),
-			"golang.org/x/sync", "github.com/cespare/xxhash/v2", "golang.org/x/sync"),
+		withModules(binary("pod-web", "cid-web", "go1.26.1", "github.com/acme/web", true),
+			nodescan.Module{Path: "golang.org/x/sync", Version: "v0.9.0"},
+			nodescan.Module{Path: "github.com/cespare/xxhash/v2", Version: "v2.3.0"},
+			nodescan.Module{Path: "golang.org/x/sync", Version: "v0.9.0"},
+			// The same module at two versions is one build linking one of them
+			// and recording the other as replaced; both rows survive, because
+			// collapsing them would invent a version the build does not have.
+			nodescan.Module{Path: "golang.org/x/sync", Version: "v0.8.0", Replaced: true},
+		),
 	}}, resolver)
 
 	pending := s.PendingBuilds()
@@ -57,8 +75,13 @@ func TestIngestKeepsBuildFactsPerBuild(t *testing.T) {
 	if got.ImageDigest != "sha256:web" || got.GoVersion != "go1.26.1" || got.MainModule != "github.com/acme/web" {
 		t.Errorf("build identity = %+v, want the web build", got)
 	}
-	// Sorted and deduplicated, so the payload bytes are deterministic.
-	want := []string{"github.com/cespare/xxhash/v2", "golang.org/x/sync"}
+	// Sorted by path then version and deduplicated, so the payload bytes are
+	// deterministic.
+	want := []nodescan.Module{
+		{Path: "github.com/cespare/xxhash/v2", Version: "v2.3.0"},
+		{Path: "golang.org/x/sync", Version: "v0.8.0", Replaced: true},
+		{Path: "golang.org/x/sync", Version: "v0.9.0"},
+	}
 	if !slices.Equal(got.Modules, want) {
 		t.Errorf("modules = %v, want %v", got.Modules, want)
 	}

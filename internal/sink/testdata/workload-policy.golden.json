@@ -36,6 +36,13 @@
           ],
           "limited_reason": "TooManyReplicas"
         }
+      ],
+      "services": [
+        {
+          "name": "web",
+          "type": "ClusterIP",
+          "internal_traffic_policy": "Cluster"
+        }
       ]
     },
     {
@@ -53,6 +60,13 @@
           ],
           "requested_bytes": 107374182400,
           "phase": "Bound"
+        }
+      ],
+      "services": [
+        {
+          "name": "db",
+          "type": "ClusterIP",
+          "headless": true
         }
       ]
     }

@@ -496,3 +496,97 @@ func TestEachPayloadDeclaresOnlyItsOwnSources(t *testing.T) {
 		t.Errorf("cluster payload sources = %v", cluster)
 	}
 }
+
+// service builds a Service selecting the named deployment's pods.
+func service(name, deployment string, mutate func(*corev1.Service)) *corev1.Service {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: name},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{"app": deployment},
+		},
+	}
+	if mutate != nil {
+		mutate(svc)
+	}
+	return svc
+}
+
+// A Service selects pods by label, so the join runs through the admitted pod
+// index exactly as a budget's does. Being routed to is what separates a
+// single-replica workload that is an availability decision from one that is a
+// batch size (ADR 0048 §4).
+func TestServiceAttachesToTheWorkloadOfTheSelectedPods(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", func(s *corev1.Service) {
+			s.Spec.InternalTrafficPolicy = ptr.To(corev1.ServiceInternalTrafficPolicyLocal)
+			s.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
+		}),
+	)
+	if len(got) != 1 || len(got[0].Services) != 1 {
+		t.Fatalf("records = %+v, want one workload with one service", got)
+	}
+	svc := got[0].Services[0]
+	want := ServiceExposure{
+		Name: "web", Type: "ClusterIP",
+		InternalTrafficPolicy: "Local", ExternalTrafficPolicy: "Local",
+	}
+	if svc != want {
+		t.Errorf("service = %+v, want %+v", svc, want)
+	}
+}
+
+// A headless Service has no virtual address in front of its pods, which is the
+// difference between "one replica behind a load balancer" and "one replica, and
+// clients hold its address".
+func TestHeadlessServiceIsMarked(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("db-0", "db"),
+		replicaSetOwnedBy("db-abc", "db"),
+		service("db", "db", func(s *corev1.Service) { s.Spec.ClusterIP = corev1.ClusterIPNone }),
+	)
+	if len(got) != 1 || len(got[0].Services) != 1 {
+		t.Fatalf("records = %+v, want one workload with one service", got)
+	}
+	if !got[0].Services[0].Headless {
+		t.Errorf("service = %+v, want it marked headless", got[0].Services[0])
+	}
+}
+
+// A Service with no selector points at endpoints written by hand or at a name
+// outside the cluster. Attaching it to whatever happens to share its namespace
+// would be an invented fact.
+func TestSelectorlessServiceAttachesToNothing(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		budget(), // so a record exists to attach to, and its absence is the assertion
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "external"},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeExternalName, ExternalName: "db.example.com"},
+		},
+	)
+	if len(got) != 1 {
+		t.Fatalf("records = %+v, want one", got)
+	}
+	if len(got[0].Services) != 0 {
+		t.Errorf("services = %+v, want none for a selector-less Service", got[0].Services)
+	}
+}
+
+// A Service over excluded pods must name nothing, for the reason a budget over
+// them must not (CLAUDE.md invariant 6).
+func TestServiceOverExcludedPodsNamesNothing(t *testing.T) {
+	filter := NewFilter(nil, []string{"shop"})
+	got, _ := collectPolicy(t, filter,
+		func([]WorkloadPolicy, ClusterPolicy) bool { return filter.Snapshot().PodsObserved > 0 },
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", nil),
+	)
+	if len(got) != 0 {
+		t.Errorf("records = %+v, want none for an excluded namespace", got)
+	}
+}

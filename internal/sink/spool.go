@@ -20,6 +20,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -153,7 +154,7 @@ type goBuildPayload struct {
 	ImageDigest string            `json:"image_digest"`
 	GoVersion   string            `json:"go_version"`
 	MainModule  string            `json:"main_module"`
-	Modules     []string          `json:"modules"`
+	Modules     []nodescan.Module `json:"modules"`
 	Settings    map[string]string `json:"settings,omitempty"`
 }
 
@@ -540,7 +541,7 @@ func (s *Spool) WriteGoBuild(b inventory.BuildFacts) error {
 	}
 	modules := b.Modules
 	if modules == nil {
-		modules = []string{}
+		modules = []nodescan.Module{}
 	}
 	payload := goBuildPayload{
 		Kind:        "go_build",

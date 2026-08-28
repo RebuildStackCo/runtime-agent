@@ -76,6 +76,35 @@ func dropContainerFields(c *corev1.Container) {
 	c.EnvFrom = nil
 	c.Command = nil
 	c.Args = nil
+	// A probe's exec handler holds a command and its HTTP handler holds
+	// operator-written headers; the lifecycle hooks hold commands nothing here
+	// reads (ADR 0048 §1).
+	reduceProbe(c.LivenessProbe)
+	reduceProbe(c.ReadinessProbe)
+	reduceProbe(c.StartupProbe)
+	c.Lifecycle = nil
+}
+
+// reduceProbe empties every free-form field of a probe's handler and keeps the
+// handler itself, so which kind of check it makes survives while what it checks
+// does not. That, with the thresholds beside it, is the whole of what a probe
+// finding reads (ADR 0048 §1).
+func reduceProbe(p *corev1.Probe) {
+	if p == nil {
+		return
+	}
+	if h := p.Exec; h != nil {
+		h.Command = nil
+	}
+	if h := p.HTTPGet; h != nil {
+		h.Path, h.Host, h.HTTPHeaders = "", "", nil
+	}
+	if h := p.TCPSocket; h != nil {
+		h.Host = ""
+	}
+	if h := p.GRPC; h != nil {
+		h.Service = nil
+	}
 }
 
 // keptEnv returns the allow-listed variables, dropping any whose value the

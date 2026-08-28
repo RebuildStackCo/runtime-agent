@@ -58,10 +58,36 @@ type ContainerPort struct {
 	Protocol string `json:"protocol,omitempty"`
 }
 
+// Probe is one of a container's probes, reduced to its schedule and the kind of
+// check it makes. What it checks — the command, the HTTP path, the headers — is
+// removed before the object is cached, so it is not here to be read
+// (ADR 0048 §1).
+//
+// The numbers are the API server's defaulted ones, which are the numbers the
+// kubelet will use: an unset `periodSeconds` arrives as 10, not as zero.
+type Probe struct {
+	// Kind is exec, httpGet, tcpSocket or grpc. Empty means the probe declares
+	// no handler, which the API server rejects — so it is a shape, not a state.
+	Kind                string `json:"kind,omitempty"`
+	InitialDelaySeconds int32  `json:"initial_delay_seconds,omitempty"`
+	PeriodSeconds       int32  `json:"period_seconds,omitempty"`
+	TimeoutSeconds      int32  `json:"timeout_seconds,omitempty"`
+	FailureThreshold    int32  `json:"failure_threshold,omitempty"`
+	SuccessThreshold    int32  `json:"success_threshold,omitempty"`
+}
+
+// Probes are a container's three probes. Each is absent when the container
+// declares none, which is the state most probe findings are about.
+type Probes struct {
+	Liveness  *Probe `json:"liveness,omitempty"`
+	Readiness *Probe `json:"readiness,omitempty"`
+	Startup   *Probe `json:"startup,omitempty"`
+}
+
 // Container is the collected view of a container: name, image, the image
 // digest once the container has started, declared resources, declared ports,
-// and the runtime knobs named in ADR 0047. Args and command are never read, and
-// neither is any other environment variable (filter early).
+// probe schedules, and the runtime knobs named in ADR 0047. Args and command
+// are never read, and neither is any other environment variable (filter early).
 type Container struct {
 	Name  string `json:"name"`
 	Image string `json:"image"`
@@ -72,6 +98,10 @@ type Container struct {
 	Init        bool            `json:"init,omitempty"`
 	Resources   Resources       `json:"resources"`
 	Ports       []ContainerPort `json:"ports,omitempty"`
+	// Probes are the container's probe schedules. A liveness probe is the one
+	// piece of a spec that can restart a healthy container on a timer, and
+	// nothing else the agent collects says it exists (ADR 0048 §1).
+	Probes Probes `json:"probes,omitzero"`
 	// RuntimeEnv holds the Go runtime knobs from the container's environment,
 	// and only those: the names are a closed list, and a variable whose value
 	// comes from a Secret or ConfigMap is not read (ADR 0047). A knob set from
@@ -137,6 +167,7 @@ type PodWatcher struct {
 	// pods by label selector, so resolving one to a workload runs through
 	// pods rather than through an owner reference.
 	podLister          corelisters.PodLister
+	svcLister          corelisters.ServiceLister
 	pdbLister          policylisters.PodDisruptionBudgetLister
 	hpaLister          autoscalinglisters.HorizontalPodAutoscalerLister
 	pvcLister          corelisters.PersistentVolumeClaimLister
@@ -275,6 +306,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	w.cronLister = factory.Batch().V1().CronJobs().Lister()
 	w.nsLister = factory.Core().V1().Namespaces().Lister()
 	w.podLister = factory.Core().V1().Pods().Lister()
+	w.svcLister = factory.Core().V1().Services().Lister()
 	w.pdbLister = factory.Policy().V1().PodDisruptionBudgets().Lister()
 	w.hpaLister = factory.Autoscaling().V2().HorizontalPodAutoscalers().Lister()
 	w.pvcLister = factory.Core().V1().PersistentVolumeClaims().Lister()
@@ -291,6 +323,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	// question: it says whether the cache ever filled, never whether it is
 	// still being fed (ADR 0035).
 	policyInformers := map[string]watchInformer{
+		"services":                   factory.Core().V1().Services().Informer(),
 		"pod_disruption_budgets":     factory.Policy().V1().PodDisruptionBudgets().Informer(),
 		"horizontal_pod_autoscalers": factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer(),
 		"persistent_volume_claims":   factory.Core().V1().PersistentVolumeClaims().Informer(),
@@ -300,6 +333,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 		"storage_classes":            factory.Storage().V1().StorageClasses().Informer(),
 	}
 	w.policySources = []policySource{
+		{name: "services", synced: factory.Core().V1().Services().Informer().HasSynced},
 		{name: "pod_disruption_budgets", synced: factory.Policy().V1().PodDisruptionBudgets().Informer().HasSynced},
 		{name: "horizontal_pod_autoscalers", synced: factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer().HasSynced},
 		{name: "persistent_volume_claims", synced: factory.Core().V1().PersistentVolumeClaims().Informer().HasSynced},
@@ -858,14 +892,14 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 		info.Containers = append(info.Containers, Container{
 			Name: c.Name, Image: c.Image, Init: true,
 			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
-			RuntimeEnv: runtimeEnvOf(&c),
+			Probes: probesOf(&c), RuntimeEnv: runtimeEnvOf(&c),
 		})
 	}
 	for _, c := range pod.Spec.Containers {
 		info.Containers = append(info.Containers, Container{
 			Name: c.Name, Image: c.Image,
 			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
-			RuntimeEnv: runtimeEnvOf(&c),
+			Probes: probesOf(&c), RuntimeEnv: runtimeEnvOf(&c),
 		})
 	}
 	return info
@@ -962,6 +996,47 @@ func portsOf(c *corev1.Container) []ContainerPort {
 		})
 	}
 	return ports
+}
+
+// probesOf reduces a container's probes to their schedules. The handlers were
+// emptied when the object entered the cache, so only the kind survives to be
+// read here (ADR 0048 §1).
+func probesOf(c *corev1.Container) Probes {
+	return Probes{
+		Liveness:  describeProbe(c.LivenessProbe),
+		Readiness: describeProbe(c.ReadinessProbe),
+		Startup:   describeProbe(c.StartupProbe),
+	}
+}
+
+func describeProbe(p *corev1.Probe) *Probe {
+	if p == nil {
+		return nil
+	}
+	return &Probe{
+		Kind:                probeKind(p),
+		InitialDelaySeconds: p.InitialDelaySeconds,
+		PeriodSeconds:       p.PeriodSeconds,
+		TimeoutSeconds:      p.TimeoutSeconds,
+		FailureThreshold:    p.FailureThreshold,
+		SuccessThreshold:    p.SuccessThreshold,
+	}
+}
+
+// probeKind names the handler a probe declares. Exactly one is set on any probe
+// the API server accepted.
+func probeKind(p *corev1.Probe) string {
+	switch {
+	case p.Exec != nil:
+		return "exec"
+	case p.HTTPGet != nil:
+		return "httpGet"
+	case p.TCPSocket != nil:
+		return "tcpSocket"
+	case p.GRPC != nil:
+		return "grpc"
+	}
+	return ""
 }
 
 // runtimeEnvOf reads the runtime knobs the cache transform kept. A knob set

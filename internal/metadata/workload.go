@@ -1,7 +1,7 @@
 // Package metadata reduces the controller's live pod index to the workload
 // metadata payload: the declared shape of every collected workload container —
-// requests, limits, QoS, declared ports, runtime knobs — and where its replicas
-// currently run.
+// requests, limits, QoS, declared ports, probe schedules, runtime knobs — how
+// its workload replaces itself, and where its replicas currently run.
 //
 // Reduction, not judgment: nothing here compares a request to an observation or
 // decides that anything is misconfigured. The package holds no state — every
@@ -80,6 +80,17 @@ type PodScope struct {
 	Placement collector.Placement `json:"placement,omitzero"`
 }
 
+// WorkloadScope holds the facts of this record that belong to the workload
+// rather than to the container and build the record is keyed by. Same reason as
+// PodScope above: the scope is visible in the payload itself, so a reader cannot
+// mistake one workload's rollout for one per container (ADR 0014).
+type WorkloadScope struct {
+	// Rollout is how the workload replaces its own replicas. Absent for a kind
+	// that has no strategy — a bare Job, a CronJob, a pod with no controller
+	// (ADR 0048 §2).
+	Rollout collector.Rollout `json:"rollout,omitzero"`
+}
+
 // Record is the declared shape of one workload container plus the placement of
 // the replicas that carry it. Every field is copied from the pod spec or
 // status; none is derived from a threshold.
@@ -99,12 +110,18 @@ type Record struct {
 	// Ports are the container's declared ports. Declaring a port is not using
 	// it; that inference belongs to the backend.
 	Ports []collector.ContainerPort `json:"ports,omitempty"`
+	// Probes are the container's probe schedules, without what any of them
+	// checks (ADR 0048 §1).
+	Probes collector.Probes `json:"probes,omitzero"`
 	// RuntimeEnv is the Go runtime knobs this container sets, from the closed
 	// list in ADR 0047. Absent means none of them is set, which is the state
 	// most findings about this field are about.
 	RuntimeEnv map[string]string `json:"runtime_env,omitempty"`
 	// Pod carries the facts that belong to the pod, not to this container.
 	Pod PodScope `json:"pod"`
+	// Workload carries the facts that belong to the whole workload, not to this
+	// container or this build.
+	Workload WorkloadScope `json:"workload,omitzero"`
 }
 
 // Aggregate reduces a pod snapshot to one record per (workload container,
@@ -112,9 +129,10 @@ type Record struct {
 // the per-record maps marshal with sorted keys, so the payload bytes are
 // deterministic — the golden contract (docs/development.md).
 //
-// Only pods the filter admitted reach this function; the identity of an
-// excluded pod never appears here, in keeping with CLAUDE.md invariant 6.
-func Aggregate(pods []collector.PodInfo) []Record {
+// rollouts is read from the workload objects, not from the pods (ADR 0048 §2);
+// a workload absent from it carries no rollout. Only pods the filter admitted
+// reach this function, so no excluded pod's identity appears (invariant 6).
+func Aggregate(pods []collector.PodInfo, rollouts map[collector.WorkloadKey]collector.Rollout) []Record {
 	byKey := make(map[Key]*Record)
 	for _, pod := range pods {
 		for _, c := range pod.Containers {
@@ -133,7 +151,13 @@ func Aggregate(pods []collector.PodInfo) []Record {
 					Init:       c.Init,
 					Resources:  c.Resources,
 					Ports:      c.Ports,
+					Probes:     c.Probes,
 					RuntimeEnv: c.RuntimeEnv,
+					Workload: WorkloadScope{Rollout: rollouts[collector.WorkloadKey{
+						Namespace: pod.Namespace,
+						Kind:      pod.Workload.Kind,
+						Name:      pod.Workload.Name,
+					}]},
 					Pod: PodScope{
 						QOSClass:    pod.QOSClass,
 						Placement:   pod.Placement,

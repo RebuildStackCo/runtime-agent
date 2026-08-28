@@ -117,7 +117,7 @@ func TestTheClusterRoleGrantsNoWriteVerb(t *testing.T) {
 // customer's cluster.
 func TestTheClusterRoleGrantsEveryCacheTheAgentOpens(t *testing.T) {
 	want := map[string][]string{
-		"":                  {"pods", "namespaces", "nodes", "limitranges", "resourcequotas", "persistentvolumeclaims"},
+		"":                  {"pods", "namespaces", "nodes", "services", "limitranges", "resourcequotas", "persistentvolumeclaims"},
 		"apps":              {"replicasets", "deployments", "statefulsets", "daemonsets"},
 		"batch":             {"jobs", "cronjobs"},
 		"policy":            {"poddisruptionbudgets"},
