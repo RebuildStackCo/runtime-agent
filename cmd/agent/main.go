@@ -363,7 +363,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		// One capture instant for both payloads of a flush: they describe the
 		// same cluster state and are joined against each other downstream.
 		capturedAt := time.Now()
-		records := metadata.Aggregate(podWatcher.Pods(), podWatcher.Rollouts())
+		records := metadata.Aggregate(podWatcher.Pods(), podWatcher.UpdateStrategies())
 		if err := spool.WriteWorkloadMetadata(capturedAt, records); err != nil {
 			logger.Error("spooling workload metadata", "error", err)
 		}

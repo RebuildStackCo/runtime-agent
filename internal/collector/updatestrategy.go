@@ -14,14 +14,15 @@ type WorkloadKey struct {
 	Name      string
 }
 
-// Rollout is how a workload replaces its own replicas: the one thing that
+// UpdateStrategy is how a workload replaces its own replicas: the one thing that
 // decides whether a routine deploy is also an outage. A budget says what an
 // eviction may take away; this says what the workload takes away from itself,
 // and no budget is consulted on that path (ADR 0048 §2).
 //
-// It is a fact of the workload, not of a pod or a build, so it is nested rather
-// than flattened onto records keyed more narrowly (ADR 0014).
-type Rollout struct {
+// It is named for Kubernetes' own field rather than for the process, because
+// `Rollout` is the kind name of a custom resource this agent reports in
+// `workload_kind` — one word for both would collide in a single record.
+type UpdateStrategy struct {
 	// Type is the strategy in Kubernetes' own vocabulary: RollingUpdate or
 	// Recreate for a Deployment, RollingUpdate or OnDelete for a StatefulSet or
 	// DaemonSet.
@@ -37,35 +38,24 @@ type Rollout struct {
 	// looks like a stalled rollout from every other angle.
 	Partition *int32 `json:"partition,omitempty"`
 	// MinReadySeconds is how long a new replica must stay ready before the
-	// rollout treats it as available. Zero is the default and is what makes a
+	// update treats it as available. Zero is the default and is what makes a
 	// crash-on-first-request roll through every replica.
 	MinReadySeconds int32 `json:"min_ready_seconds,omitempty"`
-	// Unread marks a workload whose controller is a kind the agent does not
-	// read — an Argo Rollout, a Knative Revision, an in-house operator. It is
-	// the only field set when it is true: the workload may well roll, and this
-	// says the agent did not look, which is not the same fact as a kind that
-	// does not roll at all (ADR 0048 §2, ADR 0013).
-	Unread bool `json:"unread,omitempty"`
 }
 
-// rolloutlessKinds are the kinds known to replace no replicas: nothing about
-// them is unobserved, so their absence from Rollouts is the fact itself.
-var rolloutlessKinds = map[string]bool{
-	"Job": true, "CronJob": true, "ReplicaSet": true, "none": true, "": true,
-}
-
-// Rollouts returns the update strategy of every workload with admitted pods.
-// Scope is inherited from the admitted pod index rather than decided again, as
-// with revisions (ADR 0030) and policy (ADR 0032). A kind with no strategy — a
-// bare Job, a CronJob, an owner-less pod — is absent: a shape, not a gap.
+// UpdateStrategies returns the declared strategy of every workload with admitted
+// pods whose kind the agent reads: Deployment, StatefulSet and DaemonSet. Any
+// other kind is absent, and absence claims nothing about whether that workload
+// updates itself — only that this agent did not read how (ADR 0048 §2).
 //
-// It is read at flush time and not when a pod was described, because a strategy
-// can be edited with no pod event following it.
-func (w *PodWatcher) Rollouts() map[WorkloadKey]Rollout {
-	out := make(map[WorkloadKey]Rollout)
+// Scope is inherited from the admitted pod index (ADR 0030, ADR 0032). It is
+// read at flush time and not when a pod was described, because a strategy can
+// be edited with no pod event following it.
+func (w *PodWatcher) UpdateStrategies() map[WorkloadKey]UpdateStrategy {
+	out := make(map[WorkloadKey]UpdateStrategy)
 	for key := range w.collectedWorkloadKeys() {
-		if rollout, ok := w.rolloutOf(key); ok {
-			out[key] = rollout
+		if strategy, ok := w.strategyOf(key); ok {
+			out[key] = strategy
 		}
 	}
 	return out
@@ -86,61 +76,55 @@ func (w *PodWatcher) collectedWorkloadKeys() map[WorkloadKey]struct{} {
 	return out
 }
 
-// rolloutOf reads one workload's strategy from the cache its kind lives in. The
+// strategyOf reads one workload's strategy from the cache its kind lives in. The
 // three listers are gating caches (ADR 0035), so a miss here is informer lag or
 // a workload that has just been deleted, never a permission the agent lacks.
-func (w *PodWatcher) rolloutOf(key WorkloadKey) (Rollout, bool) {
-	if rolloutlessKinds[key.Kind] {
-		return Rollout{}, false
-	}
+func (w *PodWatcher) strategyOf(key WorkloadKey) (UpdateStrategy, bool) {
 	switch key.Kind {
 	case "Deployment":
 		if w.deployLister == nil {
-			return Rollout{}, false
+			return UpdateStrategy{}, false
 		}
 		d, err := w.deployLister.Deployments(key.Namespace).Get(key.Name)
 		if err != nil {
-			return Rollout{}, false
+			return UpdateStrategy{}, false
 		}
-		r := Rollout{Type: string(d.Spec.Strategy.Type), MinReadySeconds: d.Spec.MinReadySeconds}
+		s := UpdateStrategy{Type: string(d.Spec.Strategy.Type), MinReadySeconds: d.Spec.MinReadySeconds}
 		if u := d.Spec.Strategy.RollingUpdate; u != nil {
-			r.MaxUnavailable = intOrString(u.MaxUnavailable)
-			r.MaxSurge = intOrString(u.MaxSurge)
+			s.MaxUnavailable = intOrString(u.MaxUnavailable)
+			s.MaxSurge = intOrString(u.MaxSurge)
 		}
-		return r, true
+		return s, true
 	case "StatefulSet":
 		if w.stsLister == nil {
-			return Rollout{}, false
+			return UpdateStrategy{}, false
 		}
-		s, err := w.stsLister.StatefulSets(key.Namespace).Get(key.Name)
+		sts, err := w.stsLister.StatefulSets(key.Namespace).Get(key.Name)
 		if err != nil {
-			return Rollout{}, false
+			return UpdateStrategy{}, false
 		}
-		r := Rollout{Type: string(s.Spec.UpdateStrategy.Type), MinReadySeconds: s.Spec.MinReadySeconds}
-		if u := s.Spec.UpdateStrategy.RollingUpdate; u != nil {
-			r.Partition = u.Partition
-			r.MaxUnavailable = intOrString(u.MaxUnavailable)
+		s := UpdateStrategy{Type: string(sts.Spec.UpdateStrategy.Type), MinReadySeconds: sts.Spec.MinReadySeconds}
+		if u := sts.Spec.UpdateStrategy.RollingUpdate; u != nil {
+			s.Partition = u.Partition
+			s.MaxUnavailable = intOrString(u.MaxUnavailable)
 		}
-		return r, true
+		return s, true
 	case "DaemonSet":
 		if w.dsLister == nil {
-			return Rollout{}, false
+			return UpdateStrategy{}, false
 		}
 		d, err := w.dsLister.DaemonSets(key.Namespace).Get(key.Name)
 		if err != nil {
-			return Rollout{}, false
+			return UpdateStrategy{}, false
 		}
-		r := Rollout{Type: string(d.Spec.UpdateStrategy.Type), MinReadySeconds: d.Spec.MinReadySeconds}
+		s := UpdateStrategy{Type: string(d.Spec.UpdateStrategy.Type), MinReadySeconds: d.Spec.MinReadySeconds}
 		if u := d.Spec.UpdateStrategy.RollingUpdate; u != nil {
-			r.MaxUnavailable = intOrString(u.MaxUnavailable)
-			r.MaxSurge = intOrString(u.MaxSurge)
+			s.MaxUnavailable = intOrString(u.MaxUnavailable)
+			s.MaxSurge = intOrString(u.MaxSurge)
 		}
-		return r, true
+		return s, true
 	}
-	// A custom resource. Reading it would need RBAC on arbitrary CRDs, which
-	// this product does not ask for (docs/security.md §11), so what the agent
-	// can honestly say is that it did not look.
-	return Rollout{Unread: true}, true
+	return UpdateStrategy{}, false
 }
 
 // intOrString renders a declaration that may be a count or a percentage as it

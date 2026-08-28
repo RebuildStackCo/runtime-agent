@@ -1,7 +1,7 @@
 // Package metadata reduces the controller's live pod index to the workload
 // metadata payload: the declared shape of every collected workload container —
 // requests, limits, QoS, declared ports, probe schedules, runtime knobs — how
-// its workload replaces itself, and where its replicas currently run.
+// its workload updates itself, and where its replicas currently run.
 //
 // Reduction, not judgment: nothing here compares a request to an observation or
 // decides that anything is misconfigured. The package holds no state — every
@@ -83,12 +83,12 @@ type PodScope struct {
 // WorkloadScope holds the facts of this record that belong to the workload
 // rather than to the container and build the record is keyed by. Same reason as
 // PodScope above: the scope is visible in the payload itself, so a reader cannot
-// mistake one workload's rollout for one per container (ADR 0014).
+// mistake one workload's strategy for one per container (ADR 0014).
 type WorkloadScope struct {
-	// Rollout is how the workload replaces its own replicas. Absent for a kind
-	// that has no strategy — a bare Job, a CronJob, a pod with no controller
-	// (ADR 0048 §2).
-	Rollout collector.Rollout `json:"rollout,omitzero"`
+	// UpdateStrategy is how the workload replaces its own replicas, for the
+	// kinds the agent reads. Absent for every other kind, and absence says only
+	// that the agent did not read one (ADR 0048 §2).
+	UpdateStrategy collector.UpdateStrategy `json:"update_strategy,omitzero"`
 }
 
 // Record is the declared shape of one workload container plus the placement of
@@ -129,10 +129,10 @@ type Record struct {
 // the per-record maps marshal with sorted keys, so the payload bytes are
 // deterministic — the golden contract (docs/development.md).
 //
-// rollouts is read from the workload objects, not from the pods (ADR 0048 §2);
-// a workload absent from it carries no rollout. Only pods the filter admitted
-// reach this function, so no excluded pod's identity appears (invariant 6).
-func Aggregate(pods []collector.PodInfo, rollouts map[collector.WorkloadKey]collector.Rollout) []Record {
+// strategies is read from the workload objects, not from the pods (ADR 0048 §2);
+// a workload absent from it carries none. Only pods the filter admitted reach
+// this function, so no excluded pod's identity appears (invariant 6).
+func Aggregate(pods []collector.PodInfo, strategies map[collector.WorkloadKey]collector.UpdateStrategy) []Record {
 	byKey := make(map[Key]*Record)
 	for _, pod := range pods {
 		for _, c := range pod.Containers {
@@ -153,7 +153,7 @@ func Aggregate(pods []collector.PodInfo, rollouts map[collector.WorkloadKey]coll
 					Ports:      c.Ports,
 					Probes:     c.Probes,
 					RuntimeEnv: c.RuntimeEnv,
-					Workload: WorkloadScope{Rollout: rollouts[collector.WorkloadKey{
+					Workload: WorkloadScope{UpdateStrategy: strategies[collector.WorkloadKey{
 						Namespace: pod.Namespace,
 						Kind:      pod.Workload.Kind,
 						Name:      pod.Workload.Name,

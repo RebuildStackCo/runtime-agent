@@ -11,6 +11,10 @@ Services to `workload_policy`, and a version to each module in `go_build`. Adds
 one resource to the ClusterRole (`services`). Extends the informer transform of
 ADR 0046 to the probe handlers, which were being cached whole.
 
+*Corrected 2026-08-28, the day it was accepted and before any release: §2 first
+named the field `rollout` and gave unread kinds an `unread` marker. The first
+run against a real cluster refuted both — see §2.*
+
 ## Context
 
 Every decision here so far has answered the same question one fact at a time:
@@ -62,22 +66,35 @@ The kind is kept and the target is not, because the finding asks whether two
 probes are the same check, not what either calls. The numbers are the API
 server's defaulted ones, which are the numbers the kubelet will use.
 
-**2. The workload's update strategy ships in a `workload` scope block.** Type,
+**2. The workload's update strategy ships as `workload.update_strategy`.** Type,
 `maxUnavailable`, `maxSurge`, a StatefulSet's `partition`, and
 `minReadySeconds`, read from the Deployment, StatefulSet or DaemonSet the pods
-belong to.
+belong to. Those three kinds and no others.
 
-Absence has to answer two different questions, and one flag separates them. A
-Job, a CronJob, a bare ReplicaSet and an owner-less pod replace no replicas, so
-they carry no rollout and that absence is the fact. A pod managed by a custom
-resource — an Argo Rollout, a Knative Revision, an in-house operator — is the
-opposite case: it almost certainly *does* roll, and the agent holds no RBAC to
-read how (`docs/security.md` §11). Reporting nothing there would state "this
-does not roll", which is worse than silence. Those records carry
-`rollout: {unread: true}` and nothing else — ADR 0013's rule that the agent
-reports what it observed rather than what it concluded, applied to a structural
-payload. This is the case a first-hour report must not get wrong quietly: Argo
-Rollouts is common, and the finding is about exactly the workloads it manages.
+**The field is not called `rollout`, and that is a decision rather than a
+preference.** `Rollout` is the kind name of the Argo custom resource, which this
+agent already reports in `workload_kind`. One record carrying
+`workload_kind: Rollout` beside a field called `rollout` puts two meanings of
+one word in one object, and the generic English noun is the one that loses.
+`updateStrategy` is Kubernetes' own field name on StatefulSet and DaemonSet, so
+it is borrowed rather than invented.
+
+**Absence means the agent did not read a strategy, and claims nothing beyond
+that.** The first version of this decision tried to say more: kinds known to
+replace no replicas carried nothing, and everything else carried
+`rollout: {unread: true}` so that a Job could be told from an Argo Rollout. That
+was wrong twice over, and one run against a real cluster showed both. It needs a
+complete list of owner kinds that do not update themselves, which nobody has —
+the list omitted `Node`, so every static control-plane pod on a self-managed
+cluster was reported as having an update strategy the agent had failed to read.
+And the claim itself is a judgement: whether an unknown custom resource updates
+its replicas is not something the agent observes, and this agent reduces rather
+than concludes (ADR 0004).
+
+What distinguishes the cases is already in the record. `workload_kind` ships in
+the key, the kinds this agent reads are three and are named in
+`docs/backend-requirements.md`, and what any other kind implies is a rendering
+question for the side that renders.
 
 It is a fact of the workload, and the record's key is narrower than that, so it
 is nested and not flattened (ADR 0014) — a `workload` object beside the existing
@@ -161,9 +178,9 @@ No CRD is read, and the closed ClusterRole that §9 of `docs/security.md` leans
 on gains no vendor resource. Reading Argo Rollouts properly is a larger decision
 than a field — a first custom-resource grant, an informer for a kind that may not
 exist in the cluster, and a strategy whose canary and blue-green shapes are not
-this struct — so it is left to its own ADR. What this one owes is that the gap is
-legible from the payload rather than inferred from a list of kinds the backend
-would have to keep in step with the agent.
+this struct — so it is left to its own ADR. Until then the rollout dimension of a
+first-hour report is blank for an Argo-managed workload, and blank is what the
+payload says.
 
 **Not changed.** No new payload kind, no registry row, no change to any natural
 key, no verb that writes, no new privilege on the node, and nothing new is read
