@@ -65,6 +65,10 @@
       "resources": {
         "cpu_request_milli": 1000
       },
+      "runtime_env": {
+        "GOMAXPROCS": "resource:limits.cpu",
+        "GOMEMLIMIT": "900MiB"
+      },
       "pod": {
         "qos_class": "Burstable",
         "replicas": 1,

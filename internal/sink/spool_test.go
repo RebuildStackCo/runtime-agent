@@ -697,6 +697,15 @@ func fixedWorkloadMetadata() []metadata.Record {
 			// No limits declared: nil must stay absent from the payload, never
 			// flatten to zero.
 			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](1000)},
+			// One knob written inline and one derived from the container's own
+			// limits, which is the form the downward API gives it: the spec
+			// holds no value, so the payload names the field it reads
+			// (ADR 0047). The sidecar below sets neither, and its record must
+			// carry no `runtime_env` at all.
+			RuntimeEnv: map[string]string{
+				"GOMAXPROCS": "resource:limits.cpu",
+				"GOMEMLIMIT": "900MiB",
+			},
 			// The new build's replica is Pending with no node — and the reason
 			// is in the payload, so the shortfall between Replicas and Nodes is
 			// explained rather than merely visible (ADR 0021).

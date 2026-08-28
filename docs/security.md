@@ -464,7 +464,7 @@ VCS hostname and the layout of your source tree. Line numbers are kept.
 
 ## 8. Data collected and data leaving the cluster
 
-This is usually the most important section for review. Data falls into three
+This is usually the most important section for review. Data falls into four
 classes with different sensitivity and different default policies:
 
 | Data class | Examples | Sensitivity | Default policy |
@@ -491,7 +491,7 @@ appearing here (ADR 0022).
 | `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
 | `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
-| `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
+| `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, the five runtime knobs of the field-minimization list below, QoS, replica counts by phase, by node, and by unscheduled reason, and the pod's reduced placement constraints (ADR 0031) | no |
 | `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, and the volume claims its pods mount (ADR 0032); plus `unavailable_sources`, naming any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035) | not directly — but a claim is named, and a StatefulSet's claim is `<template>-<set>-<ordinal>`, so `data-db-0` identifies pod `db-0` (ADR 0039) |
 | `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035). StorageClass `parameters` are never read | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture. The **name** is your cluster's, and on EKS and on GKE's legacy naming it encodes the node's private address — `ip-10-42-13-201.eu-west-1.compute.internal`. The agent reads no address field; the name it does read may be one (ADR 0039) | no |
@@ -500,11 +500,9 @@ appearing here (ADR 0022).
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
 
 Each declares its provenance in a `source` field — `structural` (read from a
-spec), `measured` (polled from the kubelet), `journal` (from object history), or
-`sampled` (a profiler's estimate) — so the backend can never merge
-epistemically different data under one key
-([ADR 0012](adr/0012-payload-registry-and-provenance.md)). The rest of this
-section describes each in detail.
+spec), `measured` (polled from the kubelet), `journal` (from object history) or
+`sampled` (a profiler's estimate)
+([ADR 0012](adr/0012-payload-registry-and-provenance.md)).
 
 ### Field minimization
 
@@ -521,14 +519,20 @@ section describes each in detail.
   carries a cloud account identifier, a region, your repository taxonomy, and
   whatever your CI writes into a tag.
 - From pod specs: `metadata`, `spec.containers[].resources` and `[].ports`, the
-  nine placement fields below, `ownerReferences`, and `status`. `env`, `envFrom`,
-  `args` and `command` are removed as each object arrives, before it enters the
-  agent's cache, because they frequently contain inline credentials — so they are
-  not held in memory either, not merely kept out of payloads
+  nine placement fields below, `ownerReferences`, and `status`. `envFrom`, `args`
+  and `command` are removed as each object arrives, before it enters the agent's
+  cache, so they are not held in memory either, not merely kept out of payloads
   ([ADR 0046](adr/0046-the-cache-is-the-source.md)). The
-  `kubectl.kubernetes.io/last-applied-configuration` annotation is dropped with
-  them: it is a verbatim copy of the object as applied, environment included.
-  From `status`: the image digest, the
+  `kubectl.kubernetes.io/last-applied-configuration` annotation goes with them —
+  a verbatim copy of the object as applied, environment included.
+- **Five environment variables are kept by name, and no other one is**
+  ([ADR 0047](adr/0047-runtime-knobs-are-named-and-kept.md)): `GOMAXPROCS`,
+  `GOGC`, `GOMEMLIMIT`, `GODEBUG`, `GOTRACEBACK`. They ship in
+  `workload_metadata` as `runtime_env`. The list is in code, not in your values
+  file. One of them whose value comes from a `secretKeyRef` or `configMapKeyRef`
+  is **not** read; one read from the container's own limits ships as the field
+  path (`resource:limits.cpu`), never as a resolved value.
+- From `status`: the image digest, the
   restart counter, a terminated state's reason and exit code, the reason and
   transition time of exactly two conditions — `PodScheduled` and
   `DisruptionTarget` — and `status.reason` when it says `Evicted`. Nothing else.
