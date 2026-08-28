@@ -96,7 +96,7 @@ func createPolicyFixtures(ctx context.Context, t *testing.T, cs kubernetes.Inter
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(int32(2)),
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
-			// A rollout that replaces everything at once. No eviction is
+			// An update that replaces everything at once. No eviction is
 			// involved, so the budget above does not bound it (ADR 0048 §2).
 			Strategy: appsv1.DeploymentStrategy{
 				Type: appsv1.RollingUpdateDeploymentStrategyType,
@@ -541,7 +541,7 @@ func waitForSpoolJSON(ctx context.Context, t *testing.T, config *rest.Config, cs
 
 // checkWorkloadShapeReported is the other half of ADR 0048: the two facts that
 // ride in `workload_metadata` rather than in the policy payload — the probe
-// schedule, without the command the probe runs, and the rollout the workload
+// schedule, without the command the probe runs, and the update the workload
 // performs on itself.
 func checkWorkloadShapeReported(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, fixtureNS string) {
 	t.Helper()
@@ -559,11 +559,11 @@ func checkWorkloadShapeReported(ctx context.Context, t *testing.T, config *rest.
 				} `json:"liveness"`
 			} `json:"probes"`
 			Workload struct {
-				Rollout struct {
+				UpdateStrategy struct {
 					Type           string `json:"type"`
 					MaxUnavailable string `json:"max_unavailable"`
 					MaxSurge       string `json:"max_surge"`
-				} `json:"rollout"`
+				} `json:"update_strategy"`
 			} `json:"workload"`
 		} `json:"records"`
 	}
@@ -591,9 +591,9 @@ func checkWorkloadShapeReported(ctx context.Context, t *testing.T, config *rest.
 	if probe.Kind != "exec" || probe.PeriodSeconds != 11 || probe.FailureThreshold != 4 {
 		t.Errorf("liveness probe = %+v, want the exec schedule the fixture declared", probe)
 	}
-	rollout := record.Workload.Rollout
-	if rollout.Type != "RollingUpdate" || rollout.MaxUnavailable != "100%" || rollout.MaxSurge != "0" {
-		t.Errorf("rollout = %+v, want the declared 100%%/0 rolling update", rollout)
+	strategy := record.Workload.UpdateStrategy
+	if strategy.Type != "RollingUpdate" || strategy.MaxUnavailable != "100%" || strategy.MaxSurge != "0" {
+		t.Errorf("update strategy = %+v, want the declared 100%%/0 rolling update", strategy)
 	}
 
 	// The whole payload, not this record: a probe command must not reach the
@@ -605,7 +605,7 @@ func checkWorkloadShapeReported(ctx context.Context, t *testing.T, config *rest.
 	if strings.Contains(raw, probeSecret) {
 		t.Error("the probe's exec command reached the spool; it must be cleared before the object is cached")
 	}
-	t.Logf("shape of %s/web: liveness %s every %ds ×%d, rollout %s %s/%s, and the probe command is absent",
+	t.Logf("shape of %s/web: liveness %s every %ds ×%d, update strategy %s %s/%s, and the probe command is absent",
 		fixtureNS, probe.Kind, probe.PeriodSeconds, probe.FailureThreshold,
-		rollout.Type, rollout.MaxUnavailable, rollout.MaxSurge)
+		strategy.Type, strategy.MaxUnavailable, strategy.MaxSurge)
 }

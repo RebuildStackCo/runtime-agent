@@ -656,9 +656,9 @@ func TestGoBuildRejectsMissingDigest(t *testing.T) {
 // The workload block repeats on every record for the same reason the pod block
 // does, and the golden is what shows it (ADR 0014).
 func fixedWorkloadMetadata() []metadata.Record {
-	// A rollout that replaces a quarter of the fleet at a time and waits no
+	// A strategy that replaces a quarter of the fleet at a time and waits no
 	// time at all before calling a new replica available (ADR 0048 §2).
-	rolling := metadata.WorkloadScope{Rollout: collector.Rollout{
+	rolling := metadata.WorkloadScope{UpdateStrategy: collector.UpdateStrategy{
 		Type:           "RollingUpdate",
 		MaxUnavailable: "25%",
 		MaxSurge:       "25%",
@@ -779,10 +779,9 @@ func fixedWorkloadMetadata() []metadata.Record {
 			Workload:  rolling,
 		},
 		{
-			// An Argo Rollout: it has an update strategy and the agent holds no
-			// RBAC to read it. The golden carries this shape because absence
-			// would say "this does not roll", which is the opposite of true
-			// (ADR 0048 §2).
+			// A workload whose kind the agent does not read — here an Argo
+			// Rollout. The golden carries it to pin the shape: no `workload`
+			// block at all, and no field standing in for one (ADR 0048 §2).
 			Key: metadata.Key{
 				Namespace: "shop", WorkloadKind: "Rollout", WorkloadName: "payments",
 				Container:   "app",
@@ -796,7 +795,6 @@ func fixedWorkloadMetadata() []metadata.Record {
 				Phases:   map[string]int{"Running": 1},
 				Nodes:    map[string]int{"node-1": 1},
 			},
-			Workload: metadata.WorkloadScope{Rollout: collector.Rollout{Unread: true}},
 		},
 	}
 }

@@ -279,11 +279,11 @@ was taken away, which is the normal state.
 **`workload_metadata.workload` and `.pod` are two different scopes, and neither
 is per record** (ADR 0014). A pod's containers each produce a record repeating
 both blocks, so **the backend MUST NOT sum either across one workload's
-records**. `rollout` is absent for a kind that replaces no replicas — a Job, a
-CronJob, a bare ReplicaSet, an owner-less pod — and MUST NOT be rendered as one
-that replaces everything at once. A `rollout` carrying only `unread: true` is a
-workload managed by a custom resource the agent holds no RBAC for, such as an
-Argo Rollout: **unobserved, not absent**, and MUST NOT be read as no strategy.
+records**. `workload.update_strategy` is present only for `workload_kind` of
+`Deployment`, `StatefulSet` or `DaemonSet` — the kinds the agent reads. For every
+other kind it is absent, and **the backend MUST NOT read that absence as "this
+workload has no update strategy"**: an Argo Rollout has one and the agent holds
+no RBAC for it. Absence says only that the agent did not read one.
 
 **`workload_metadata.pod.unscheduled` explains the replica shortfall, it does
 not restate it.** The gap between `replicas` and the sum of `nodes` has always

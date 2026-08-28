@@ -330,21 +330,21 @@ func TestAggregateOmitsPlacementForAnUnconstrainedWorkload(t *testing.T) {
 	}
 }
 
-// A workload whose kind has no update strategy carries no `workload` object at
-// all. A block of zeros would read as a rollout that replaces every replica at
-// once, which is the opposite of what an absent strategy means (ADR 0048 §2).
-func TestARecordWithNoRolloutCarriesNoWorkloadObject(t *testing.T) {
-	withRollout := Aggregate([]collector.PodInfo{
+// A workload whose strategy the agent did not read carries no `workload` object
+// at all. A block of zeros would read as a strategy that replaces every replica
+// at once, which is not what the agent observed (ADR 0048 §2).
+func TestARecordWithNoStrategyCarriesNoWorkloadObject(t *testing.T) {
+	withStrategy := Aggregate([]collector.PodInfo{
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
-	}, map[collector.WorkloadKey]collector.Rollout{
+	}, map[collector.WorkloadKey]collector.UpdateStrategy{
 		{Namespace: "acme", Kind: "Deployment", Name: "api"}: {Type: "RollingUpdate"},
 	})
-	encoded, err := json.Marshal(withRollout)
+	encoded, err := json.Marshal(withStrategy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), `"workload":{"rollout":{"type":"RollingUpdate"}}`) {
-		t.Fatalf("a known rollout must ship nested under workload: %s", encoded)
+	if !strings.Contains(string(encoded), `"workload":{"update_strategy":{"type":"RollingUpdate"}}`) {
+		t.Fatalf("a strategy the agent read must ship nested under workload: %s", encoded)
 	}
 
 	without := Aggregate([]collector.PodInfo{
@@ -355,6 +355,6 @@ func TestARecordWithNoRolloutCarriesNoWorkloadObject(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(encoded), `"workload"`) {
-		t.Errorf("a record with no rollout still carries a workload object: %s", encoded)
+		t.Errorf("a record with no strategy still carries a workload object: %s", encoded)
 	}
 }

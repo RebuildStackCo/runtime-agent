@@ -23,7 +23,7 @@ func ownedPod(name, kind, owner string) *corev1.Pod {
 	return p
 }
 
-func rolloutWatcher(t *testing.T, objects ...runtime.Object) *PodWatcher {
+func strategyWatcher(t *testing.T, objects ...runtime.Object) *PodWatcher {
 	t.Helper()
 	watcher := NewPodWatcher(fake.NewClientset(objects...), func(PodInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -36,7 +36,7 @@ func rolloutWatcher(t *testing.T, objects ...runtime.Object) *PodWatcher {
 // Each kind states its strategy in its own field, and the reduction has to reach
 // all three: a Deployment's `strategy`, a StatefulSet's and a DaemonSet's
 // `updateStrategy` (ADR 0048 §2).
-func TestRolloutsReadEveryKindThatHasAStrategy(t *testing.T) {
+func TestUpdateStrategiesReadEveryKindTheAgentKnows(t *testing.T) {
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web"},
 		Spec: appsv1.DeploymentSpec{
@@ -65,16 +65,16 @@ func TestRolloutsReadEveryKindThatHasAStrategy(t *testing.T) {
 			UpdateStrategy: appsv1.DaemonSetUpdateStrategy{Type: appsv1.OnDeleteDaemonSetStrategyType},
 		},
 	}
-	watcher := rolloutWatcher(t,
+	watcher := strategyWatcher(t,
 		deployment, statefulSet, daemonSet,
 		ownedPod("web-1", "Deployment", "web"),
 		ownedPod("db-0", "StatefulSet", "db"),
 		ownedPod("logs-xyz", "DaemonSet", "logs"),
 	)
-	waitFor(t, 5*time.Second, "three rollouts", func() bool { return len(watcher.Rollouts()) == 3 })
+	waitFor(t, 5*time.Second, "three strategies", func() bool { return len(watcher.UpdateStrategies()) == 3 })
 
-	got := watcher.Rollouts()
-	for key, want := range map[WorkloadKey]Rollout{
+	got := watcher.UpdateStrategies()
+	for key, want := range map[WorkloadKey]UpdateStrategy{
 		{Namespace: "shop", Kind: "Deployment", Name: "web"}: {
 			Type: "RollingUpdate", MaxUnavailable: "25%", MaxSurge: "1", MinReadySeconds: 30,
 		},
@@ -83,17 +83,17 @@ func TestRolloutsReadEveryKindThatHasAStrategy(t *testing.T) {
 		},
 		{Namespace: "shop", Kind: "DaemonSet", Name: "logs"}: {Type: "OnDelete"},
 	} {
-		rollout, ok := got[key]
+		strategy, ok := got[key]
 		if !ok {
-			t.Errorf("%s/%s has no rollout", key.Kind, key.Name)
+			t.Errorf("%s/%s has no update strategy", key.Kind, key.Name)
 			continue
 		}
-		if rollout.Type != want.Type || rollout.MaxUnavailable != want.MaxUnavailable ||
-			rollout.MaxSurge != want.MaxSurge || rollout.MinReadySeconds != want.MinReadySeconds {
-			t.Errorf("%s/%s rollout = %+v, want %+v", key.Kind, key.Name, rollout, want)
+		if strategy.Type != want.Type || strategy.MaxUnavailable != want.MaxUnavailable ||
+			strategy.MaxSurge != want.MaxSurge || strategy.MinReadySeconds != want.MinReadySeconds {
+			t.Errorf("%s/%s strategy = %+v, want %+v", key.Kind, key.Name, strategy, want)
 		}
-		if (rollout.Partition == nil) != (want.Partition == nil) {
-			t.Errorf("%s/%s partition = %v, want %v", key.Kind, key.Name, rollout.Partition, want.Partition)
+		if (strategy.Partition == nil) != (want.Partition == nil) {
+			t.Errorf("%s/%s partition = %v, want %v", key.Kind, key.Name, strategy.Partition, want.Partition)
 		}
 	}
 }
@@ -101,7 +101,7 @@ func TestRolloutsReadEveryKindThatHasAStrategy(t *testing.T) {
 // A percentage and a count are not interchangeable when the replica count moves,
 // so both are kept as the operator wrote them — the treatment a budget already
 // gets (ADR 0032).
-func TestRolloutKeepsPercentAndCountAsWritten(t *testing.T) {
+func TestUpdateStrategyKeepsPercentAndCountAsWritten(t *testing.T) {
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web"},
 		Spec: appsv1.DeploymentSpec{Strategy: appsv1.DeploymentStrategy{
@@ -112,50 +112,34 @@ func TestRolloutKeepsPercentAndCountAsWritten(t *testing.T) {
 			},
 		}},
 	}
-	watcher := rolloutWatcher(t, deployment, ownedPod("web-1", "Deployment", "web"))
-	waitFor(t, 5*time.Second, "the deployment rollout", func() bool { return len(watcher.Rollouts()) == 1 })
+	watcher := strategyWatcher(t, deployment, ownedPod("web-1", "Deployment", "web"))
+	waitFor(t, 5*time.Second, "the deployment strategy", func() bool { return len(watcher.UpdateStrategies()) == 1 })
 
-	got := watcher.Rollouts()[WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}]
+	got := watcher.UpdateStrategies()[WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}]
 	if got.MaxUnavailable != "0" || got.MaxSurge != "100%" {
 		t.Errorf("maxUnavailable/maxSurge = %q/%q, want \"0\"/\"100%%\"", got.MaxUnavailable, got.MaxSurge)
 	}
 }
 
-// A kind with no update strategy is absent rather than present and empty: a
-// bare Job does not roll, and reporting a zero rollout for it would read as one
-// that takes everything down at once.
-func TestRolloutsAreAbsentForKindsThatDoNotRoll(t *testing.T) {
-	watcher := rolloutWatcher(t, ownedPod("nightly-1", "Job", "nightly"))
-	if got := watcher.Rollouts(); len(got) != 0 {
-		t.Errorf("rollouts = %v, want none for a Job's pod", got)
-	}
-}
-
-// An Argo Rollout is the case absence would answer wrongly. It has an update
-// strategy; the agent holds no RBAC to read it. Reporting nothing would say
-// "this does not roll", which is the opposite of true — so it says it did not
-// look (ADR 0048 §2).
-func TestAControllerTheAgentCannotReadSaysSoRatherThanNothing(t *testing.T) {
-	watcher := rolloutWatcher(t, ownedPod("payments-1", "Rollout", "payments"))
-	key := WorkloadKey{Namespace: "shop", Kind: "Rollout", Name: "payments"}
-	waitFor(t, 5*time.Second, "the unread marker", func() bool {
-		_, ok := watcher.Rollouts()[key]
-		return ok
-	})
-
-	got := watcher.Rollouts()[key]
-	if !got.Unread {
-		t.Errorf("rollout = %+v, want it marked unread", got)
-	}
-	if got.Type != "" || got.MaxUnavailable != "" || got.MaxSurge != "" || got.MinReadySeconds != 0 {
-		t.Errorf("rollout = %+v; an unread controller must state nothing else", got)
+// Every kind the agent does not read is absent, and the agent says nothing more
+// about it. A Job replaces no replicas; an Argo Rollout almost certainly does
+// and holds its strategy in a custom resource this agent has no RBAC for. The
+// agent cannot tell those apart, so it claims neither — which kind a reader is
+// looking at is in `workload_kind`, and what that kind implies is a rendering
+// (ADR 0004, ADR 0048 §2).
+func TestKindsTheAgentDoesNotReadAreAbsentAndUnclaimed(t *testing.T) {
+	for _, kind := range []string{"Job", "Rollout", "Node"} {
+		watcher := strategyWatcher(t, ownedPod("pod-1", kind, "owner"))
+		if got := watcher.UpdateStrategies(); len(got) != 0 {
+			t.Errorf("%s: strategies = %v, want none — and no marker standing in for one", kind, got)
+		}
 	}
 }
 
 // The strategy is read when the payload is built, not when a pod was described.
-// Editing `maxUnavailable` alone rolls nothing, so a value cached at describe
+// Editing `maxUnavailable` alone updates nothing, so a value cached at describe
 // time would stay wrong until something unrelated happened to the pods.
-func TestRolloutFollowsAnEditThatCausesNoPodEvent(t *testing.T) {
+func TestUpdateStrategyFollowsAnEditThatCausesNoPodEvent(t *testing.T) {
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web"},
 		Spec: appsv1.DeploymentSpec{Strategy: appsv1.DeploymentStrategy{
@@ -165,9 +149,9 @@ func TestRolloutFollowsAnEditThatCausesNoPodEvent(t *testing.T) {
 			},
 		}},
 	}
-	watcher := rolloutWatcher(t, deployment, ownedPod("web-1", "Deployment", "web"))
+	watcher := strategyWatcher(t, deployment, ownedPod("web-1", "Deployment", "web"))
 	key := WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}
-	waitFor(t, 5*time.Second, "the declared quarter", func() bool { return watcher.Rollouts()[key].MaxUnavailable == "25%" })
+	waitFor(t, 5*time.Second, "the declared quarter", func() bool { return watcher.UpdateStrategies()[key].MaxUnavailable == "25%" })
 
 	updated := deployment.DeepCopy()
 	updated.Spec.Strategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromString("100%"))
@@ -175,5 +159,5 @@ func TestRolloutFollowsAnEditThatCausesNoPodEvent(t *testing.T) {
 		Update(context.Background(), updated, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 5*time.Second, "the edit to reach the payload", func() bool { return watcher.Rollouts()[key].MaxUnavailable == "100%" })
+	waitFor(t, 5*time.Second, "the edit to reach the payload", func() bool { return watcher.UpdateStrategies()[key].MaxUnavailable == "100%" })
 }
