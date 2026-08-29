@@ -376,7 +376,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		// a consumer pair a revision with a shape from a different moment
 		// (ADR 0030).
 		revisionRecords := revisions.Aggregate(podWatcher.ReplicaSets())
-		if err := spool.WriteDeploymentRevisions(capturedAt, revisionRecords); err != nil {
+		if err := spool.WriteWorkloadRevisions(capturedAt, revisionRecords); err != nil {
 			logger.Error("spooling deployment revisions", "error", err)
 		}
 		// Policy rides the same instant for the same reason: what bounds a

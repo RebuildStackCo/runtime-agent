@@ -1,5 +1,5 @@
-// Package revisions reduces the controller's ReplicaSet view to the deployment
-// revisions payload: which builds of a Deployment exist, when each appeared, and
+// Package revisions reduces the controller's ReplicaSet view to the workload
+// revisions payload: which builds of a workload exist, when each appeared, and
 // how many replicas each is carrying.
 //
 // Reduction, not judgment: nothing here decides that a rollout is stuck or that
@@ -36,8 +36,8 @@ type Replicas struct {
 	Ready   int32 `json:"ready"`
 }
 
-// Record is one revision of one Deployment: the ReplicaSet the Deployment
-// controller created for it, what it runs, and what it is carrying.
+// Record is one revision of one workload: the ReplicaSet its controller created
+// for it, what it runs, and what it is carrying.
 //
 // This is the payload's whole purpose: a usage change with no attributable
 // cause is an observation, and a usage change next to "revision 47 appeared two
@@ -51,7 +51,9 @@ type Record struct {
 	// record describes in their own cluster.
 	Name string `json:"name"`
 	// Revision is the Deployment controller's revision number, absent when the
-	// annotation was missing or unparseable. Absent is a state, not a zero.
+	// annotation was missing or unparseable and absent for every other kind of
+	// controller (ADR 0049 §3). Absent is a state, not a zero; `created_at`
+	// orders the revisions it does not number.
 	Revision *int64 `json:"revision,omitempty"`
 	// CreatedAt is when the ReplicaSet was created, which is when this revision
 	// first existed — **not** when it became active. A rollback reuses the
@@ -67,7 +69,7 @@ type Record struct {
 // namespace, then workload, then revision, so the payload bytes are
 // deterministic — the golden contract (docs/development.md).
 //
-// Only ReplicaSets of Deployments with admitted pods reach this function; the
+// Only ReplicaSets of workloads with admitted pods reach this function; the
 // identity of an excluded workload never appears here, in keeping with
 // CLAUDE.md invariant 6.
 func Aggregate(sets []collector.ReplicaSetInfo) []Record {
@@ -96,14 +98,21 @@ func Aggregate(sets []collector.ReplicaSetInfo) []Record {
 		if a.Namespace != b.Namespace {
 			return a.Namespace < b.Namespace
 		}
+		if a.Workload.Kind != b.Workload.Kind {
+			return a.Workload.Kind < b.Workload.Kind
+		}
 		if a.Workload.Name != b.Workload.Name {
 			return a.Workload.Name < b.Workload.Name
 		}
 		// A missing revision sorts before any numbered one, so the ordering is
-		// total even on a ReplicaSet the Deployment controller never annotated.
+		// total even on a ReplicaSet nothing annotated. Unnumbered revisions
+		// then fall back to age, which is what orders them for a reader too.
 		ai, bi := revisionOrZero(a.Revision), revisionOrZero(b.Revision)
 		if ai != bi {
 			return ai < bi
+		}
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
 		}
 		return a.Name < b.Name
 	})

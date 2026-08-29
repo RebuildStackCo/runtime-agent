@@ -489,7 +489,7 @@ test fails if a kind ships without appearing here (ADR 0022).
 | `restart_counters` | Per flush: for each collected container that has ever restarted, the kubelet's restart counter as the agent last observed it, how much of it the agent has watched and since when, when the pod was created, how long the current incarnation has been running, and the reason, exit code and instant of the most recent termination. The counter and the watched-since figure are read from one observation, so their difference is never negative (ADR 0043) | **yes** |
 | `pod_disruptions` | Per hour: the pods the *cluster* removed — preempted, evicted under node pressure, drained, or removed via the eviction API — with the node and the instant | **yes** |
 | `job_runs` | Per hour: each Job that finished — when it started and finished, whether it succeeded, the failure reason, its pod success/failure counts, and its declared `parallelism`/`completions`/`backoffLimit` | **yes** |
-| `deployment_revisions` | Per flush: each ReplicaSet of a collected Deployment — its revision number, when it was created, its desired/current/ready replica counts, and each container's image reference | **yes** |
+| `workload_revisions` | Per flush: each ReplicaSet of a collected workload that manages ReplicaSets — a Deployment, or a custom resource such as an Argo Rollout ([ADR 0049](adr/0049-revisions-are-not-only-deployments.md)) — with when it was created, its desired/current/ready replica counts, each container's image reference, and a revision number for a Deployment only | **yes** |
 | `workload_metadata` | Declared shape per (namespace, workload, container, image digest): image, requests, limits, ports, probe schedules without what any probe checks, the five runtime knobs of the field-minimization list below, QoS, replica counts by phase, by node, and by unscheduled reason, the pod's reduced placement constraints (ADR 0031), and — for a Deployment, StatefulSet or DaemonSet — the update strategy by which the workload replaces its own replicas ([ADR 0048](adr/0048-findings-name-the-fields-they-need.md)). A workload of any other kind carries no strategy and nothing standing in for one | no |
 | `workload_policy` | Per collected workload, what bounds it from outside its own spec: disruption budgets covering it, autoscalers driving it, the volume claims its pods mount (ADR 0032), and the Services routing to it (ADR 0048); plus `unavailable_sources`, naming any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035) | not directly — but a claim is named, and a StatefulSet's claim is `<template>-<set>-<ordinal>`, so `data-db-0` identifies pod `db-0` (ADR 0039) |
 | `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035). StorageClass `parameters` are never read | no |
@@ -589,11 +589,12 @@ recognized rather than assumed current.
 
 ### Object history, and the one place pods are named (ADR 0020)
 
-`deployment_revisions` names ReplicaSets, which your cluster created and named.
-Deployments only — StatefulSet and DaemonSet revisions live in
-`controllerrevisions`, which the agent has no RBAC for — and a Deployment appears
-only while it has collected pods, read from the same admitted index everything
-else uses ([ADR 0030](adr/0030-deployment-revisions.md)). `job_runs` names the Job
+`workload_revisions` names ReplicaSets, which your cluster created and named.
+Any workload that manages ReplicaSets — a Deployment, or a custom resource such
+as an Argo Rollout — and only while it has collected pods, read from the same
+admitted index everything else uses ([ADR 0030](adr/0030-deployment-revisions.md),
+[ADR 0049](adr/0049-revisions-are-not-only-deployments.md)). StatefulSet and
+DaemonSet revisions live in `controllerrevisions`, which the agent does not read. `job_runs` names the Job
 object, a generated per-run name such as `rollup-29123456`, and the CronJob that
 scheduled it; a run whose Job, CronJob, namespace or pod template carries the
 opt-out annotation produces no record ([ADR 0029](adr/0029-job-runs.md)).

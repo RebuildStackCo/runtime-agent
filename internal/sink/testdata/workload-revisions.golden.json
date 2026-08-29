@@ -1,5 +1,5 @@
 {
-  "kind": "deployment_revisions",
+  "kind": "workload_revisions",
   "source": "structural",
   "captured_at": "2026-08-06T10:12:00Z",
   "records": [
@@ -73,6 +73,26 @@
         {
           "name": "app",
           "image": "example.com/app:1.2.4"
+        }
+      ]
+    },
+    {
+      "namespace": "shop",
+      "workload": {
+        "kind": "Rollout",
+        "name": "payments"
+      },
+      "name": "payments-7bd58f4db4",
+      "created_at": "2026-08-06T09:52:00Z",
+      "replicas": {
+        "desired": 1,
+        "current": 1,
+        "ready": 1
+      },
+      "containers": [
+        {
+          "name": "app",
+          "image": "example.com/payments:2.0.1"
         }
       ]
     }

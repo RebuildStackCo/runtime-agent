@@ -891,6 +891,10 @@ func TestMetadataSupersedesOnDisk(t *testing.T) {
 // carrying traffic, the incoming one not yet ready, and an older one kept at
 // zero. The three are what a consumer must be able to tell apart, and none of
 // those states is named by the agent.
+// fixedRevisions is a Deployment mid-rollout — three numbered revisions, the
+// newest not yet ready — plus a workload whose controller is a custom resource.
+// The second carries no revision number, which is the shape ADR 0049 §3 chose
+// over learning another controller's annotation key.
 func fixedRevisions() []revisions.Record {
 	return []revisions.Record{
 		{
@@ -928,26 +932,36 @@ func fixedRevisions() []revisions.Record {
 				{Name: "app", Image: "example.com/app:1.2.4"},
 			},
 		},
+		{
+			Namespace: "shop",
+			Workload:  collector.WorkloadRef{Kind: "Rollout", Name: "payments"},
+			Name:      "payments-7bd58f4db4",
+			CreatedAt: capturedAt.Add(-20 * time.Minute),
+			Replicas:  revisions.Replicas{Desired: 1, Current: 1, Ready: 1},
+			Containers: []revisions.Container{
+				{Name: "app", Image: "example.com/payments:2.0.1"},
+			},
+		},
 	}
 }
 
-func TestGoldenDeploymentRevisionsPayload(t *testing.T) {
+func TestGoldenWorkloadRevisionsPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteDeploymentRevisions(capturedAt, fixedRevisions()); err != nil {
+	if err := s.WriteWorkloadRevisions(capturedAt, fixedRevisions()); err != nil {
 		t.Fatal(err)
 	}
-	checkGolden(t, filepath.Join(dir, "deployment-revisions.json"), "deployment-revisions.golden.json")
+	checkGolden(t, filepath.Join(dir, "workload-revisions.json"), "workload-revisions.golden.json")
 }
 
 // Current state under a fixed key, so each flush replaces its predecessor
 // rather than accumulating — the on-disk mirror of upsert-by-key ingest.
-func TestDeploymentRevisionsSupersedeOnDisk(t *testing.T) {
+func TestWorkloadRevisionsSupersedeOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteDeploymentRevisions(capturedAt, fixedRevisions()); err != nil {
+	if err := s.WriteWorkloadRevisions(capturedAt, fixedRevisions()); err != nil {
 		t.Fatal(err)
 	}
 	later := capturedAt.Add(time.Minute)
-	if err := s.WriteDeploymentRevisions(later, fixedRevisions()[:1]); err != nil {
+	if err := s.WriteWorkloadRevisions(later, fixedRevisions()[:1]); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -963,7 +977,7 @@ func TestDeploymentRevisionsSupersedeOnDisk(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"records"`
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "deployment-revisions.json")) // #nosec G304 -- test-controlled path
+	raw, err := os.ReadFile(filepath.Join(dir, "workload-revisions.json")) // #nosec G304 -- test-controlled path
 	if err != nil {
 		t.Fatal(err)
 	}

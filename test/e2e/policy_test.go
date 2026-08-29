@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	revisionsSpoolPath      = spoolDir + "/deployment-revisions.json"
+	revisionsSpoolPath      = spoolDir + "/workload-revisions.json"
 	workloadPolicySpoolPath = spoolDir + "/workload-policy.json"
 	clusterPolicySpoolPath  = spoolDir + "/cluster-policy.json"
 	jobRunsSpoolGlob        = spoolDir + "/job-runs-*.json"
@@ -157,6 +157,36 @@ func createPolicyFixtures(ctx context.Context, t *testing.T, cs kubernetes.Inter
 		t.Fatalf("creating service: %v", err)
 	}
 
+	// A ReplicaSet under a controller kind that has no CRD in this cluster. The
+	// garbage collector cannot resolve the owner and leaves the object alone, so
+	// this is the shape an Argo Rollout produces without installing Argo.
+	widgetRS := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns, Name: "payments-abc123",
+			Annotations: map[string]string{"made.up.io/revision": "7"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "made.up.io/v1", Kind: "Widget", Name: "payments",
+				UID: "11111111-2222-3333-4444-555555555555", Controller: ptr.To(true),
+			}},
+		},
+		Spec: appsv1.ReplicaSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "payments"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "payments"}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name: "app", Image: "registry.k8s.io/pause:3.9", Command: []string{"/pause"},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("5m")},
+					},
+				}}},
+			},
+		},
+	}
+	if _, err := cs.AppsV1().ReplicaSets(ns).Create(ctx, widgetRS, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating the widget-owned replicaset: %v", err)
+	}
+
 	budget := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "web-pdb"},
 		Spec: policyv1.PodDisruptionBudgetSpec{
@@ -265,9 +295,9 @@ func checkRevisionsReported(ctx context.Context, t *testing.T, config *rest.Conf
 			}
 		}
 		return false
-	}, "deployment revisions for the fixture workload")
+	}, "workload revisions for the fixture workload")
 
-	if payload.Kind != "deployment_revisions" {
+	if payload.Kind != "workload_revisions" {
 		t.Errorf("kind = %q", payload.Kind)
 	}
 	for _, r := range payload.Records {
@@ -284,6 +314,29 @@ func checkRevisionsReported(ctx context.Context, t *testing.T, config *rest.Conf
 			t.Errorf("container image = %q", r.Containers[0].Image)
 		}
 		t.Logf("revision %d of %s/%s runs %s", *r.Revision, r.Namespace, r.Workload.Name, r.Containers[0].Image)
+	}
+
+	// The widening, against a controller kind that does not exist in this
+	// cluster: a dangling owner reference is exactly what the agent sees for an
+	// Argo Rollout, without installing one (ADR 0049 §1).
+	found := false
+	for _, r := range payload.Records {
+		if r.Namespace != fixtureNS || r.Workload.Kind != "Widget" {
+			continue
+		}
+		found = true
+		if r.Revision != nil {
+			t.Errorf("revision = %d for a %s; the key belongs to that controller, not to us",
+				*r.Revision, r.Workload.Kind)
+		}
+		if len(r.Containers) == 0 || r.Workload.Name != "payments" {
+			t.Errorf("record = %+v, want the Widget's set with its containers", r)
+		}
+		t.Logf("revision of %s/%s (kind %s) runs %s, unnumbered",
+			r.Namespace, r.Workload.Name, r.Workload.Kind, r.Containers[0].Image)
+	}
+	if !found {
+		t.Error("no revision for the Widget-owned ReplicaSet; the widening did not reach the payload")
 	}
 }
 

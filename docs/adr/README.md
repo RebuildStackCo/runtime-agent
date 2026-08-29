@@ -106,3 +106,4 @@ line to paste.
 - [0046. The informer cache is the source, so the fields the agent promises not to collect are removed there](0046-the-cache-is-the-source.md)
 - [0047. Five environment variables are named, kept and shipped; every other one is still dropped](0047-runtime-knobs-are-named-and-kept.md)
 - [0048. Four first-hour findings name fields the agent did not collect](0048-findings-name-the-fields-they-need.md)
+- [0049. Revisions belong to whatever controls the ReplicaSet, and the payload is renamed for it](0049-revisions-are-not-only-deployments.md)

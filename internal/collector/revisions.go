@@ -10,7 +10,8 @@ import (
 )
 
 // revisionAnnotation is where the Deployment controller records which revision a
-// ReplicaSet is. It is Kubernetes' own annotation, not one this agent writes.
+// ReplicaSet is. It is Kubernetes' own annotation, not one this agent writes,
+// and it is the only revision key the agent knows (ADR 0049 §3).
 const revisionAnnotation = "deployment.kubernetes.io/revision"
 
 // RevisionContainer is one container of a revision's pod template: the name and
@@ -28,19 +29,20 @@ type RevisionContainer struct {
 	Init bool
 }
 
-// ReplicaSetInfo is the collected view of one ReplicaSet — one revision of a
-// Deployment, with how many replicas it is currently carrying.
+// ReplicaSetInfo is the collected view of one ReplicaSet — one revision of the
+// workload that controls it, with how many replicas it is currently carrying.
 type ReplicaSetInfo struct {
 	Namespace string
-	// Workload is the owning Deployment. A ReplicaSet with any other controller
-	// never reaches this view.
+	// Workload is the controller that owns the set: a Deployment, or any custom
+	// resource that manages ReplicaSets (ADR 0049). A ReplicaSet with no
+	// controller never reaches this view.
 	Workload WorkloadRef
 	// Name is the ReplicaSet's own name, which is what a `kubectl get rs` shows
 	// and therefore what makes this record findable in the cluster.
 	Name string
 	// Revision is the Deployment controller's revision number. Nil when the
-	// annotation is absent or unparseable — a real state, distinct from
-	// revision zero, and one the agent reports rather than guesses at.
+	// annotation is absent or unparseable, and nil for every other controller,
+	// which numbers its revisions under a key of its own (ADR 0049 §3).
 	Revision  *int64
 	CreatedAt time.Time
 	// DesiredReplicas is spec.replicas; Current and Ready are the status
@@ -53,16 +55,17 @@ type ReplicaSetInfo struct {
 	Containers      []RevisionContainer
 }
 
-// ReplicaSets returns the collected view of every ReplicaSet belonging to a
-// Deployment that has admitted pods.
+// ReplicaSets returns the collected view of every ReplicaSet whose controller is
+// a workload with admitted pods — a Deployment, or any custom resource that
+// manages ReplicaSets, which is how Argo Rollouts and its kind work (ADR 0049).
 //
-// Which Deployments those are is inherited, not decided again: the set is read
+// Which workloads those are is inherited, not decided again: the set is read
 // from the admitted pod index, so an excluded workload is absent here too. A
-// Deployment whose pods are all gone therefore has no revisions even while its
+// workload whose pods are all gone therefore has no revisions even while its
 // ReplicaSets exist — the forgetting ADR 0018 chose for the Go inventory.
 func (w *PodWatcher) ReplicaSets() []ReplicaSetInfo {
-	collected := w.collectedDeployments()
-	if len(collected) == 0 {
+	owners := w.replicaSetOwners()
+	if len(owners) == 0 {
 		return nil
 	}
 	sets, err := w.rsLister.List(labels.Everything())
@@ -72,14 +75,18 @@ func (w *PodWatcher) ReplicaSets() []ReplicaSetInfo {
 
 	out := make([]ReplicaSetInfo, 0, len(sets))
 	for _, set := range sets {
+		// A ReplicaSet with no controller is a bare one, managed directly. It
+		// is the workload rather than a revision of one, so it has no history
+		// to report here (ADR 0049 §2).
 		owner := metav1.GetControllerOf(set)
-		if owner == nil || owner.Kind != "Deployment" {
+		if owner == nil {
 			continue
 		}
-		if !collected[workloadKey{namespace: set.Namespace, name: owner.Name}] {
+		key := WorkloadKey{Namespace: set.Namespace, Kind: owner.Kind, Name: owner.Name}
+		if !owners[key] {
 			continue
 		}
-		out = append(out, describeReplicaSet(set, owner.Name))
+		out = append(out, describeReplicaSet(set, key))
 	}
 	return out
 }
@@ -89,27 +96,30 @@ type workloadKey struct {
 	name      string
 }
 
-// collectedDeployments is the set of Deployments that currently have at least
-// one admitted pod.
-func (w *PodWatcher) collectedDeployments() map[workloadKey]bool {
+// replicaSetOwners is every workload that currently has at least one admitted
+// pod, keyed by kind as well as name. Kinds that cannot own a ReplicaSet are not
+// filtered out: no set will ever name them, so they cost a map entry and no
+// correctness.
+func (w *PodWatcher) replicaSetOwners() map[WorkloadKey]bool {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
-	out := make(map[workloadKey]bool)
+	out := make(map[WorkloadKey]bool)
 	for _, entry := range w.index {
-		if entry.workload.Kind != "Deployment" {
-			continue
-		}
-		out[workloadKey{namespace: entry.namespace, name: entry.workload.Name}] = true
+		out[WorkloadKey{
+			Namespace: entry.namespace,
+			Kind:      entry.workload.Kind,
+			Name:      entry.workload.Name,
+		}] = true
 	}
 	return out
 }
 
-func describeReplicaSet(set *appsv1.ReplicaSet, deployment string) ReplicaSetInfo {
+func describeReplicaSet(set *appsv1.ReplicaSet, owner WorkloadKey) ReplicaSetInfo {
 	info := ReplicaSetInfo{
 		Namespace:       set.Namespace,
-		Workload:        WorkloadRef{Kind: "Deployment", Name: deployment},
+		Workload:        WorkloadRef{Kind: owner.Kind, Name: owner.Name},
 		Name:            set.Name,
-		Revision:        revisionOf(set),
+		Revision:        revisionOf(set, owner.Kind),
 		CreatedAt:       set.CreationTimestamp.UTC(),
 		CurrentReplicas: set.Status.Replicas,
 		ReadyReplicas:   set.Status.ReadyReplicas,
@@ -128,10 +138,15 @@ func describeReplicaSet(set *appsv1.ReplicaSet, deployment string) ReplicaSetInf
 	return info
 }
 
-// revisionOf parses the Deployment controller's revision annotation. An absent
-// or malformed value yields nil: the agent reports what it read, and inventing
-// a number here would put two revisions under one identity.
-func revisionOf(set *appsv1.ReplicaSet) *int64 {
+// revisionOf parses the Deployment controller's revision annotation, and only
+// for a Deployment. Every other controller numbers revisions under a key of its
+// own, and no finding needs the number — order comes from `created_at`, so
+// reading a vendor's key would put its vocabulary in this agent for nothing
+// (ADR 0049 §3). An absent or malformed value yields nil.
+func revisionOf(set *appsv1.ReplicaSet, kind string) *int64 {
+	if kind != "Deployment" {
+		return nil
+	}
 	raw, ok := set.Annotations[revisionAnnotation]
 	if !ok {
 		return nil
