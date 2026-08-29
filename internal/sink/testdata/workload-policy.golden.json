@@ -41,7 +41,19 @@
         {
           "name": "web",
           "type": "ClusterIP",
-          "internal_traffic_policy": "Cluster"
+          "internal_traffic_policy": "Cluster",
+          "traffic_distribution": "PreferClose",
+          "endpoints": [
+            {
+              "address_type": "IPv4",
+              "ready": 3,
+              "zones": {
+                "eu-west-1a": 2,
+                "eu-west-1b": 1
+              },
+              "hinted": 0
+            }
+          ]
         }
       ]
     },

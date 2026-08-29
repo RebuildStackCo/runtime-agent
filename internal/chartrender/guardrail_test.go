@@ -29,6 +29,7 @@ func TestTheClusterRoleNamesNothingBeyondThisList(t *testing.T) {
 		"":                  {"pods", "namespaces", "nodes", "nodes/proxy", "services", "limitranges", "resourcequotas", "persistentvolumeclaims"},
 		"apps":              {"replicasets", "deployments", "statefulsets", "daemonsets"},
 		"batch":             {"jobs", "cronjobs"},
+		"discovery.k8s.io":  {"endpointslices"},
 		"policy":            {"poddisruptionbudgets"},
 		"autoscaling":       {"horizontalpodautoscalers"},
 		"scheduling.k8s.io": {"priorityclasses"},

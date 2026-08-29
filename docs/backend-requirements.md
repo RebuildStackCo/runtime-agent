@@ -360,6 +360,18 @@ in nothing. A `GODEBUG` variable in `workload_metadata.runtime_env` overrides
 both at startup; it is a fact about a workload, this is a fact about a build, and
 the backend MUST NOT merge them into one value.
 
+**`workload_policy` Service endpoint counts are per address family and MUST NOT
+be summed across them** ([ADR 0051](adr/0051-topology-routing-is-asked-and-not-granted.md)).
+A dual-stack Service lists each pod once in an IPv4 slice and once in an IPv6
+slice, so adding the families doubles every zone. `zones` counts ready endpoints
+by zone; `unzoned` counts those on a node carrying no zone label and MUST NOT be
+folded into a zone named `""`. `hinted` is read together with
+`traffic_distribution` (or `topology_mode`): a `hinted` of 0 where neither is set
+means nothing, and where one is set means the cluster declined to arrange the
+routing that was asked for — which is the finding. The `endpoints` array is
+absent when the agent has not seen the Service's slices, which is not the same
+as a Service with no ready endpoints, and MUST NOT be rendered as zero.
+
 **`node_metadata.nodes[].architecture` is what `go_build.settings.GOARCH` is
 compared against.** A build's target architecture and microarchitecture level
 mean nothing on their own; the comparison is the finding. The field is the

@@ -21,6 +21,7 @@ import (
 	autoscalinglisters "k8s.io/client-go/listers/autoscaling/v2"
 	batchlisters "k8s.io/client-go/listers/batch/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	policylisters "k8s.io/client-go/listers/policy/v1"
 	schedulinglisters "k8s.io/client-go/listers/scheduling/v1"
 	storagelisters "k8s.io/client-go/listers/storage/v1"
@@ -168,6 +169,7 @@ type PodWatcher struct {
 	// pods rather than through an owner reference.
 	podLister          corelisters.PodLister
 	svcLister          corelisters.ServiceLister
+	epsLister          discoverylisters.EndpointSliceLister
 	pdbLister          policylisters.PodDisruptionBudgetLister
 	hpaLister          autoscalinglisters.HorizontalPodAutoscalerLister
 	pvcLister          corelisters.PersistentVolumeClaimLister
@@ -307,6 +309,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	w.nsLister = factory.Core().V1().Namespaces().Lister()
 	w.podLister = factory.Core().V1().Pods().Lister()
 	w.svcLister = factory.Core().V1().Services().Lister()
+	w.epsLister = factory.Discovery().V1().EndpointSlices().Lister()
 	w.pdbLister = factory.Policy().V1().PodDisruptionBudgets().Lister()
 	w.hpaLister = factory.Autoscaling().V2().HorizontalPodAutoscalers().Lister()
 	w.pvcLister = factory.Core().V1().PersistentVolumeClaims().Lister()
@@ -324,6 +327,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	// still being fed (ADR 0035).
 	policyInformers := map[string]watchInformer{
 		"services":                   factory.Core().V1().Services().Informer(),
+		"endpoint_slices":            factory.Discovery().V1().EndpointSlices().Informer(),
 		"pod_disruption_budgets":     factory.Policy().V1().PodDisruptionBudgets().Informer(),
 		"horizontal_pod_autoscalers": factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer(),
 		"persistent_volume_claims":   factory.Core().V1().PersistentVolumeClaims().Informer(),
@@ -334,6 +338,7 @@ func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatc
 	}
 	w.policySources = []policySource{
 		{name: "services", synced: factory.Core().V1().Services().Informer().HasSynced},
+		{name: "endpoint_slices", synced: factory.Discovery().V1().EndpointSlices().Informer().HasSynced},
 		{name: "pod_disruption_budgets", synced: factory.Policy().V1().PodDisruptionBudgets().Informer().HasSynced},
 		{name: "horizontal_pod_autoscalers", synced: factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer().HasSynced},
 		{name: "persistent_volume_claims", synced: factory.Core().V1().PersistentVolumeClaims().Informer().HasSynced},

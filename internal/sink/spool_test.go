@@ -1239,8 +1239,15 @@ func fixedWorkloadPolicy() []collector.WorkloadPolicy {
 				}},
 				LimitedReason: "TooManyReplicas",
 			}},
+			// Topology-aware routing asked for and not arranged: the mode is
+			// set, and not one endpoint carries a hint (ADR 0051).
 			Services: []collector.ServiceExposure{{
 				Name: "web", Type: "ClusterIP", InternalTrafficPolicy: "Cluster",
+				TrafficDistribution: "PreferClose",
+				Endpoints: []collector.EndpointZones{{
+					AddressType: "IPv4", Ready: 3,
+					Zones: map[string]int{"eu-west-1a": 2, "eu-west-1b": 1},
+				}},
 			}},
 		},
 		{

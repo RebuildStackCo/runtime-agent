@@ -4,6 +4,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 )
 
@@ -39,8 +40,30 @@ func dropUncollectedFields(obj any) (any, error) {
 		dropPodSpecFields(&o.Spec.Template.Spec)
 	case *batchv1.CronJob:
 		dropPodSpecFields(&o.Spec.JobTemplate.Spec.Template.Spec)
+	case *discoveryv1.EndpointSlice:
+		dropEndpointIdentity(o)
 	}
 	return obj, nil
+}
+
+// dropEndpointIdentity strips an EndpointSlice down to what routing zones are
+// counted from. Everything removed here is the identity of a pod — its
+// addresses, the object it points at, the node and hostname it runs under — and
+// none of it is needed: the zone is on the entry itself (ADR 0051).
+//
+// It is also what keeps the cache small. A Service with thousands of endpoints
+// holds thousands of addresses, and the agent would carry them for the life of
+// the process to count something none of them answers.
+func dropEndpointIdentity(slice *discoveryv1.EndpointSlice) {
+	for i := range slice.Endpoints {
+		e := &slice.Endpoints[i]
+		e.Addresses = nil
+		e.TargetRef = nil
+		e.NodeName = nil
+		e.Hostname = nil
+		e.DeprecatedTopology = nil
+	}
+	slice.Ports = nil
 }
 
 // dropPodSpecFields clears the three fields the agent promises never to

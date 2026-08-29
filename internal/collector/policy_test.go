@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -533,7 +535,7 @@ func TestServiceAttachesToTheWorkloadOfTheSelectedPods(t *testing.T) {
 		Name: "web", Type: "ClusterIP",
 		InternalTrafficPolicy: "Local", ExternalTrafficPolicy: "Local",
 	}
-	if svc != want {
+	if !reflect.DeepEqual(svc, want) {
 		t.Errorf("service = %+v, want %+v", svc, want)
 	}
 }
@@ -588,5 +590,194 @@ func TestServiceOverExcludedPodsNamesNothing(t *testing.T) {
 	)
 	if len(got) != 0 {
 		t.Errorf("records = %+v, want none for an excluded namespace", got)
+	}
+}
+
+// endpointSlice builds one slice of a Service. Each entry is (zone, ready,
+// hinted) — the three fields the counting reads and the only ones the cache
+// holds (ADR 0051 §1).
+type endpoint struct {
+	zone   string
+	ready  *bool
+	hinted bool
+}
+
+// Every fixture here routes the `web` Service, which is the one the policy tests
+// build; the label is what the lister selects on.
+func endpointSlice(name string, family discoveryv1.AddressType, endpoints ...endpoint) *discoveryv1.EndpointSlice {
+	slice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "shop", Name: name,
+			Labels: map[string]string{discoveryv1.LabelServiceName: "web"},
+		},
+		AddressType: family,
+	}
+	for _, e := range endpoints {
+		entry := discoveryv1.Endpoint{Conditions: discoveryv1.EndpointConditions{Ready: e.ready}}
+		if e.zone != "" {
+			entry.Zone = ptr.To(e.zone)
+		}
+		if e.hinted {
+			entry.Hints = &discoveryv1.EndpointHints{ForZones: []discoveryv1.ForZone{{Name: e.zone}}}
+		}
+		slice.Endpoints = append(slice.Endpoints, entry)
+	}
+	return slice
+}
+
+func onlyService(t *testing.T, got []WorkloadPolicy) ServiceExposure {
+	t.Helper()
+	if len(got) != 1 || len(got[0].Services) != 1 {
+		t.Fatalf("records = %+v, want one workload with one service", got)
+	}
+	return got[0].Services[0]
+}
+
+// The finding this whole slice exists for: the Service asked for topology-aware
+// routing and the cluster did not arrange it. Nothing else the agent collects
+// distinguishes that from routing that works.
+func TestTopologyRoutingAskedForAndNotGranted(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", func(s *corev1.Service) {
+			s.Spec.TrafficDistribution = ptr.To("PreferClose")
+		}),
+		endpointSlice("web-v4", discoveryv1.AddressTypeIPv4,
+			endpoint{zone: "eu-west-1a", ready: ptr.To(true)},
+			endpoint{zone: "eu-west-1a", ready: ptr.To(true)},
+			endpoint{zone: "eu-west-1b", ready: ptr.To(true)},
+		),
+	)
+	svc := onlyService(t, got)
+	if svc.TrafficDistribution != "PreferClose" {
+		t.Errorf("traffic_distribution = %q, want PreferClose", svc.TrafficDistribution)
+	}
+	if len(svc.Endpoints) != 1 {
+		t.Fatalf("endpoints = %+v, want one address family", svc.Endpoints)
+	}
+	z := svc.Endpoints[0]
+	if z.Ready != 3 || z.Hinted != 0 {
+		t.Errorf("ready/hinted = %d/%d, want 3/0 — the ask without the arrangement", z.Ready, z.Hinted)
+	}
+	if !reflect.DeepEqual(z.Zones, map[string]int{"eu-west-1a": 2, "eu-west-1b": 1}) {
+		t.Errorf("zones = %v", z.Zones)
+	}
+}
+
+func TestHintedEndpointsAreCounted(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", nil),
+		endpointSlice("web-v4", discoveryv1.AddressTypeIPv4,
+			endpoint{zone: "eu-west-1a", ready: ptr.To(true), hinted: true},
+			endpoint{zone: "eu-west-1b", ready: ptr.To(true)},
+		),
+	)
+	if z := onlyService(t, got).Endpoints[0]; z.Hinted != 1 {
+		t.Errorf("hinted = %d, want 1", z.Hinted)
+	}
+}
+
+// A dual-stack Service lists the same pod once per address family. Summed into
+// one map, every zone would read double (ADR 0051 §2).
+func TestDualStackIsCountedPerAddressFamily(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", nil),
+		endpointSlice("web-v4", discoveryv1.AddressTypeIPv4,
+			endpoint{zone: "eu-west-1a", ready: ptr.To(true)}),
+		endpointSlice("web-v6", discoveryv1.AddressTypeIPv6,
+			endpoint{zone: "eu-west-1a", ready: ptr.To(true)}),
+	)
+	svc := onlyService(t, got)
+	want := []EndpointZones{
+		{AddressType: "IPv4", Ready: 1, Zones: map[string]int{"eu-west-1a": 1}},
+		{AddressType: "IPv6", Ready: 1, Zones: map[string]int{"eu-west-1a": 1}},
+	}
+	if !reflect.DeepEqual(svc.Endpoints, want) {
+		t.Errorf("endpoints = %+v, want %+v", svc.Endpoints, want)
+	}
+}
+
+// The API tells a consumer that does not understand the ready condition to treat
+// the endpoint as ready. Reading nil the other way silently under-counts every
+// zone in the cluster.
+func TestAnUnsetReadyConditionCountsAsReady(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", nil),
+		endpointSlice("web-v4", discoveryv1.AddressTypeIPv4,
+			endpoint{zone: "eu-west-1a", ready: nil},
+			endpoint{zone: "eu-west-1a", ready: ptr.To(false)},
+		),
+	)
+	if z := onlyService(t, got).Endpoints[0]; z.Ready != 1 || z.Zones["eu-west-1a"] != 1 {
+		t.Errorf("ready = %d, zones = %v; want the unset condition counted and the false one not", z.Ready, z.Zones)
+	}
+}
+
+// An endpoint on a node without the topology label has no zone. That is not a
+// zone whose name is empty, and a map key of "" would read as one.
+func TestAnEndpointWithoutAZoneIsUnzoned(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", nil),
+		endpointSlice("web-v4", discoveryv1.AddressTypeIPv4,
+			endpoint{ready: ptr.To(true)},
+		),
+	)
+	z := onlyService(t, got).Endpoints[0]
+	if z.Unzoned != 1 || len(z.Zones) != 0 {
+		t.Errorf("unzoned = %d, zones = %v; want 1 and no zone map", z.Unzoned, z.Zones)
+	}
+}
+
+// A Service with no slices reports no endpoint block at all, rather than one
+// claiming zero ready endpoints — the agent did not look at an empty Service,
+// it looked at a Service whose slices it has not seen.
+func TestAServiceWithoutSlicesCarriesNoEndpointBlock(t *testing.T) {
+	got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+		policyPod("web-1", "web"),
+		replicaSetOwnedBy("web-abc", "web"),
+		service("web", "web", nil),
+	)
+	if z := onlyService(t, got).Endpoints; z != nil {
+		t.Errorf("endpoints = %+v, want none", z)
+	}
+}
+
+// The mode is kept as written. "auto" in the wrong case configures nothing,
+// which is exactly the case worth reporting — normalizing it would erase the
+// finding (ADR 0051 §3).
+func TestTopologyModeAnnotationIsKeptVerbatimAndBounded(t *testing.T) {
+	cases := []struct {
+		name       string
+		annotation string
+		value      string
+		want       string
+	}{
+		{"current annotation", "service.kubernetes.io/topology-mode", "Auto", "Auto"},
+		{"legacy annotation", "service.kubernetes.io/topology-aware-hints", "auto", "auto"},
+		{"misspelled value survives", "service.kubernetes.io/topology-mode", "enabled", "enabled"},
+		{"over-long value is dropped whole", "service.kubernetes.io/topology-mode", strings.Repeat("x", 33), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := collectPolicy(t, NewFilter(nil, nil), hasRecords,
+				policyPod("web-1", "web"),
+				replicaSetOwnedBy("web-abc", "web"),
+				service("web", "web", func(s *corev1.Service) {
+					s.Annotations = map[string]string{tc.annotation: tc.value}
+				}),
+			)
+			if mode := onlyService(t, got).TopologyMode; mode != tc.want {
+				t.Errorf("topology_mode = %q, want %q", mode, tc.want)
+			}
+		})
 	}
 }
