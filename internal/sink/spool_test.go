@@ -509,6 +509,43 @@ func TestGoldenGoInventoryPayload(t *testing.T) {
 	checkGolden(t, filepath.Join(dir, "go-inventory.json"), "go-inventory.golden.json")
 }
 
+// The peaks fixture is the finding in one payload: `web/app` has run its build
+// to within a hair of a limit, across two replicas that see different CPU
+// counts, and `db` has not.
+func fixedPeaks() []inventory.PeakRecord {
+	return []inventory.PeakRecord{
+		{
+			PeakKey: inventory.PeakKey{
+				Key: inventory.Key{
+					Namespace: "shop", WorkloadKind: "Deployment",
+					WorkloadName: "web", Container: "app",
+				},
+				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			},
+			PeakRSSBytes: 481 << 20, Processes: 2,
+			CPUsAllowedMin: 4, CPUsAllowedMax: 8,
+		},
+		{
+			PeakKey: inventory.PeakKey{
+				Key: inventory.Key{
+					Namespace: "shop", WorkloadKind: "StatefulSet",
+					WorkloadName: "db", Container: "db",
+				},
+			},
+			PeakRSSBytes: 96 << 20, Processes: 1,
+			CPUsAllowedMin: 8, CPUsAllowedMax: 8,
+		},
+	}
+}
+
+func TestGoldenProcessPeaksPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteProcessPeaks(capturedAt, fixedPeaks()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "process-peaks.json"), "process-peaks.golden.json")
+}
+
 func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
 	if err := s.WriteGoInventory(capturedAt, fixedCoverage(), fixedInventory()); err != nil {

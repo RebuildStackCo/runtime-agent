@@ -315,8 +315,19 @@ This is what the node DaemonSet runs today: it enumerates processes under
 pod and container through the process cgroup, filters infrastructure on the node,
 and reports the result. It loads no eBPF; the only socket it opens is the
 outbound connection to the controller (ADR 0010) — never to the internet, never
-to the API server. What it reads is `/proc/<pid>/exe` and `/proc/<pid>/cgroup`
-and nothing else.
+to the API server. What it reads is `/proc/<pid>/exe`, `/proc/<pid>/cgroup` and
+two fields of `/proc/<pid>/status`, and nothing else.
+
+Those two fields are `VmHWM` — the kernel's high-water mark of the process's
+resident memory, which is the only place a memory peak between two samples is
+recorded — and `Cpus_allowed_list`, of which only the *count* of permitted CPUs
+leaves; which cores a container sits on is not collected
+([ADR 0052](adr/0052-the-peak-the-kernel-remembers.md)). The file also opens with
+`Name`, the executable's own basename: the fields are an allow-list, so it and
+everything else in the file stay on the node. The read needs no capability —
+the kernel's ptrace check guards `exe`, `mem`, `environ` and `maps`, not
+`status` — and happens only for a process already kept, after the scope and
+infrastructure filters.
 
 | Privilege | Why |
 |---|---|
@@ -496,6 +507,7 @@ test fails if a kind ships without appearing here (ADR 0022).
 | `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035). StorageClass `parameters` are never read | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture. The **name** is your cluster's, and on EKS and on GKE's legacy naming it encodes the node's private address — `ip-10-42-13-201.eu-west-1.compute.internal`. The agent reads no address field; the name it does read may be one (ADR 0039) | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
+| `process_peaks` | Per collected workload container and build: the largest `VmHWM` among its Go processes, how many processes that was taken over, and the range of permitted CPU counts. A **floor** under the container's peak, never the figure the OOM killer compares against — the cgroup also holds page cache and every other process in it ([ADR 0052](adr/0052-the-peak-the-kernel-remembers.md)) | no |
 | `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings, and two allow-listed GODEBUG defaults. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
 

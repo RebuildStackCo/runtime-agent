@@ -360,6 +360,20 @@ in nothing. A `GODEBUG` variable in `workload_metadata.runtime_env` overrides
 both at startup; it is a fact about a workload, this is a fact about a build, and
 the backend MUST NOT merge them into one value.
 
+**`process_peaks.records[].peak_rss_bytes` is a floor, and the evidence it gives
+is one-sided** ([ADR 0052](adr/0052-the-peak-the-kernel-remembers.md)). It is the
+largest `VmHWM` among a container's Go processes: the resident memory of one
+process, while the memory limit is enforced on the cgroup, which also holds page
+cache, every other process in the container, and kernel structures. A peak near
+the limit is therefore strong evidence — one process alone nearly fills the
+cgroup — and the backend MAY act on it. A peak far below the limit is weak
+evidence for lowering that limit, because what the measurement omits is exactly
+what such a recommendation would omit, and the backend MUST NOT present it as a
+headroom figure. `processes` says how many processes the number was taken over;
+a record is absent, never zero, when none were read. The record is keyed by
+image digest as well as container: a peak belongs to the build that reached it,
+and MUST NOT be carried across a rollout.
+
 **`workload_policy` Service endpoint counts are per address family and MUST NOT
 be summed across them** ([ADR 0051](adr/0051-topology-routing-is-asked-and-not-granted.md)).
 A dual-stack Service lists each pod once in an IPv4 slice and once in an IPv6

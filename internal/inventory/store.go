@@ -43,6 +43,48 @@ type GoRecord struct {
 	PGO bool `json:"pgo"`
 }
 
+// PeakKey extends Key with the build, because a peak belongs to the code that
+// reached it: a rollout that fixes a leak must not inherit the number the
+// previous build set (ADR 0052).
+type PeakKey struct {
+	Key
+	ImageDigest string `json:"image_digest,omitempty"`
+}
+
+// PeakRecord is what the processes of one workload container, of one build,
+// currently reach — measured on the node and merged across every replica the
+// agent can see.
+//
+// It is rebuilt from the latest report of each node rather than accumulated. A
+// pod that died takes its peak with it, which is the honest reading: a number
+// no running process still stands behind is not evidence about what is deployed
+// now (ADR 0052 §3).
+type PeakRecord struct {
+	PeakKey
+	// PeakRSSBytes is the largest high-water mark among those processes. It is
+	// a floor under the container's peak, never the figure the OOM killer
+	// compares against: the cgroup also holds page cache and every other
+	// process in the container.
+	PeakRSSBytes int64 `json:"peak_rss_bytes"`
+	// Processes is how many processes the numbers were taken over. Zero
+	// processes produce no record at all, so this is never zero — it is what
+	// says whether one replica or forty stand behind the peak.
+	Processes int `json:"processes"`
+	// CPUsAllowedMin and CPUsAllowedMax bracket the affinity masks seen. Equal
+	// values mean every replica sees the same number of CPUs; different ones
+	// mean the replicas sit on different machines, or one of them is pinned.
+	CPUsAllowedMin int `json:"cpus_allowed_min,omitempty"`
+	CPUsAllowedMax int `json:"cpus_allowed_max,omitempty"`
+}
+
+// nodePeaks is one node's contribution to a PeakRecord: what its latest report
+// said about the processes of that container on that node.
+type nodePeaks struct {
+	peakRSSBytes     int64
+	processes        int
+	cpusMin, cpusMax int
+}
+
 // BuildFacts is everything immutable the agent knows about one build, keyed by
 // the image digest that identifies it. Deliberately not a field on GoRecord: a
 // record merges across every replica and node, and one image usually backs
@@ -103,6 +145,13 @@ type Store struct {
 	builds  map[string]BuildFacts
 	written map[string]struct{}
 
+	// peaks holds, per (record key, build) and per reporting node, what that
+	// node's latest report said. Keeping the node in the key is what makes the
+	// aggregate decay: a node's contribution is replaced wholesale on its next
+	// report, so a peak survives only while a process on some node still holds
+	// it (ADR 0052 §3).
+	peaks map[PeakKey]map[string]nodePeaks
+
 	// nodesReported is the set of nodes still in the cluster that have delivered
 	// at least one report. Compared against the node count in the node-metadata
 	// payload it is what makes a DaemonSet that never started visible
@@ -131,6 +180,7 @@ func NewStore(since time.Time) *Store {
 		records:       make(map[Key]GoRecord),
 		builds:        make(map[string]BuildFacts),
 		written:       make(map[string]struct{}),
+		peaks:         make(map[PeakKey]map[string]nodePeaks),
 		nodesReported: make(map[string]struct{}),
 		since:         since,
 	}
@@ -149,6 +199,7 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 	if report.Node != "" {
 		s.nodesReported[report.Node] = struct{}{}
 	}
+	seen := make(map[PeakKey]bool, len(report.Binaries))
 	for _, b := range report.Binaries {
 		s.factsReceived++
 		res, ok := resolver.LookupContainer(types.UID(b.PodUID), b.ContainerID)
@@ -171,6 +222,64 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 			PGO:         b.PGO,
 		}
 		s.ingestBuild(b, res.ImageDigest)
+		s.ingestPeaks(b, key, res.ImageDigest, report.Node, seen)
+	}
+	s.forgetUnreported(report.Node, seen)
+}
+
+// ingestPeaks folds one binary's measured facts into this node's contribution
+// for its key. seen collects the keys this report touched, so the contribution
+// of a key the node no longer runs can be dropped afterwards.
+//
+// A process whose status could not be read adds nothing — not a zero, which
+// would drag a minimum down and claim a container reached nothing.
+//
+// Callers hold s.mu.
+func (s *Store) ingestPeaks(b nodescan.BinaryInfo, key Key, digest, node string, seen map[PeakKey]bool) {
+	if b.PeakRSSBytes == 0 && b.CPUsAllowed == 0 {
+		return
+	}
+	pk := PeakKey{Key: key, ImageDigest: digest}
+	byNode, ok := s.peaks[pk]
+	if !ok {
+		byNode = make(map[string]nodePeaks, 1)
+		s.peaks[pk] = byNode
+	}
+	// The first binary of this key in this report starts the node's contribution
+	// from zero, discarding what the node said last time; the rest merge into
+	// it. Accumulating across reports instead would make `processes` count
+	// scans rather than processes, and would keep a peak no live process holds.
+	var n nodePeaks
+	if seen[pk] {
+		n = byNode[node]
+	}
+	seen[pk] = true
+	n.processes++
+	n.peakRSSBytes = max(n.peakRSSBytes, b.PeakRSSBytes)
+	if c := b.CPUsAllowed; c > 0 {
+		if n.cpusMin == 0 || c < n.cpusMin {
+			n.cpusMin = c
+		}
+		n.cpusMax = max(n.cpusMax, c)
+	}
+	byNode[node] = n
+}
+
+// forgetUnreported drops this node's contribution to every key its latest report
+// did not mention, and the key itself once no node contributes to it. Without
+// it a peak would outlive the pod that set it, which is the whole failure mode
+// ADR 0052 §3 exists to avoid.
+//
+// Callers hold s.mu.
+func (s *Store) forgetUnreported(node string, seen map[PeakKey]bool) {
+	for pk, byNode := range s.peaks {
+		if seen[pk] {
+			continue
+		}
+		delete(byNode, node)
+		if len(byNode) == 0 {
+			delete(s.peaks, pk)
+		}
 	}
 }
 
@@ -250,6 +359,8 @@ type Evicted struct {
 	Records int
 	// Builds is build facts no surviving record references any more.
 	Builds int
+	// Peaks is peak records whose workload container is gone.
+	Peaks int
 }
 
 // Retain drops every record whose key is absent from live, and then the build
@@ -273,6 +384,12 @@ func (s *Store) Retain(live []Key) Evicted {
 		if _, ok := set[k]; !ok {
 			delete(s.records, k)
 			ev.Records++
+		}
+	}
+	for pk := range s.peaks {
+		if _, ok := set[pk.Key]; !ok {
+			delete(s.peaks, pk)
+			ev.Peaks++
 		}
 	}
 
@@ -313,6 +430,18 @@ func (s *Store) RetainNodes(live []string) {
 			delete(s.nodesReported, n)
 		}
 	}
+	// A departed node's peaks go with it. Its pods are gone, so the number it
+	// contributed stands behind nothing (ADR 0052 §3).
+	for pk, byNode := range s.peaks {
+		for node := range byNode {
+			if _, ok := set[node]; !ok {
+				delete(byNode, node)
+			}
+		}
+		if len(byNode) == 0 {
+			delete(s.peaks, pk)
+		}
+	}
 }
 
 // MarkBuildWritten records that the facts for digest reached the sink, so they
@@ -337,6 +466,37 @@ func (s *Store) Snapshot() []GoRecord {
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return lessKey(out[i].Key, out[j].Key) })
+	return out
+}
+
+// PeakSnapshot merges every node's contribution into one record per (key,
+// build), sorted so the payload bytes are deterministic. The slice is a copy and
+// is non-nil even when empty.
+func (s *Store) PeakSnapshot() []PeakRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]PeakRecord, 0, len(s.peaks))
+	for pk, byNode := range s.peaks {
+		rec := PeakRecord{PeakKey: pk}
+		for _, n := range byNode {
+			rec.PeakRSSBytes = max(rec.PeakRSSBytes, n.peakRSSBytes)
+			rec.Processes += n.processes
+			if n.cpusMin > 0 && (rec.CPUsAllowedMin == 0 || n.cpusMin < rec.CPUsAllowedMin) {
+				rec.CPUsAllowedMin = n.cpusMin
+			}
+			rec.CPUsAllowedMax = max(rec.CPUsAllowedMax, n.cpusMax)
+		}
+		if rec.Processes == 0 {
+			continue
+		}
+		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Key != out[j].Key {
+			return lessKey(out[i].Key, out[j].Key)
+		}
+		return out[i].ImageDigest < out[j].ImageDigest
+	})
 	return out
 }
 

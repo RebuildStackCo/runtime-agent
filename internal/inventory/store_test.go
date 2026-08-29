@@ -552,3 +552,124 @@ func TestSnapshotSorted(t *testing.T) {
 		}
 	}
 }
+
+// withPeak attaches the measured half of a node report to a binary.
+func withPeak(b nodescan.BinaryInfo, peakBytes int64, cpus int) nodescan.BinaryInfo {
+	b.PeakRSSBytes = peakBytes
+	b.CPUsAllowed = cpus
+	return b
+}
+
+func webResolver() fakeResolver {
+	return fakeResolver{
+		"pod-web-1/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+		"pod-web-2/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+}
+
+// Replicas on two nodes merge into one record: the largest peak, the count of
+// processes behind it, and the range of CPU counts they see.
+func TestPeaksMergeAcrossReplicasAndNodes(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPeak(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), 300<<20, 8),
+	}}, webResolver())
+	s.Ingest(nodescan.Report{Node: "node-2", Binaries: []nodescan.BinaryInfo{
+		withPeak(binary("pod-web-2", "cid-web", "go1.26.1", "github.com/acme/web", false), 481<<20, 4),
+	}}, webResolver())
+
+	peaks := s.PeakSnapshot()
+	if len(peaks) != 1 {
+		t.Fatalf("peaks = %+v, want one record", peaks)
+	}
+	p := peaks[0]
+	if p.PeakRSSBytes != 481<<20 || p.Processes != 2 {
+		t.Errorf("peak/processes = %d/%d, want the larger of the two over two processes", p.PeakRSSBytes, p.Processes)
+	}
+	if p.CPUsAllowedMin != 4 || p.CPUsAllowedMax != 8 {
+		t.Errorf("cpus allowed = %d..%d, want 4..8", p.CPUsAllowedMin, p.CPUsAllowedMax)
+	}
+	if p.ImageDigest != "sha256:web" {
+		t.Errorf("image digest = %q; a peak belongs to the build that reached it", p.ImageDigest)
+	}
+}
+
+// The failure this design exists to avoid: a deploy that fixes a leak must not
+// inherit the old build's number. A node's contribution is replaced wholesale by
+// its next report, and the digest keys the record (ADR 0052 §3).
+func TestAPeakDoesNotOutliveTheProcessThatSetIt(t *testing.T) {
+	leaky := fakeResolver{
+		"pod-web-1/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:leaky"},
+	}
+	fixed := fakeResolver{
+		"pod-web-1/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:fixed"},
+	}
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPeak(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), 900<<20, 8),
+	}}, leaky)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPeak(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), 120<<20, 8),
+	}}, fixed)
+
+	peaks := s.PeakSnapshot()
+	if len(peaks) != 1 {
+		t.Fatalf("peaks = %+v, want only the build that is running", peaks)
+	}
+	if peaks[0].PeakRSSBytes != 120<<20 || peaks[0].ImageDigest != "sha256:fixed" {
+		t.Errorf("peak = %d for %s; the previous build's number survived its pods",
+			peaks[0].PeakRSSBytes, peaks[0].ImageDigest)
+	}
+	// And the count is processes, not scans.
+	if peaks[0].Processes != 1 {
+		t.Errorf("processes = %d after two reports of one process, want 1", peaks[0].Processes)
+	}
+}
+
+// A node that leaves takes its contribution with it; the record goes when the
+// last node stops standing behind it.
+func TestPeaksLeaveWithTheirNode(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPeak(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), 300<<20, 8),
+	}}, webResolver())
+	s.RetainNodes([]string{"node-2"})
+	if peaks := s.PeakSnapshot(); len(peaks) != 0 {
+		t.Errorf("peaks = %+v after the reporting node left, want none", peaks)
+	}
+}
+
+// And with their workload, on the same signal the inventory records use.
+func TestPeaksLeaveWithTheirWorkload(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPeak(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), 300<<20, 8),
+	}}, webResolver())
+	ev := s.Retain(nil)
+	if ev.Peaks != 1 {
+		t.Errorf("evicted peaks = %d, want 1", ev.Peaks)
+	}
+	if peaks := s.PeakSnapshot(); len(peaks) != 0 {
+		t.Errorf("peaks = %+v after the workload went, want none", peaks)
+	}
+}
+
+// A binary whose status could not be read contributes nothing at all. Folding it
+// in as a zero would claim a container reached no memory and would pull the CPU
+// minimum to zero.
+func TestABinaryWithoutAStatusReadContributesNothing(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false),
+		withPeak(binary("pod-web-2", "cid-web", "go1.26.1", "github.com/acme/web", false), 300<<20, 8),
+	}}, webResolver())
+
+	peaks := s.PeakSnapshot()
+	if len(peaks) != 1 {
+		t.Fatalf("peaks = %+v, want one record", peaks)
+	}
+	if peaks[0].Processes != 1 || peaks[0].CPUsAllowedMin != 8 {
+		t.Errorf("processes = %d, cpus min = %d; the unread process was counted",
+			peaks[0].Processes, peaks[0].CPUsAllowedMin)
+	}
+}
