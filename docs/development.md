@@ -96,28 +96,6 @@ A PR is mergeable when:
   is the whole reason the raw manifests were deleted rather than kept as a
   reference. The kind node-image matrix pins the oldest supported Kubernetes
   minor (see the README support policy) and a current release.
-- **The stability check takes a week and cannot be a CI gate.** kind proves the
-  mechanism on a cluster we populated ourselves. It cannot show whether a week of
-  ordinary cluster life moves the agent's facts more than the cluster itself
-  moved. That is checked on a long-lived cluster: capture the spool twice, seven
-  days apart, and compare per workload — the resource envelope, the build, the
-  node and zone attribution, the usage windows. Every difference must be
-  explainable by something that happened in the cluster.
-
-  Two conditions make the comparison valid, and both follow from decisions made
-  elsewhere. The agent runs uninterrupted across the interval: restart counters
-  are baselined at startup ([ADR 0020](adr/0020-container-restart-journal.md)
-  §5), so a restart moves their origin. And the payloads are copied out at the
-  first capture, because the spool sweeps unacknowledged files after
-  `DefaultMaxAge` and is a queue, not an archive.
-
-  A record that disappears is not automatically a defect. The Go inventory lives
-  only while its workload does
-  ([ADR 0018](adr/0018-inventory-records-live-only-while-their-workload-does.md)),
-  and revisions are bounded by the Deployment's own history
-  ([ADR 0030](adr/0030-deployment-revisions.md)). Each capture's coverage report
-  is read beside its payloads, so a shift in what was collected is not mistaken
-  for a shift in what is true.
 - Unit tests live next to the code (`*_test.go`); e2e lives under `test/`.
 
 ## CI gates

@@ -99,8 +99,8 @@ The agent ships, per cluster:
   transmitted; the backend MUST NOT expect or request them
 - a fingerprint (hash + last-change timestamp) of the effective filter
   configuration, carrying no configuration content. Every upload is
-  attributable to the configuration that produced it, so stability checks
-  can distinguish "the data changed" from "the filters changed"
+  attributable to the configuration that produced it, so "the data changed"
+  can be told from "the filters changed"
 - agent self-info: version, install profile, and effective RBAC summary, so
   every report can state what its findings do and do not rest on. The active
   usage signal set (which kubelet signals — e.g. PSI — this cluster exposes)
