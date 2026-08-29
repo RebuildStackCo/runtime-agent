@@ -134,11 +134,11 @@ var registry = []PayloadKind{
 		// Current state, not history: Kubernetes keeps only
 		// `revisionHistoryLimit` revisions, and accumulating past that is the
 		// backend's job across snapshots (ADR 0018's reasoning, ADR 0030).
-		Kind:       "deployment_revisions",
+		Kind:       "workload_revisions",
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
-		ADR:        "0030",
+		ADR:        "0030, 0049",
 	},
 	{
 		// What bounds a workload from outside its own spec: budgets,

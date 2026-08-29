@@ -193,7 +193,7 @@ func TestUnannotatedReplicaSetHasNoRevision(t *testing.T) {
 // through fails here rather than in a customer's cluster (CLAUDE.md invariant 4).
 func TestRevisionViewNeverCarriesTemplateEnvOrCommand(t *testing.T) {
 	set := replicaSet("web-old", "web", "46", "example.com/app:1.2.3", 3, 3)
-	encoded, err := json.Marshal(describeReplicaSet(set, "web"))
+	encoded, err := json.Marshal(describeReplicaSet(set, WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,5 +201,52 @@ func TestRevisionViewNeverCarriesTemplateEnvOrCommand(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Errorf("the collected revision view carries %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+// replicaSetUnderKind is the same fixture under an arbitrary controller kind, with
+// that controller's own revision annotation rather than the Deployment one.
+func replicaSetUnderKind(name, kind, owner string) *appsv1.ReplicaSet {
+	set := replicaSet(name, owner, "", "example.com/payments:2.0.1", 2, 2)
+	set.OwnerReferences = []metav1.OwnerReference{controllerRef(kind, owner)}
+	set.Annotations = map[string]string{"made.up.io/revision": "7"}
+	return set
+}
+
+// The kind of the controller was never what made a ReplicaSet worth reporting —
+// only knowing the name of its revision annotation was. An Argo Rollout creates
+// and scales ordinary ReplicaSets, so its revisions are collected like any other
+// (ADR 0049 §1). The number is not: that controller writes it under a key of its
+// own, and guessing at keys is what §3 declines.
+func TestRevisionsCoverAnyControllerOfAReplicaSet(t *testing.T) {
+	owner := controllerRef("ReplicaSet", "payments-abc")
+	got := collectReplicaSets(t,
+		replicaSetUnderKind("payments-abc", "Rollout", "payments"),
+		pod("payments-pod", &owner),
+	)
+	if len(got) != 1 {
+		t.Fatalf("collected %d revisions, want the Rollout's one: %+v", len(got), got)
+	}
+	rev := got[0]
+	if rev.Workload.Kind != "Rollout" || rev.Workload.Name != "payments" {
+		t.Errorf("workload = %+v, want the Rollout that owns the set", rev.Workload)
+	}
+	if rev.Revision != nil {
+		t.Errorf("revision = %d, want absent: the key is the controller's, not ours", *rev.Revision)
+	}
+	if rev.CreatedAt.IsZero() || len(rev.Containers) == 0 {
+		t.Errorf("the record lost what orders and identifies it: %+v", rev)
+	}
+}
+
+// A ReplicaSet nothing controls is the workload, not a revision of one. Its pods
+// resolve to the set itself, so reporting it here would file a workload as a
+// version of nothing (ADR 0049 §2).
+func TestABareReplicaSetIsNotARevision(t *testing.T) {
+	bare := replicaSet("standalone", "", "", "example.com/app:1.0.0", 1, 1)
+	bare.OwnerReferences = nil
+	owner := controllerRef("ReplicaSet", "standalone")
+	if got := collectReplicaSets(t, bare, pod("standalone-pod", &owner)); len(got) != 0 {
+		t.Errorf("collected %+v, want nothing for a ReplicaSet with no controller", got)
 	}
 }

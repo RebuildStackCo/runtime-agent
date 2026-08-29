@@ -245,15 +245,15 @@ type nodeMetadataPayload struct {
 	Nodes      []collector.NodeInfo `json:"nodes"`
 }
 
-// deploymentRevisionsPayload is the current revision history of every collected
-// Deployment: which ReplicaSets exist, what each runs, how many replicas each
-// carries (ADR 0030).
+// workloadRevisionsPayload is the current revision history of every collected
+// workload that manages ReplicaSets: which sets exist, what each runs, how many
+// replicas each carries (ADR 0030, ADR 0049).
 //
 // Superseding batch under a fixed key. Kubernetes keeps only
 // `revisionHistoryLimit` revisions, so history beyond that is the backend's to
-// accumulate (ADR 0018). Deployments alone: StatefulSet and DaemonSet revisions
-// live in `controllerrevisions`, which the agent has no RBAC for.
-type deploymentRevisionsPayload struct {
+// accumulate (ADR 0018). StatefulSet and DaemonSet revisions live in
+// `controllerrevisions`, which the agent does not read.
+type workloadRevisionsPayload struct {
 	Kind       string             `json:"kind"`
 	Source     string             `json:"source"`
 	CapturedAt time.Time          `json:"captured_at"`
@@ -595,18 +595,18 @@ func (s *Spool) WriteNodeMetadata(capturedAt time.Time, nodes []collector.NodeIn
 	return s.write("node-metadata.json", payload)
 }
 
-// WriteDeploymentRevisions writes the current revision history as one
+// WriteWorkloadRevisions writes the current revision history as one
 // superseding batch. records must already be in a deterministic order
 // (revisions.Aggregate sorts them) so the payload bytes are stable — the golden
 // contract.
-func (s *Spool) WriteDeploymentRevisions(capturedAt time.Time, records []revisions.Record) error {
-	payload := deploymentRevisionsPayload{
-		Kind:       "deployment_revisions",
+func (s *Spool) WriteWorkloadRevisions(capturedAt time.Time, records []revisions.Record) error {
+	payload := workloadRevisionsPayload{
+		Kind:       "workload_revisions",
 		Source:     SourceStructural,
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
-	return s.write("deployment-revisions.json", payload)
+	return s.write("workload-revisions.json", payload)
 }
 
 // WriteWorkloadPolicy writes the workload-policy snapshot. It supersedes its
