@@ -40,6 +40,15 @@ type BinaryInfo struct {
 	// PGO is true when the binary was built with profile-guided optimization
 	// (a "-pgo" build setting with a non-empty value).
 	PGO bool `json:"pgo"`
+	// PeakRSSBytes is the kernel's own high-water mark of this process's
+	// resident memory since it started, and CPUsAllowed is how many CPUs its
+	// affinity mask permits. Both are measured facts in a report of structural
+	// ones; the controller splits them into their own payload (ADR 0052).
+	//
+	// Zero means not read, not zero: a live process has a non-zero peak and at
+	// least one permitted CPU.
+	PeakRSSBytes int64 `json:"peak_rss_bytes,omitempty"`
+	CPUsAllowed  int   `json:"cpus_allowed,omitempty"`
 	// PodUID and ContainerID come from the process cgroup; either may be empty
 	// for a host process outside the kubepods hierarchy.
 	PodUID      string `json:"pod_uid,omitempty"`
@@ -163,6 +172,11 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 		return
 	}
 
+	// Read last, and only for a binary that is being kept: a process outside the
+	// scope or dropped as infrastructure has its status file left unopened, the
+	// same ordering the cgroup read establishes above (invariant 4).
+	status := ReadProcessStatus(s.procRoot, pid)
+
 	res.Counters.GoFound++
 	res.Binaries = append(res.Binaries, BinaryInfo{
 		PID:          pid,
@@ -172,6 +186,8 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 		Settings:     buildSettings(info),
 		GoDebug:      goDebugDefaults(info),
 		PGO:          hasPGO(info),
+		PeakRSSBytes: status.PeakRSSBytes,
+		CPUsAllowed:  status.CPUsAllowed,
 		PodUID:       binding.PodUID,
 		ContainerID:  binding.ContainerID,
 	})

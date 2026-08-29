@@ -1,0 +1,28 @@
+{
+  "kind": "process_peaks",
+  "source": "measured",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "records": [
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "app",
+      "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "peak_rss_bytes": 504365056,
+      "processes": 2,
+      "cpus_allowed_min": 4,
+      "cpus_allowed_max": 8
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "StatefulSet",
+      "workload_name": "db",
+      "container": "db",
+      "peak_rss_bytes": 100663296,
+      "processes": 1,
+      "cpus_allowed_min": 8,
+      "cpus_allowed_max": 8
+    }
+  ]
+}

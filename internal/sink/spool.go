@@ -141,6 +141,20 @@ type goInventoryPayload struct {
 	Records    []inventory.GoRecord `json:"records"`
 }
 
+// processPeaksPayload is what the processes of each collected workload container
+// currently reach on the nodes that run them: a superseding batch under a fixed
+// key, like the inventory beside it (ADR 0052).
+//
+// CapturedAt dates the assembly. The peaks themselves carry no window — each is
+// a high-water mark since its process started, which is a reading rather than a
+// measurement over an interval (ADR 0034's shape).
+type processPeaksPayload struct {
+	Kind       string                 `json:"kind"`
+	Source     string                 `json:"source"`
+	CapturedAt time.Time              `json:"captured_at"`
+	Records    []inventory.PeakRecord `json:"records"`
+}
+
 // goBuildPayload is what one build is made of and how it was built, keyed by its
 // image digest. Alone among the structural payloads it neither supersedes nor
 // carries a capture time — these are properties of the build, fixed when the
@@ -530,6 +544,19 @@ func (s *Spool) WriteGoInventory(capturedAt time.Time, cov inventory.Coverage, r
 		Records:    records,
 	}
 	return s.write("go-inventory.json", payload)
+}
+
+// WriteProcessPeaks writes the current peak records as one superseding batch.
+// Records must arrive sorted (Store.PeakSnapshot sorts them) so the payload
+// bytes are stable — the golden contract.
+func (s *Spool) WriteProcessPeaks(capturedAt time.Time, records []inventory.PeakRecord) error {
+	payload := processPeaksPayload{
+		Kind:       "process_peaks",
+		Source:     SourceMeasured,
+		CapturedAt: capturedAt.UTC(),
+		Records:    records,
+	}
+	return s.write("process-peaks.json", payload)
 }
 
 // WriteGoBuild writes one build's facts. Unlike the superseding go-inventory,

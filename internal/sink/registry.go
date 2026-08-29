@@ -117,6 +117,18 @@ var registry = []PayloadKind{
 		ADR:        "0010, 0017, 0018",
 	},
 	{
+		// A reading, not a window: VmHWM is a high-water mark the kernel keeps
+		// since a process started, so it belongs to no window — the shape
+		// ADR 0034 settled for the restart counter. Measured, so it cannot ride
+		// in `go_inventory` beside the structural facts read from the same
+		// binary (ADR 0012 §2).
+		Kind:       "process_peaks",
+		Source:     SourceMeasured,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0052",
+	},
+	{
 		Kind:       "go_build",
 		Source:     SourceStructural,
 		NaturalKey: "image digest",

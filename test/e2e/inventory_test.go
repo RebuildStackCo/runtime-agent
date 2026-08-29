@@ -41,6 +41,8 @@ const spoolPath = spoolDir + "/go-inventory.json"
 
 const nodeMetadataSpoolPath = spoolDir + "/node-metadata.json"
 
+const processPeaksSpoolPath = spoolDir + "/process-peaks.json"
+
 // buildSpoolPath mirrors the sink's filename rule for a build payload: one file
 // per image digest, with the digest's colon replaced so the name is filesystem-
 // and tooling-safe (internal/sink.digestFileToken).
@@ -152,6 +154,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 				t.Errorf("workload = %s/%s, want Deployment/goworkload", rec.WorkloadKind, rec.WorkloadName)
 			}
 			checkSampleBuild(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
+			checkSamplePeak(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkNodeArchitecture(ctx, t, config, clientset, ns, controllerPod)
 			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
 			return
@@ -244,6 +247,73 @@ func findSampleRecord(ctx context.Context, t *testing.T, config *rest.Config, cs
 		}
 	}
 	return goInventoryRecord{}, inventoryCoverage{}, false
+}
+
+// checkSamplePeak asserts that the measured half of the same node reports
+// arrived as its own payload: a real high-water mark, read from
+// `/proc/<pid>/status` on the node, for the sample's own build (ADR 0052).
+//
+// It is written on the same flush as the inventory snapshot but after it, so a
+// read can land between the two writes: poll briefly rather than fail on the
+// race, exactly as the build payload does.
+func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, processPeaksSpoolPath)
+		if ok {
+			var payload struct {
+				Kind    string `json:"kind"`
+				Source  string `json:"source"`
+				Records []struct {
+					WorkloadName   string `json:"workload_name"`
+					Container      string `json:"container"`
+					ImageDigest    string `json:"image_digest"`
+					PeakRSSBytes   int64  `json:"peak_rss_bytes"`
+					Processes      int    `json:"processes"`
+					CPUsAllowedMin int    `json:"cpus_allowed_min"`
+					CPUsAllowedMax int    `json:"cpus_allowed_max"`
+				} `json:"records"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("process peaks payload not valid JSON: %v", err)
+			}
+			for _, r := range payload.Records {
+				if r.WorkloadName != "goworkload" {
+					continue
+				}
+				if payload.Kind != "process_peaks" || payload.Source != "measured" {
+					t.Errorf("kind/source = %q/%q, want process_peaks/measured", payload.Kind, payload.Source)
+				}
+				// The kernel's own number for a process that is running: it
+				// cannot be zero, and no Go runtime starts in under 256 KiB.
+				// The bound stays well under what the sample actually reaches
+				// (~1.7 MB) so a leaner sample does not turn this into a flake.
+				if r.PeakRSSBytes < 1<<18 {
+					t.Errorf("peak_rss_bytes = %d, want a real high-water mark", r.PeakRSSBytes)
+				}
+				if r.Processes < 1 {
+					t.Errorf("processes = %d, want at least the one replica", r.Processes)
+				}
+				if r.CPUsAllowedMin < 1 || r.CPUsAllowedMax < r.CPUsAllowedMin {
+					t.Errorf("cpus allowed = %d..%d, want a sane range", r.CPUsAllowedMin, r.CPUsAllowedMax)
+				}
+				// The peak belongs to the build that reached it, so it joins to
+				// the inventory record's digest and to `go_build`.
+				if r.ImageDigest != digest {
+					t.Errorf("image_digest = %q, want %q — the peak must key to the build", r.ImageDigest, digest)
+				}
+				t.Logf("peak for %s/%s: %d bytes over %d process(es), %d..%d CPUs allowed",
+					r.WorkloadName, r.Container, r.PeakRSSBytes, r.Processes, r.CPUsAllowedMin, r.CPUsAllowedMax)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("process_peaks payload never carried the sample workload")
+			return
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
 
 // checkSampleBuild asserts that the build payload for the sample reached the

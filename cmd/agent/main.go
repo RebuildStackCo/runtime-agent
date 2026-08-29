@@ -330,12 +330,17 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		// cannot disagree about which workloads exist.
 		evicted := goStore.Retain(inventory.LiveKeys(podWatcher.Pods()))
 		goStore.RetainNodes(nodeWatcher.Names())
-		if evicted.Records > 0 || evicted.Builds > 0 {
+		if evicted.Records > 0 || evicted.Builds > 0 || evicted.Peaks > 0 {
 			logger.Info("go inventory forgot departed workloads",
-				"records", evicted.Records, "builds", evicted.Builds)
+				"records", evicted.Records, "builds", evicted.Builds, "peaks", evicted.Peaks)
 		}
 		if err := spool.WriteGoInventory(time.Now(), goStore.Coverage(), goStore.Snapshot()); err != nil {
 			logger.Error("spooling go inventory", "error", err)
+		}
+		// The measured half of the same reports, in its own payload: a peak is
+		// not the kind of claim the inventory beside it makes (ADR 0052).
+		if err := spool.WriteProcessPeaks(time.Now(), goStore.PeakSnapshot()); err != nil {
+			logger.Error("spooling process peaks", "error", err)
 		}
 		// Build facts are keyed by image digest and immutable for it, so each is
 		// written once and marked only after the write succeeded; a failed write
