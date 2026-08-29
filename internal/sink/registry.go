@@ -67,6 +67,17 @@ var registry = []PayloadKind{
 		ADR:        "0006, 0013",
 	},
 	{
+		// Closed windows only: bytes accumulate, so a partial window read as a
+		// rate over the whole one is wrong, and nothing in the agent consumes an
+		// open network window. So this kind has no snapshot sibling, unlike
+		// usage (ADR 0053 §4).
+		Kind:       "network_window",
+		Source:     SourceMeasured,
+		NaturalKey: "(window start, window length)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0053",
+	},
+	{
 		Kind:       "oom_kill",
 		Source:     SourceJournal,
 		NaturalKey: "(finished-at, namespace, pod, container, restart count)",

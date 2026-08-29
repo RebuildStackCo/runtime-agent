@@ -299,6 +299,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				}
 			}
 		},
+		func(records []*rollup.NetworkRecord) {
+			logger.Info("network windows closed", "records", len(records))
+			if spool != nil {
+				if err := spool.WriteNetworkWindows(records, usagePoller.Observation()); err != nil {
+					logger.Error("spooling network windows", "error", err)
+				}
+			}
+		},
 		func(node string, err error) {
 			// Routine during node lifecycle events; counters recover the
 			// full interval on the next successful poll.

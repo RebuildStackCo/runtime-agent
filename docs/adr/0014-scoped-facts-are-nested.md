@@ -3,6 +3,7 @@
 Date: 2026-08-20
 Status: Accepted
 Amends: 0012 §5
+Amended by: 0053
 
 Amends §5 of [ADR 0012](0012-payload-registry-and-provenance.md). That ADR is
 not superseded: its registry, provenance classes, and join keys stand

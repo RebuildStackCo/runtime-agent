@@ -77,6 +77,31 @@ func fixedRecords() []*rollup.Record {
 // fixedObservation is a deterministic collection state: a cluster where some
 // scrapes have failed and PSI is not exposed. The golden must show that a
 // failed scrape is visible in the payload, not inferable only from logs.
+// fixedNetwork is the finding in one payload: a log shipper on the host network
+// moving two orders of magnitude more than the service it collects from — and
+// flagged, because its counters are the node's, not its own.
+func fixedNetwork() []*rollup.NetworkRecord {
+	acc := rollup.NewNetworkAccumulator(time.Hour)
+	t0 := windowStart.Add(10 * time.Minute)
+	t1 := t0.Add(5 * time.Minute)
+
+	acc.Observe(rollup.NetworkKey{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web"},
+		t0, t1, rollup.NetworkDelta{RxBytes: 12 << 20, TxBytes: 48 << 20, Interfaces: 1}, false)
+	acc.Observe(rollup.NetworkKey{Namespace: "observability", WorkloadKind: "DaemonSet", WorkloadName: "log-shipper"},
+		t0, t1, rollup.NetworkDelta{RxBytes: 3 << 20, TxBytes: 4096 << 20, TxErrors: 17, Interfaces: 2}, true)
+
+	return acc.CloseBefore(windowStart.Add(2 * time.Hour))
+}
+
+func TestGoldenNetworkWindowPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteNetworkWindows(fixedNetwork(), fixedObservation()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("network-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "network-window.golden.json")
+}
+
 func fixedObservation() collector.Observation {
 	return collector.Observation{
 		PollIntervalSeconds: 30,

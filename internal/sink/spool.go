@@ -118,6 +118,22 @@ type usagePayload struct {
 	Records       []*rollup.Record      `json:"records"`
 }
 
+// networkPayload is one closed window of every collected workload's network
+// counters. Pod-scoped, so its records key on the workload and not the
+// container the usage records key on (ADR 0053 §1).
+//
+// It carries the same Observation as the usage payloads and for the same
+// reason: these are measured facts, and a workload that moved nothing looks
+// exactly like one whose node could not be scraped (ADR 0012).
+type networkPayload struct {
+	Kind          string                  `json:"kind"`
+	Source        string                  `json:"source"`
+	WindowStart   time.Time               `json:"window_start"`
+	WindowSeconds int64                   `json:"window_seconds"`
+	Observation   collector.Observation   `json:"observation"`
+	Records       []*rollup.NetworkRecord `json:"records"`
+}
+
 // oomPayload is one OOM kill event; events bypass windows and ship
 // immediately (ADR 0006).
 type oomPayload struct {
@@ -408,6 +424,30 @@ func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs collector.Obser
 		}
 		if err := os.Remove(filepath.Join(s.dir, k.name()+".snapshot.json")); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("removing superseded snapshot: %w", err)
+		}
+	}
+	return nil
+}
+
+// WriteNetworkWindows writes final closed-window network records, one file per
+// window. There is no snapshot to remove: this kind has none.
+func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs collector.Observation) error {
+	grouped := make(map[windowKey][]*rollup.NetworkRecord)
+	for _, r := range records {
+		grouped[windowKey{start: r.WindowStart, seconds: r.WindowSeconds}] = append(
+			grouped[windowKey{start: r.WindowStart, seconds: r.WindowSeconds}], r)
+	}
+	for k, group := range grouped {
+		payload := networkPayload{
+			Kind:          "network_window",
+			Source:        SourceMeasured,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Observation:   obs,
+			Records:       group,
+		}
+		if err := s.write(fmt.Sprintf("network-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+			return err
 		}
 	}
 	return nil
