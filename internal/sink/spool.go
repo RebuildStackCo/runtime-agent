@@ -147,7 +147,8 @@ type goInventoryPayload struct {
 // image was produced, so a redelivery is byte-identical (ADR 0017).
 //
 // Settings may be absent: the toolchain records vcs.* only when it can, which in
-// container builds is the exception (ADR 0019).
+// container builds is the exception (ADR 0019). GoDebug may be absent for a
+// second reason — the build matches its toolchain's own defaults (ADR 0050 §2).
 type goBuildPayload struct {
 	Kind        string            `json:"kind"`
 	Source      string            `json:"source"`
@@ -156,6 +157,7 @@ type goBuildPayload struct {
 	MainModule  string            `json:"main_module"`
 	Modules     []nodescan.Module `json:"modules"`
 	Settings    map[string]string `json:"settings,omitempty"`
+	GoDebug     map[string]string `json:"godebug,omitempty"`
 }
 
 // containerRestartsPayload is every collected container's restart history within
@@ -551,6 +553,7 @@ func (s *Spool) WriteGoBuild(b inventory.BuildFacts) error {
 		MainModule:  b.MainModule,
 		Modules:     modules,
 		Settings:    b.Settings,
+		GoDebug:     b.GoDebug,
 	}
 	return s.write("go-build-"+digestFileToken(b.ImageDigest)+".json", payload)
 }

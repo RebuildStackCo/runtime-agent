@@ -495,7 +495,7 @@ test fails if a kind ships without appearing here (ADR 0022).
 | `cluster_policy` | Per collected namespace, its LimitRanges and ResourceQuotas; plus the cluster's PriorityClasses and StorageClasses, which workloads reference by name (ADR 0032), and `unavailable_sources` for any of those the agent could not read — never granted, or no longer being fed (ADR 0033, ADR 0035). StorageClass `parameters` are never read | no |
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture. The **name** is your cluster's, and on EKS and on GKE's legacy naming it encodes the node's private address — `ip-10-42-13-201.eu-west-1.compute.internal`. The agent reads no address field; the name it does read may be one (ADR 0039) | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
-| `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
+| `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings, and two allow-listed GODEBUG defaults. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
 
 Each declares its provenance in a `source` field — `structural` (read from a
@@ -706,6 +706,14 @@ the filter-early rule there, before any record is formed.
 | `vcs.revision` | the commit the binary was built from |
 | `vcs.time` | that commit's timestamp (not the build time — Go does not record it) |
 | `vcs.modified` | whether the working tree was dirty |
+
+Two GODEBUG defaults are read out of the toolchain's compound `DefaultGODEBUG`
+setting and shipped as `godebug`
+([ADR 0050](adr/0050-godebug-defaults-are-a-build-fact.md)): `containermaxprocs`
+and `updatemaxprocs`, each `0` or `1`, which say whether the binary's runtime
+sizes `GOMAXPROCS` from the container's CPU quota. The compound value is parsed,
+never shipped whole: the rest of what it carries is TLS, HTTP and type-checker
+switches, and none of it is collected.
 
 Everything outside it is discarded on the node, including **`-ldflags`,
 `-gcflags`, `-asmflags` and `-tags`** — free-form flags that routinely carry

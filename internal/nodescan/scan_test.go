@@ -233,6 +233,9 @@ func realWorldSettings() []debug.BuildSetting {
 		{Key: "vcs.revision", Value: "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485"},
 		{Key: "vcs.time", Value: "2026-08-21T20:13:54Z"},
 		{Key: "vcs.modified", Value: "true"},
+		// What a main module still on `go 1.21` gets from a current toolchain:
+		// six names, only two of which decide anything about resources.
+		{Key: "DefaultGODEBUG", Value: "asynctimerchan=1,containermaxprocs=0,gotypesalias=0,httplaxcontentlength=1,tls3des=1,updatemaxprocs=0"},
 	}
 }
 
@@ -293,6 +296,71 @@ func TestBuildSettingsOfAnUnstampedBinaryIsNil(t *testing.T) {
 	}
 	if got := buildSettings(&buildinfo.BuildInfo{}); got != nil {
 		t.Errorf("buildSettings of a settingless binary = %v, want nil", got)
+	}
+}
+
+func TestGoDebugDefaultsKeepsOnlyTheAllowList(t *testing.T) {
+	got := goDebugDefaults(&buildinfo.BuildInfo{Settings: realWorldSettings()})
+	want := map[string]string{"containermaxprocs": "0", "updatemaxprocs": "0"}
+	if !maps.Equal(got, want) {
+		t.Errorf("goDebugDefaults = %v, want %v", got, want)
+	}
+}
+
+// The compound value carries names from crypto, net/http and go/types that say
+// nothing about resources. It is parsed, so the whole string never reaches a
+// record — the case the allow-list would otherwise have to cover key by key.
+func TestTheCompoundSettingNeverShipsWhole(t *testing.T) {
+	settings := buildSettings(&buildinfo.BuildInfo{Settings: realWorldSettings()})
+	if v, ok := settings["DefaultGODEBUG"]; ok {
+		t.Errorf("DefaultGODEBUG survived the build-settings allow-list with value %q", v)
+	}
+	for name := range goDebugDefaults(&buildinfo.BuildInfo{Settings: realWorldSettings()}) {
+		if _, allowed := goDebugAllowList[name]; !allowed {
+			t.Errorf("%s is not on the GODEBUG allow-list", name)
+		}
+	}
+}
+
+// Absence is the toolchain's own default, not a missing value — the reading
+// ADR 0050 §2 obliges the backend to make, asserted on the side that produces it.
+func TestGoDebugDefaultsIsNilWhenTheBuildMatchesItsToolchain(t *testing.T) {
+	if got := goDebugDefaults(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "-trimpath", Value: "true"},
+	}}); got != nil {
+		t.Errorf("goDebugDefaults without the setting = %v, want nil", got)
+	}
+	if got := goDebugDefaults(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "DefaultGODEBUG", Value: ""},
+	}}); got != nil {
+		t.Errorf("goDebugDefaults of an empty setting = %v, want nil", got)
+	}
+	if got := goDebugDefaults(&buildinfo.BuildInfo{}); got != nil {
+		t.Errorf("goDebugDefaults of a settingless binary = %v, want nil", got)
+	}
+}
+
+func TestGoDebugDefaultsDropsWhatItCannotRead(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  map[string]string
+	}{
+		{"no equals sign", "containermaxprocs", nil},
+		{"empty value", "containermaxprocs=", nil},
+		{"value beyond the bound", "containermaxprocs=000000000", nil},
+		{"one unreadable pair does not lose the other", "containermaxprocs,updatemaxprocs=1", map[string]string{"updatemaxprocs": "1"}},
+		{"later duplicate wins, as the runtime reads it", "containermaxprocs=0,containermaxprocs=1", map[string]string{"containermaxprocs": "1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := goDebugDefaults(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+				{Key: "DefaultGODEBUG", Value: tc.value},
+			}})
+			if !maps.Equal(got, tc.want) {
+				t.Errorf("goDebugDefaults = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

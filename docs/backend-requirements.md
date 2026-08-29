@@ -349,6 +349,17 @@ build had a VCS working tree, which containerized builds frequently do not: thei
 absence is the common case and MUST NOT be surfaced as missing data or as a
 coverage gap. The whole `settings` object is omitted when nothing was kept.
 
+**`go_build.godebug` is read together with `go_build.go_version`, never alone**
+([ADR 0050](adr/0050-godebug-defaults-are-a-build-fact.md)). It carries at most
+two names, `containermaxprocs` and `updatemaxprocs`, and only when the build
+deviates from the defaults of the toolchain that produced it. An absent name
+therefore MUST NOT be read as `0`: it means the build takes its toolchain's
+default, and which default that is follows from `go_version` — from Go 1.25 both
+are on, before it neither exists. The object is omitted when the build deviates
+in nothing. A `GODEBUG` variable in `workload_metadata.runtime_env` overrides
+both at startup; it is a fact about a workload, this is a fact about a build, and
+the backend MUST NOT merge them into one value.
+
 **`node_metadata.nodes[].architecture` is what `go_build.settings.GOARCH` is
 compared against.** A build's target architecture and microarchitecture level
 mean nothing on their own; the comparison is the finding. The field is the

@@ -6,6 +6,8 @@ Status: Accepted
 
 Amends: 0046 §2
 
+Amended by: 0050
+
 Narrows ADR 0046's blanket drop of `env` to a closed list of Go runtime knobs,
 and ships them in `workload_metadata`. `envFrom`, `args` and `command` are
 unchanged, and so is every variable not on the list.
