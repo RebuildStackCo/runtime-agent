@@ -6,6 +6,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -108,6 +109,44 @@ type ServiceExposure struct {
 	// answer to what a drain costs.
 	InternalTrafficPolicy string `json:"internal_traffic_policy,omitempty"`
 	ExternalTrafficPolicy string `json:"external_traffic_policy,omitempty"`
+	// TrafficDistribution is `spec.trafficDistribution` verbatim — the
+	// customer's request that traffic prefer a nearby endpoint.
+	TrafficDistribution string `json:"traffic_distribution,omitempty"`
+	// TopologyMode is the annotation that asked for the same thing before the
+	// field existed, kept verbatim and bounded. A value outside Kubernetes' own
+	// vocabulary is reported as written rather than normalized away: a
+	// misspelled mode is a Service that asked for nothing while looking
+	// configured, which is the finding (ADR 0051 §3).
+	TopologyMode string `json:"topology_mode,omitempty"`
+	// Endpoints is one entry per address family the Service publishes. They are
+	// separate because a dual-stack Service lists the same pod in an IPv4 slice
+	// and an IPv6 slice: summed, every zone doubles (ADR 0051 §2).
+	Endpoints []EndpointZones `json:"endpoints,omitempty"`
+}
+
+// EndpointZones is where one Service's ready endpoints of one address family
+// sit, and how many of them the cluster gave a routing hint to.
+//
+// No endpoint is identified. The counts are a property of the Service's
+// routing, the way node totals are a property of the node, and the addresses
+// they are counted from never enter the agent's cache (ADR 0051 §1).
+type EndpointZones struct {
+	// AddressType is IPv4, IPv6 or FQDN, as the slice declares it.
+	AddressType string `json:"address_type"`
+	// Ready counts endpoints whose ready condition is true. An unset condition
+	// counts as ready, which is what the API tells a consumer that does not
+	// understand it to assume.
+	Ready int `json:"ready"`
+	// Zones counts those ready endpoints by zone.
+	Zones map[string]int `json:"zones,omitempty"`
+	// Unzoned counts ready endpoints carrying no zone at all — a node without
+	// the topology label, not a zone whose name is empty.
+	Unzoned int `json:"unzoned,omitempty"`
+	// Hinted counts ready endpoints the EndpointSlice controller gave
+	// `hints.forZones`. Zero against a set TrafficDistribution is the whole
+	// finding: the routing was asked for and the cluster declined to arrange
+	// it, silently (ADR 0051).
+	Hinted int `json:"hinted"`
 }
 
 // WorkloadPolicy is everything outside a workload's own spec that bounds it:
@@ -277,8 +316,8 @@ func (w *PodWatcher) WorkloadPolicies() ([]WorkloadPolicy, []string) {
 // cluster-policy question.
 var (
 	workloadPolicySources = []string{
-		"services", "pod_disruption_budgets", "horizontal_pod_autoscalers",
-		"persistent_volume_claims",
+		"services", "endpoint_slices", "pod_disruption_budgets",
+		"horizontal_pod_autoscalers", "persistent_volume_claims",
 	}
 	clusterPolicySources = []string{
 		"limit_ranges", "resource_quotas", "priority_classes", "storage_classes",
@@ -362,6 +401,7 @@ func (w *PodWatcher) attachServices(byKey map[workloadKey]*WorkloadPolicy) {
 			continue
 		}
 		reduced := describeService(svc)
+		reduced.Endpoints = w.endpointZones(svc.Namespace, svc.Name)
 		for _, key := range w.workloadsSelecting(svc.Namespace, labels.SelectorFromSet(svc.Spec.Selector)) {
 			if p, ok := byKey[key]; ok {
 				p.Services = append(p.Services, reduced)
@@ -383,7 +423,33 @@ func describeService(svc *corev1.Service) ServiceExposure {
 		Headless:              svc.Spec.ClusterIP == corev1.ClusterIPNone,
 		InternalTrafficPolicy: internalTrafficPolicy(svc),
 		ExternalTrafficPolicy: string(svc.Spec.ExternalTrafficPolicy),
+		TrafficDistribution:   ptr.Deref(svc.Spec.TrafficDistribution, ""),
+		TopologyMode:          topologyMode(svc),
 	}
+}
+
+// The two annotations that asked for topology-aware routing before
+// `spec.trafficDistribution` existed. Both are still set on live clusters, and
+// the older one is read second so a Service carrying both reports the current
+// spelling.
+var topologyModeAnnotations = []string{
+	"service.kubernetes.io/topology-mode",
+	"service.kubernetes.io/topology-aware-hints",
+}
+
+// maxTopologyModeValue bounds what is kept. The vocabulary is "Auto" and
+// "Disabled"; anything past this is not a mode, and a prefix of an unexpected
+// string would ship looking like one (ADR 0019's rule, applied to an
+// annotation).
+const maxTopologyModeValue = 32
+
+func topologyMode(svc *corev1.Service) string {
+	for _, name := range topologyModeAnnotations {
+		if v, ok := svc.Annotations[name]; ok && v != "" && len(v) <= maxTopologyModeValue {
+			return v
+		}
+	}
+	return ""
 }
 
 func internalTrafficPolicy(svc *corev1.Service) string {
@@ -391,6 +457,62 @@ func internalTrafficPolicy(svc *corev1.Service) string {
 		return ""
 	}
 	return string(*svc.Spec.InternalTrafficPolicy)
+}
+
+// endpointZones counts one Service's ready endpoints by zone, one entry per
+// address family, sorted by family so the payload bytes are deterministic.
+//
+// Slices are found by the label the EndpointSlice controller sets, which is the
+// only link the agent needs: the entries it reads carry a zone and nothing that
+// identifies the pod behind it — the cache transform removed the rest before
+// this object was stored (ADR 0051 §1).
+func (w *PodWatcher) endpointZones(namespace, service string) []EndpointZones {
+	if w.epsLister == nil {
+		return nil
+	}
+	selector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: service})
+	slices, err := w.epsLister.EndpointSlices(namespace).List(selector)
+	if err != nil || len(slices) == 0 {
+		return nil
+	}
+
+	byFamily := make(map[string]*EndpointZones)
+	for _, slice := range slices {
+		family := string(slice.AddressType)
+		z, ok := byFamily[family]
+		if !ok {
+			z = &EndpointZones{AddressType: family, Zones: make(map[string]int)}
+			byFamily[family] = z
+		}
+		for i := range slice.Endpoints {
+			e := &slice.Endpoints[i]
+			// An unset ready condition means ready: the API's instruction to a
+			// consumer that does not understand the condition, and reading it
+			// the other way would under-count every zone.
+			if !ptr.Deref(e.Conditions.Ready, true) {
+				continue
+			}
+			z.Ready++
+			if zone := ptr.Deref(e.Zone, ""); zone != "" {
+				z.Zones[zone]++
+			} else {
+				z.Unzoned++
+			}
+			if e.Hints != nil && len(e.Hints.ForZones) > 0 {
+				z.Hinted++
+			}
+		}
+	}
+
+	out := make([]EndpointZones, 0, len(byFamily))
+	for _, z := range byFamily {
+		if len(z.Zones) == 0 {
+			z.Zones = nil
+		}
+		out = append(out, *z)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AddressType < out[j].AddressType })
+	return out
 }
 
 // workloadsSelecting resolves a label selector to the workloads of the admitted

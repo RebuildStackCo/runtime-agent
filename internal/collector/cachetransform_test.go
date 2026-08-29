@@ -9,8 +9,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/utils/ptr"
 )
 
 // secretish is what makes this an invariant and not housekeeping: env values
@@ -283,5 +285,62 @@ func checkProbesReduced(t *testing.T, kind string, c corev1.Container) {
 		if h := p.GRPC; h != nil && h.Service != nil {
 			t.Errorf("%s: container %q %s probe reached the cache with service %q", kind, c.Name, name, *h.Service)
 		}
+	}
+}
+
+// The addresses in an EndpointSlice are pod IPs and its targetRef is a pod's
+// name and UID. The zone counts need none of them, so the promise is stronger
+// than "not shipped": they are never held (ADR 0051 §1).
+func TestNoEndpointIdentityEntersTheCache(t *testing.T) {
+	slice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "shop", Name: "web-abc",
+			Labels: map[string]string{discoveryv1.LabelServiceName: "web"},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Ports:       []discoveryv1.EndpointPort{{Port: ptr.To(int32(8080))}},
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:          []string{"10.4.1.7"},
+			Hostname:           ptr.To("web-1"),
+			NodeName:           ptr.To("node-1"),
+			Zone:               ptr.To("eu-west-1a"),
+			TargetRef:          &corev1.ObjectReference{Kind: "Pod", Namespace: "shop", Name: "web-1", UID: "uid-web-1"},
+			DeprecatedTopology: map[string]string{"kubernetes.io/hostname": "node-1"},
+			Conditions:         discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+		}},
+	}
+
+	out, err := dropUncollectedFields(slice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.(*discoveryv1.EndpointSlice)
+	e := got.Endpoints[0]
+	if e.Addresses != nil {
+		t.Errorf("endpoint reached the cache with addresses %v", e.Addresses)
+	}
+	if e.TargetRef != nil {
+		t.Errorf("endpoint reached the cache with a targetRef %+v", e.TargetRef)
+	}
+	if e.NodeName != nil || e.Hostname != nil {
+		t.Errorf("endpoint reached the cache with node %v / hostname %v", e.NodeName, e.Hostname)
+	}
+	if e.DeprecatedTopology != nil {
+		t.Errorf("endpoint reached the cache with deprecated topology %v", e.DeprecatedTopology)
+	}
+	if got.Ports != nil {
+		t.Errorf("slice reached the cache with ports %+v", got.Ports)
+	}
+
+	// What the counting reads must survive, or the transform has taken the
+	// payload with the identity.
+	if ptr.Deref(e.Zone, "") != "eu-west-1a" {
+		t.Errorf("zone = %v, want eu-west-1a", e.Zone)
+	}
+	if !ptr.Deref(e.Conditions.Ready, false) {
+		t.Error("the ready condition did not survive the transform")
+	}
+	if got.AddressType != discoveryv1.AddressTypeIPv4 {
+		t.Errorf("address type = %v, want IPv4", got.AddressType)
 	}
 }

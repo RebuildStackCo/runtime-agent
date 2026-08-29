@@ -18,6 +18,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -145,12 +146,25 @@ func createPolicyFixtures(ctx context.Context, t *testing.T, cs kubernetes.Inter
 		t.Fatalf("creating deployment: %v", err)
 	}
 
+	// The zone has to exist before the slices are written: the EndpointSlice
+	// controller copies it from the node onto each endpoint, and kind labels no
+	// node with a topology (ADR 0051).
+	labelNodesWithAZone(ctx, t, cs)
+
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "web"},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: map[string]string{"app": "web"},
 			Ports:    []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromInt32(8080)}},
+			// Asking for topology-aware routing. Whether the cluster arranges it
+			// is the cluster's decision, and the payload has to report which
+			// happened rather than that it was asked for.
+			//
+			// The current spelling; the unit tests cover the deprecated
+			// `PreferClose`, because both reach the payload unchanged and a
+			// fleet mid-migration sets both (ADR 0051 §3).
+			TrafficDistribution: ptr.To("PreferSameZone"),
 		},
 	}
 	if _, err := cs.CoreV1().Services(ns).Create(ctx, service, metav1.CreateOptions{}); err != nil {
@@ -344,6 +358,26 @@ func checkRevisionsReported(ctx context.Context, t *testing.T, config *rest.Conf
 // payload — and that no source is declared unavailable, which is what proves
 // the six ClusterRole grants of ADR 0032 actually work against a real API
 // server. Since ADR 0033 a missing grant degrades silently everywhere else.
+// labelNodesWithAZone gives every node the topology label a cloud provider would
+// set. Without it every endpoint is unzoned and the zone counts, while correct,
+// assert nothing.
+func labelNodesWithAZone(ctx context.Context, t *testing.T, cs kubernetes.Interface) {
+	t.Helper()
+	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("listing nodes: %v", err)
+	}
+	patch := []byte(`{"metadata":{"labels":{"topology.kubernetes.io/zone":"` + e2eZone + `"}}}`)
+	for _, node := range nodes.Items {
+		if _, err := cs.CoreV1().Nodes().Patch(ctx, node.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+			t.Fatalf("labelling node %s with a zone: %v", node.Name, err)
+		}
+	}
+}
+
+// e2eZone is the zone every node in the kind cluster claims to be in.
+const e2eZone = "e2e-zone-a"
+
 func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, fixtureNS string) {
 	t.Helper()
 	var payload struct {
@@ -369,16 +403,25 @@ func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest
 				} `json:"metrics"`
 			} `json:"autoscalers"`
 			Services []struct {
-				Name     string `json:"name"`
-				Type     string `json:"type"`
-				Headless bool   `json:"headless"`
+				Name                string `json:"name"`
+				Type                string `json:"type"`
+				Headless            bool   `json:"headless"`
+				TrafficDistribution string `json:"traffic_distribution"`
+				Endpoints           []struct {
+					AddressType string         `json:"address_type"`
+					Ready       int            `json:"ready"`
+					Zones       map[string]int `json:"zones"`
+					Unzoned     int            `json:"unzoned"`
+					Hinted      int            `json:"hinted"`
+				} `json:"endpoints"`
 			} `json:"services"`
 		} `json:"records"`
 	}
 	find := func() (int, bool) {
 		for i, r := range payload.Records {
 			if r.Namespace == fixtureNS && r.Workload.Name == "web" &&
-				len(r.Budgets) > 0 && len(r.Autoscalers) > 0 && len(r.Services) > 0 {
+				len(r.Budgets) > 0 && len(r.Autoscalers) > 0 && len(r.Services) > 0 &&
+				len(r.Services[0].Endpoints) > 0 {
 				return i, true
 			}
 		}
@@ -387,7 +430,7 @@ func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest
 	waitForSpoolJSON(ctx, t, config, cs, ns, pod, workloadPolicySpoolPath, &payload, func() bool {
 		_, ok := find()
 		return ok
-	}, "workload policy with a budget, an autoscaler and a service")
+	}, "workload policy with a budget, an autoscaler and a service with endpoints")
 
 	if payload.Kind != "workload_policy" {
 		t.Errorf("kind = %q", payload.Kind)
@@ -410,6 +453,24 @@ func checkWorkloadPolicyReported(ctx context.Context, t *testing.T, config *rest
 	if svc.Name != "web" || svc.Type != "ClusterIP" || svc.Headless {
 		t.Errorf("service = %+v, want the ClusterIP named web", svc)
 	}
+	// The request is on the Service; whether the cluster arranged it is only
+	// visible in the endpoints, which is the whole of ADR 0051.
+	if svc.TrafficDistribution != "PreferSameZone" {
+		t.Errorf("traffic distribution = %q, want PreferSameZone", svc.TrafficDistribution)
+	}
+	zones := svc.Endpoints[0]
+	if zones.AddressType != "IPv4" || zones.Ready == 0 {
+		t.Errorf("endpoints = %+v, want ready IPv4 endpoints", zones)
+	}
+	if zones.Zones[e2eZone] != zones.Ready || zones.Unzoned != 0 {
+		t.Errorf("zones = %v, unzoned = %d; want all %d ready endpoints in %s",
+			zones.Zones, zones.Unzoned, zones.Ready, e2eZone)
+	}
+	// Deliberately not asserted: whether `hinted` is non-zero. A single-zone
+	// cluster is exactly the shape whose hints the EndpointSlice controller may
+	// decline to write, and that decision is the cluster's, not the agent's.
+	t.Logf("service %s asked for %s; %d ready endpoints, %d hinted, zones %v",
+		svc.Name, svc.TrafficDistribution, zones.Ready, zones.Hinted, zones.Zones)
 	// A budget demanding every replica leaves no room to evict one: the node
 	// cannot be drained, whatever spare capacity exists elsewhere.
 	if budget.DisruptionsAllowed != 0 {
