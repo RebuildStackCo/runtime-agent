@@ -23,18 +23,19 @@ const maxCommentRun = 8
 
 // The two documents that grow with every payload kind, at the size each landed
 // once the restated ADRs came out (ADR 0044). `security.md` is deliberately not
-// back at ADR 0024's 750: five kinds have been added since, each a table row and
-// a paragraph. `backend-requirements.md` restates decisions on purpose — its
-// reader implements ingest and reads neither our ADRs nor `security.md` — so
-// what is bounded there is growth, not duplication. The file ceiling moved
-// 920 → 930 for obligations the document did not have before (ADR 0048).
+// back at ADR 0024's 750: kinds have been added since, each a table row and a
+// paragraph. `backend-requirements.md` restates decisions on purpose — its
+// reader implements ingest and reads neither our ADRs nor `security.md`.
+// Ceilings rose for obligations the documents did not have before: 920 → 930
+// (ADR 0048), then 930 → 940 and 460 → 475 for a field whose absence the
+// backend would otherwise read as a value (ADR 0050).
 var ceilings = []struct {
 	file    string
 	lines   int
 	section int
 }{
-	{"security.md", 930, 290},
-	{"backend-requirements.md", 460, 320},
+	{"security.md", 940, 300},
+	{"backend-requirements.md", 475, 330},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

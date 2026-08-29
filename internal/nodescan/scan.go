@@ -31,6 +31,12 @@ type BinaryInfo struct {
 	// did not record them, which for vcs.* is the common case in container
 	// builds (ADR 0019).
 	Settings map[string]string `json:"settings,omitempty"`
+	// GoDebug is the allow-listed subset of the GODEBUG defaults compiled into
+	// the binary. An absent name is not a missing value: the toolchain records
+	// only what differs from its own default, so absence means the default for
+	// the main module's `go` directive applies, and which default that is
+	// follows from GoVersion (ADR 0050).
+	GoDebug map[string]string `json:"godebug,omitempty"`
 	// PGO is true when the binary was built with profile-guided optimization
 	// (a "-pgo" build setting with a non-empty value).
 	PGO bool `json:"pgo"`
@@ -164,6 +170,7 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 		MainModule:   mainModule,
 		Dependencies: dependencyModules(info),
 		Settings:     buildSettings(info),
+		GoDebug:      goDebugDefaults(info),
 		PGO:          hasPGO(info),
 		PodUID:       binding.PodUID,
 		ContainerID:  binding.ContainerID,
@@ -253,6 +260,55 @@ func buildSettings(info *buildinfo.BuildInfo) map[string]string {
 			out = make(map[string]string, len(buildSettingsAllowList))
 		}
 		out[s.Key] = s.Value
+	}
+	return out
+}
+
+// goDebugAllowList is the exhaustive set of GODEBUG names kept out of the
+// compound `DefaultGODEBUG` build setting. Both decide how the runtime sizes
+// GOMAXPROCS against the cgroup's CPU quota, both hold "0" or "1", and both
+// changed their default in Go 1.25 — so a binary's behaviour here follows from
+// the main module's `go` directive, not from the toolchain that built it
+// (ADR 0050).
+var goDebugAllowList = map[string]struct{}{
+	"containermaxprocs": {},
+	"updatemaxprocs":    {},
+}
+
+// maxGoDebugValue bounds a kept value. Every allowed name holds a single digit;
+// anything longer is not the setting this list assumes and is dropped whole, for
+// the reason maxSettingValue exists.
+const maxGoDebugValue = 8
+
+// goDebugDefaults returns the allow-listed GODEBUG defaults compiled into the
+// binary. `DefaultGODEBUG` is parsed here rather than allow-listed whole because
+// it is a comma-joined list that runs past maxSettingValue for exactly the old
+// `go` directives this field exists to find (ADR 0050 §1). Later duplicates win,
+// as they do in the runtime's own parse.
+func goDebugDefaults(info *buildinfo.BuildInfo) map[string]string {
+	var raw string
+	for _, s := range info.Settings {
+		if s.Key == "DefaultGODEBUG" {
+			raw = s.Value
+			break
+		}
+	}
+	var out map[string]string
+	for pair := range strings.SplitSeq(raw, ",") {
+		name, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		if _, allowed := goDebugAllowList[name]; !allowed {
+			continue
+		}
+		if value == "" || len(value) > maxGoDebugValue {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string, len(goDebugAllowList))
+		}
+		out[name] = value
 	}
 	return out
 }

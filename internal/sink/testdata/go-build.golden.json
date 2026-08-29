@@ -27,5 +27,9 @@
     "vcs.modified": "false",
     "vcs.revision": "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485",
     "vcs.time": "2026-08-21T20:13:54Z"
+  },
+  "godebug": {
+    "containermaxprocs": "0",
+    "updatemaxprocs": "0"
   }
 }

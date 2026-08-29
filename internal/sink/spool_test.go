@@ -563,6 +563,13 @@ func fixedBuild() inventory.BuildFacts {
 			"vcs.revision": "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485",
 			"vcs.time":     "2026-08-21T20:13:54Z",
 		},
+		// A go1.26 toolchain over a main module still on an older `go`
+		// directive, which is the only combination that puts these two in the
+		// payload at all (ADR 0050 §2).
+		GoDebug: map[string]string{
+			"containermaxprocs": "0",
+			"updatemaxprocs":    "0",
+		},
 	}
 }
 

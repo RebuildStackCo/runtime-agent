@@ -115,6 +115,31 @@ func TestIngestCarriesBuildSettings(t *testing.T) {
 	}
 }
 
+// The GODEBUG defaults ride the same way, and need their own aliasing check:
+// they are a second map on a struct copied out of the store (ADR 0050).
+func TestIngestCarriesGoDebugDefaults(t *testing.T) {
+	resolver := fakeResolver{
+		"pod-web/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+	b := binary("pod-web", "cid-web", "go1.26.1", "github.com/acme/web", false)
+	b.GoDebug = map[string]string{"containermaxprocs": "0", "updatemaxprocs": "0"}
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{b}}, resolver)
+
+	pending := s.PendingBuilds()
+	if len(pending) != 1 {
+		t.Fatalf("got %d build fact sets, want 1", len(pending))
+	}
+	if !maps.Equal(pending[0].GoDebug, b.GoDebug) {
+		t.Errorf("godebug = %v, want %v", pending[0].GoDebug, b.GoDebug)
+	}
+
+	pending[0].GoDebug["containermaxprocs"] = "tampered"
+	if again := s.PendingBuilds(); again[0].GoDebug["containermaxprocs"] != "0" {
+		t.Errorf("containermaxprocs = %q after the caller mutated its copy, want 0", again[0].GoDebug["containermaxprocs"])
+	}
+}
+
 func TestBuildFactsDedupAcrossReplicasAndSurviveUntilMarked(t *testing.T) {
 	// Two replicas of the same build on two nodes, plus a second build: one
 	// dependency set per digest, not per replica.

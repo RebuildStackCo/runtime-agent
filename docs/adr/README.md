@@ -107,3 +107,4 @@ line to paste.
 - [0047. Five environment variables are named, kept and shipped; every other one is still dropped](0047-runtime-knobs-are-named-and-kept.md)
 - [0048. Four first-hour findings name fields the agent did not collect](0048-findings-name-the-fields-they-need.md)
 - [0049. Revisions belong to whatever controls the ReplicaSet, and the payload is renamed for it](0049-revisions-are-not-only-deployments.md)
+- [0050. The GOMAXPROCS finding rests on a build fact, not on the toolchain version](0050-godebug-defaults-are-a-build-fact.md)

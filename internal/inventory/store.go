@@ -62,6 +62,10 @@ type BuildFacts struct {
 	// scanner sent: the filtering happened there, before the channel, so nothing
 	// outside the allow-list ever reached this struct (ADR 0019).
 	Settings map[string]string `json:"settings,omitempty"`
+	// GoDebug is the allow-listed GODEBUG defaults compiled into the build. It
+	// is read beside GoVersion, never alone: absence is the toolchain's own
+	// default, not a missing value (ADR 0050 §2).
+	GoDebug map[string]string `json:"godebug,omitempty"`
 }
 
 // Resolved is what a ContainerResolver returns for a (pod UID, container ID)
@@ -194,6 +198,7 @@ func (s *Store) ingestBuild(b nodescan.BinaryInfo, digest string) {
 		MainModule:  b.MainModule,
 		Modules:     modules,
 		Settings:    maps.Clone(b.Settings),
+		GoDebug:     maps.Clone(b.GoDebug),
 	}
 }
 
@@ -209,6 +214,7 @@ func (s *Store) PendingBuilds() []BuildFacts {
 			// no aliasing of store state past the lock
 			d.Modules = slices.Clone(d.Modules)
 			d.Settings = maps.Clone(d.Settings)
+			d.GoDebug = maps.Clone(d.GoDebug)
 			out = append(out, d)
 		}
 	}
