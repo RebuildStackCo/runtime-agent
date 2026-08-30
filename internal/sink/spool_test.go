@@ -616,6 +616,44 @@ func TestGoldenProcessPeaksPayload(t *testing.T) {
 	checkGolden(t, filepath.Join(dir, "process-peaks.json"), "process-peaks.golden.json")
 }
 
+// The three cases a reader of this payload has to tell apart: a port reachable
+// from outside, a debug port bound to loopback, and a container of an
+// unidentified build.
+func fixedPorts() []inventory.PortRecord {
+	return []inventory.PortRecord{
+		{
+			PortKey: inventory.PortKey{
+				Key: inventory.Key{
+					Namespace: "shop", WorkloadKind: "Deployment",
+					WorkloadName: "web", Container: "app",
+				},
+				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			},
+			Ports: []nodescan.ListeningPort{
+				{Port: 8080},
+				{Port: 6060, Loopback: true},
+			},
+		},
+		{
+			PortKey: inventory.PortKey{
+				Key: inventory.Key{
+					Namespace: "shop", WorkloadKind: "StatefulSet",
+					WorkloadName: "db", Container: "db",
+				},
+			},
+			Ports: []nodescan.ListeningPort{{Port: 5432}},
+		},
+	}
+}
+
+func TestGoldenListeningPortsPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteListeningPorts(capturedAt, fixedPorts()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "listening-ports.json"), "listening-ports.golden.json")
+}
+
 func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
 	if err := s.WriteGoInventory(capturedAt, fixedCoverage(), fixedInventory()); err != nil {
@@ -677,6 +715,7 @@ func fixedBuild() inventory.BuildFacts {
 			"containermaxprocs": "0",
 			"updatemaxprocs":    "0",
 		},
+		HasPprof: true,
 	}
 }
 

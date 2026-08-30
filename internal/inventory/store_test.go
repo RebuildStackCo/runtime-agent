@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"maps"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -651,6 +652,95 @@ func TestPeaksLeaveWithTheirWorkload(t *testing.T) {
 	}
 	if peaks := s.PeakSnapshot(); len(peaks) != 0 {
 		t.Errorf("peaks = %+v after the workload went, want none", peaks)
+	}
+}
+
+// withPorts attaches the listening sockets of a node report to a binary.
+func withPorts(b nodescan.BinaryInfo, ports ...nodescan.ListeningPort) nodescan.BinaryInfo {
+	b.ListeningPorts = ports
+	return b
+}
+
+// Replicas on two nodes merge into one record, and a port reachable on either of
+// them is reachable.
+func TestPortsMergeAcrossReplicasAndNodes(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPorts(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false),
+			nodescan.ListeningPort{Port: 8080}, nodescan.ListeningPort{Port: 6060, Loopback: true}),
+	}}, webResolver())
+	s.Ingest(nodescan.Report{Node: "node-2", Binaries: []nodescan.BinaryInfo{
+		withPorts(binary("pod-web-2", "cid-web", "go1.26.1", "github.com/acme/web", false),
+			nodescan.ListeningPort{Port: 6060}, nodescan.ListeningPort{Port: 9090}),
+	}}, webResolver())
+
+	ports := s.PortSnapshot()
+	if len(ports) != 1 {
+		t.Fatalf("ports = %+v, want one record", ports)
+	}
+	want := []nodescan.ListeningPort{{Port: 6060}, {Port: 8080}, {Port: 9090}}
+	if !reflect.DeepEqual(ports[0].Ports, want) {
+		t.Errorf("ports = %+v, want %+v (6060 is reachable on node-2)", ports[0].Ports, want)
+	}
+	if ports[0].ImageDigest != "sha256:web" {
+		t.Errorf("image digest = %q; a port belongs to the build that binds it", ports[0].ImageDigest)
+	}
+}
+
+// A port the workload stopped serving is not a port the workload serves. Without
+// the per-node replacement a reader would be sent after an endpoint that is gone.
+func TestAPortDoesNotOutliveTheProcessThatBoundIt(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPorts(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false),
+			nodescan.ListeningPort{Port: 8080}, nodescan.ListeningPort{Port: 6060}),
+	}}, webResolver())
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPorts(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false),
+			nodescan.ListeningPort{Port: 8080}),
+	}}, webResolver())
+
+	ports := s.PortSnapshot()
+	if len(ports) != 1 {
+		t.Fatalf("ports = %+v, want one record", ports)
+	}
+	if want := []nodescan.ListeningPort{{Port: 8080}}; !reflect.DeepEqual(ports[0].Ports, want) {
+		t.Errorf("ports = %+v, want %+v (6060 was not in the latest report)", ports[0].Ports, want)
+	}
+}
+
+func TestPortsLeaveWithTheirNodeAndTheirWorkload(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPorts(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false),
+			nodescan.ListeningPort{Port: 8080}),
+	}}, webResolver())
+	if ev := s.Retain(nil); ev.Ports != 1 {
+		t.Errorf("evicted ports = %d, want 1", ev.Ports)
+	}
+
+	s = NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withPorts(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false),
+			nodescan.ListeningPort{Port: 8080}),
+	}}, webResolver())
+	s.RetainNodes([]string{"node-2"})
+	if ports := s.PortSnapshot(); len(ports) != 0 {
+		t.Errorf("ports = %+v after the reporting node left, want none", ports)
+	}
+}
+
+// The marker is a property of the build, so it is filed with the build's facts
+// and asked once per image rather than once per replica.
+func TestThePprofMarkerIsABuildFact(t *testing.T) {
+	s := NewStore(testSince)
+	b := binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false)
+	b.HasPprof = true
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{b}}, webResolver())
+
+	builds := s.PendingBuilds()
+	if len(builds) != 1 || !builds[0].HasPprof {
+		t.Errorf("builds = %+v, want one carrying the marker", builds)
 	}
 }
 

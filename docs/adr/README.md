@@ -113,3 +113,4 @@ line to paste.
 - [0053. The network counters are the pod's, and they say nothing about where the bytes went](0053-network-counters-are-the-pods.md)
 - [0054. Coverage says how much was hidden, never what](0054-coverage-says-how-much-was-hidden-never-what.md)
 - [0055. The installation is cluster-wide, and there is no narrower mode](0055-the-installation-is-cluster-wide.md)
+- [0056. Whether a pprof endpoint exists is proved on the node, not probed over the network](0056-a-pprof-endpoint-is-proved-not-probed.md)

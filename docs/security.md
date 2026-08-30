@@ -311,8 +311,9 @@ This is what the node DaemonSet runs today: it enumerates processes under
 pod and container through the process cgroup, filters infrastructure on the node,
 and reports the result. It loads no eBPF; the only socket it opens is the
 outbound connection to the controller (ADR 0010) — never to the internet, never
-to the API server. What it reads is `/proc/<pid>/exe`, `/proc/<pid>/cgroup` and
-two fields of `/proc/<pid>/status`, and nothing else.
+to the API server. What it reads is `/proc/<pid>/exe`, `/proc/<pid>/cgroup`, two
+fields of `/proc/<pid>/status`, the process's TCP socket tables and the targets
+of its `/proc/<pid>/fd` entries, and nothing else.
 
 Those two fields are `VmHWM` — the kernel's high-water mark of the process's
 resident memory, which is the only place a memory peak between two samples is
@@ -324,6 +325,21 @@ everything else in the file stay on the node. The read needs no capability —
 the kernel's ptrace check guards `exe`, `mem`, `environ` and `maps`, not
 `status` — and happens only for a process already kept, after the scope and
 infrastructure filters.
+
+The executable is searched for one function name, which says whether
+`net/http/pprof` is compiled into the build. Nothing else is extracted from the
+search, and the answer is a single yes or no per image
+([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)).
+
+The socket read is bounded to **listening** sockets the process itself holds. A
+row for an accepted or outgoing connection is discarded on its state field,
+before any address in it is read, so **no remote address is ever held by the
+agent** — the connection graph of your cluster is not collected, at any moment,
+in any form. For a listening socket what is kept is the port and one bit saying
+whether it is bound to loopback; the local address itself, which for a bound pod
+IP would be an identity, is not. Descriptors are read only to establish which
+sockets belong to this process, and a descriptor that is not a socket is not
+examined further.
 
 | Privilege | Why |
 |---|---|
@@ -506,7 +522,8 @@ test fails if a kind ships without appearing here (ADR 0022).
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, kernel version, CPU architecture. The **name** is your cluster's, and on EKS and on GKE's legacy naming it encodes the node's private address — `ip-10-42-13-201.eu-west-1.compute.internal`. The agent reads no address field; the name it does read may be one (ADR 0039) | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block | no |
 | `process_peaks` | Per collected workload container and build: the largest `VmHWM` among its Go processes, how many processes that was taken over, and the range of permitted CPU counts. A **floor** under the container's peak, never the figure the OOM killer compares against — the cgroup also holds page cache and every other process in it ([ADR 0052](adr/0052-the-peak-the-kernel-remembers.md)) | no |
-| `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings, and two allow-listed GODEBUG defaults. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
+| `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings, two allow-listed GODEBUG defaults, and whether `net/http/pprof` is linked into the build. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
+| `listening_ports` | Per collected workload container and build: the TCP ports its Go processes accept connections on, each with whether it is bound to loopback. Read from the processes' own sockets, so a port nothing declared is here and a declared port nothing binds is not ([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)). No address, and no connection the workload has open | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
 
 Each declares its provenance in a `source` field — `structural` (read from a
@@ -862,11 +879,14 @@ because it is in no namespace and so no namespace filter of yours can permit it.
 
 ### 10.3 pprof endpoint probing **[planned]**
 
-Not built — the agent makes no request to a pod today. When it does: locating
-pprof endpoints means the controller makes HTTP requests to pods, which network
-monitoring may flag as internal scanning. Probing will be restricted to workloads
-that pass your filters and to ports declared in `containerPorts`. Coordinate with
-your security team before enabling the `pprof` profile.
+Still not built: the agent opens no connection to a pod. What changed is what a
+connection would be for. Which builds carry a `/debug/pprof` handler, and which
+ports a workload binds, are read on the node from the binary and from the
+process's own sockets ([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)) —
+so nothing is swept, and a build without the handler is never asked about at all.
+A future request would go to a workload that passed your filters, on a port it is
+observed to bind, once per image rather than once per pod. Coordinate with your
+security team before enabling profile pulling when it exists.
 
 ### 10.4 The build inventory is a bill of materials
 

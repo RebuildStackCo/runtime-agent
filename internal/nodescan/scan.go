@@ -40,6 +40,16 @@ type BinaryInfo struct {
 	// PGO is true when the binary was built with profile-guided optimization
 	// (a "-pgo" build setting with a non-empty value).
 	PGO bool `json:"pgo"`
+	// HasPprof is true when net/http/pprof is linked into the binary. False is
+	// a proof of absence — the package is compiled in or it is not — which is
+	// what makes it worth reading here rather than asking the workload
+	// (ADR 0056 §1).
+	HasPprof bool `json:"has_pprof,omitempty"`
+	// ListeningPorts is the TCP ports this process accepts on, its own and not
+	// the pod's. Empty means none were found, which for a process that serves
+	// nothing is the truth and for an unreadable socket table is not
+	// distinguished: no finding rests on the difference (ADR 0056 §2).
+	ListeningPorts []ListeningPort `json:"listening_ports,omitempty"`
 	// PeakRSSBytes is the kernel's own high-water mark of this process's
 	// resident memory since it started, and CPUsAllowed is how many CPUs its
 	// affinity mask permits. Both are measured facts in a report of structural
@@ -99,17 +109,22 @@ type Result struct {
 }
 
 // Scanner reads Go build info from processes under a /proc-shaped tree and
-// filters infrastructure by module path. It is safe to reuse across passes and
-// carries no cumulative state.
+// filters infrastructure by module path. It is meant to be reused across passes
+// and is not safe for concurrent use.
+//
+// The one thing it carries between passes is the marker cache, which holds an
+// answer per executable file and drops files no live process runs. It is not
+// cumulative: a pass rebuilds what it keeps.
 type Scanner struct {
 	procRoot string
 	filter   *ModuleFilter
+	marks    *markCache
 }
 
 // NewScanner builds a scanner rooted at procRoot (normally "/proc"; a fixture
 // tree in tests) using filter to classify module paths.
 func NewScanner(procRoot string, filter *ModuleFilter) *Scanner {
-	return &Scanner{procRoot: procRoot, filter: filter}
+	return &Scanner{procRoot: procRoot, filter: filter, marks: newMarkCache()}
 }
 
 // Scan performs one full pass over the process tree, restricted to the pods
@@ -125,6 +140,7 @@ func (s *Scanner) Scan(scope Scope) (Result, error) {
 		return Result{}, err
 	}
 	var res Result
+	s.marks.startPass()
 	for _, entry := range entries {
 		pid, ok := pidFromName(entry.Name())
 		if !ok {
@@ -133,6 +149,7 @@ func (s *Scanner) Scan(scope Scope) (Result, error) {
 		res.Counters.ProcessesScanned++
 		s.scanPID(pid, scope, &res)
 	}
+	s.marks.endPass()
 	return res, nil
 }
 
@@ -173,23 +190,28 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 	}
 
 	// Read last, and only for a binary that is being kept: a process outside the
-	// scope or dropped as infrastructure has its status file left unopened, the
-	// same ordering the cgroup read establishes above (invariant 4).
+	// scope or dropped as infrastructure has its status file, its socket table
+	// and its descriptors left unopened, the same ordering the cgroup read
+	// establishes above (invariant 4).
 	status := ReadProcessStatus(s.procRoot, pid)
+	hasPprof := s.marks.lookup(exePath)
+	ports := ReadListeningPorts(s.procRoot, pid)
 
 	res.Counters.GoFound++
 	res.Binaries = append(res.Binaries, BinaryInfo{
-		PID:          pid,
-		GoVersion:    info.GoVersion,
-		MainModule:   mainModule,
-		Dependencies: dependencyModules(info),
-		Settings:     buildSettings(info),
-		GoDebug:      goDebugDefaults(info),
-		PGO:          hasPGO(info),
-		PeakRSSBytes: status.PeakRSSBytes,
-		CPUsAllowed:  status.CPUsAllowed,
-		PodUID:       binding.PodUID,
-		ContainerID:  binding.ContainerID,
+		PID:            pid,
+		GoVersion:      info.GoVersion,
+		MainModule:     mainModule,
+		Dependencies:   dependencyModules(info),
+		Settings:       buildSettings(info),
+		GoDebug:        goDebugDefaults(info),
+		PGO:            hasPGO(info),
+		HasPprof:       hasPprof,
+		ListeningPorts: ports,
+		PeakRSSBytes:   status.PeakRSSBytes,
+		CPUsAllowed:    status.CPUsAllowed,
+		PodUID:         binding.PodUID,
+		ContainerID:    binding.ContainerID,
 	})
 }
 

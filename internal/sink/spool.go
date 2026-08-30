@@ -220,6 +220,20 @@ type processPeaksPayload struct {
 	Records    []inventory.PeakRecord `json:"records"`
 }
 
+// listeningPortsPayload is where each collected workload container accepts
+// connections, as its processes report it: a superseding batch under a fixed
+// key, like the peaks beside it.
+//
+// It is the pod's own view, read from the processes' descriptors rather than
+// from the spec — so a port nobody declared is here, and a declared port nothing
+// binds is not (ADR 0056 §2).
+type listeningPortsPayload struct {
+	Kind       string                 `json:"kind"`
+	Source     string                 `json:"source"`
+	CapturedAt time.Time              `json:"captured_at"`
+	Records    []inventory.PortRecord `json:"records"`
+}
+
 // goBuildPayload is what one build is made of and how it was built, keyed by its
 // image digest. Alone among the structural payloads it neither supersedes nor
 // carries a capture time — these are properties of the build, fixed when the
@@ -237,6 +251,10 @@ type goBuildPayload struct {
 	Modules     []nodescan.Module `json:"modules"`
 	Settings    map[string]string `json:"settings,omitempty"`
 	GoDebug     map[string]string `json:"godebug,omitempty"`
+	// PprofEndpoint says the build links net/http/pprof, so a `/debug/pprof`
+	// handler exists in it. Whether anything serves that handler, and on which
+	// port, is not a property of the build and is not claimed here (ADR 0056 §1).
+	PprofEndpoint bool `json:"pprof_endpoint,omitempty"`
 }
 
 // containerRestartsPayload is every collected container's restart history within
@@ -667,6 +685,20 @@ func (s *Spool) WriteProcessPeaks(capturedAt time.Time, records []inventory.Peak
 	return s.write("process-peaks.json", payload)
 }
 
+// WriteListeningPorts writes where every collected workload container accepts
+// connections, as of capturedAt. One file, superseding, for the reason
+// process-peaks is one file: the batch is the answer, and a record per container
+// would put the spool's file count under the cluster's control.
+func (s *Spool) WriteListeningPorts(capturedAt time.Time, records []inventory.PortRecord) error {
+	payload := listeningPortsPayload{
+		Kind:       "listening_ports",
+		Source:     SourceStructural,
+		CapturedAt: capturedAt.UTC(),
+		Records:    records,
+	}
+	return s.write("listening-ports.json", payload)
+}
+
 // WriteGoBuild writes one build's facts. Unlike the superseding go-inventory,
 // each build gets its own file keyed by image digest: the facts never change for
 // a given digest, so the write is idempotent and the controller only issues it
@@ -681,14 +713,15 @@ func (s *Spool) WriteGoBuild(b inventory.BuildFacts) error {
 		modules = []nodescan.Module{}
 	}
 	payload := goBuildPayload{
-		Kind:        "go_build",
-		Source:      SourceStructural,
-		ImageDigest: b.ImageDigest,
-		GoVersion:   b.GoVersion,
-		MainModule:  b.MainModule,
-		Modules:     modules,
-		Settings:    b.Settings,
-		GoDebug:     b.GoDebug,
+		Kind:          "go_build",
+		Source:        SourceStructural,
+		ImageDigest:   b.ImageDigest,
+		GoVersion:     b.GoVersion,
+		MainModule:    b.MainModule,
+		Modules:       modules,
+		Settings:      b.Settings,
+		GoDebug:       b.GoDebug,
+		PprofEndpoint: b.HasPprof,
 	}
 	return s.write("go-build-"+digestFileToken(b.ImageDigest)+".json", payload)
 }

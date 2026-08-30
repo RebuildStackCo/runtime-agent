@@ -43,6 +43,8 @@ const nodeMetadataSpoolPath = spoolDir + "/node-metadata.json"
 
 const processPeaksSpoolPath = spoolDir + "/process-peaks.json"
 
+const listeningPortsSpoolPath = spoolDir + "/listening-ports.json"
+
 const coverageSpoolPath = spoolDir + "/collection-coverage.json"
 
 // buildSpoolPath mirrors the sink's filename rule for a build payload: one file
@@ -157,6 +159,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			}
 			checkSampleBuild(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkSamplePeak(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
+			checkSamplePorts(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkNodeArchitecture(ctx, t, config, clientset, ns, controllerPod)
 			checkCoverageReported(ctx, t, config, clientset, ns, controllerPod)
 			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
@@ -387,6 +390,69 @@ func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs 
 	}
 }
 
+// checkSamplePorts asserts that the ports the sample really binds arrived, with
+// the reachability of each. The sample listens on 0.0.0.0:6060 and on
+// 127.0.0.1:9090 and declares neither in its spec, so this also proves the read
+// is of the process and not of `containerPorts` (ADR 0056 §2).
+func checkSamplePorts(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, listeningPortsSpoolPath)
+		if ok {
+			var payload struct {
+				Kind    string `json:"kind"`
+				Source  string `json:"source"`
+				Records []struct {
+					WorkloadName string `json:"workload_name"`
+					Container    string `json:"container"`
+					ImageDigest  string `json:"image_digest"`
+					Ports        []struct {
+						Port     int  `json:"port"`
+						Loopback bool `json:"loopback"`
+					} `json:"ports"`
+				} `json:"records"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("listening ports payload not valid JSON: %v", err)
+			}
+			for _, r := range payload.Records {
+				if r.WorkloadName != "goworkload" {
+					continue
+				}
+				if payload.Kind != "listening_ports" || payload.Source != "structural" {
+					t.Errorf("kind/source = %q/%q, want listening_ports/structural", payload.Kind, payload.Source)
+				}
+				if r.ImageDigest != digest {
+					t.Errorf("image_digest = %q, want %q — a port keys to the build that binds it", r.ImageDigest, digest)
+				}
+				want := map[int]bool{6060: false, 9090: true}
+				got := map[int]bool{}
+				for _, port := range r.Ports {
+					got[port.Port] = port.Loopback
+				}
+				for port, loopback := range want {
+					have, ok := got[port]
+					if !ok {
+						t.Errorf("port %d absent; the sample binds it", port)
+						continue
+					}
+					if have != loopback {
+						t.Errorf("port %d loopback = %v, want %v", port, have, loopback)
+					}
+				}
+				t.Logf("ports for %s/%s: %+v", r.WorkloadName, r.Container, r.Ports)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("listening_ports payload never carried the sample workload")
+			return
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
 // checkSampleBuild asserts that the build payload for the sample reached the
 // spool and carries the module the sample really imports and the settings the
 // sample was really built with. It is written on the same flush as the inventory
@@ -411,7 +477,8 @@ func checkSampleBuild(ctx context.Context, t *testing.T, config *rest.Config, cs
 					Version  string `json:"version"`
 					Replaced bool   `json:"replaced"`
 				} `json:"modules"`
-				Settings map[string]string `json:"settings"`
+				Settings      map[string]string `json:"settings"`
+				PprofEndpoint bool              `json:"pprof_endpoint"`
 			}
 			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 				t.Fatalf("build payload not valid JSON: %v", err)
@@ -451,6 +518,11 @@ func checkSampleBuild(ctx context.Context, t *testing.T, config *rest.Config, cs
 				if m.Path == sampleDependency {
 					t.Logf("sample dependency: %s %s (of %d modules)", m.Path, m.Version, len(payload.Modules))
 				}
+			}
+			// The sample imports net/http/pprof, so the marker must be found in
+			// the binary the cluster is really running (ADR 0056 §1).
+			if !payload.PprofEndpoint {
+				t.Errorf("pprof_endpoint = false; the sample links net/http/pprof")
 			}
 			checkBuildSettings(t, payload.Settings)
 			return
