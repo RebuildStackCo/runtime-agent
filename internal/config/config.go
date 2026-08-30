@@ -48,6 +48,25 @@ type ControllerProfiling struct {
 	// cost is bounded by OverheadCeilingPercent and, ultimately, by its container
 	// CPU limit.
 	TopN int `json:"topN"`
+
+	// Pprof is the second profiling path: the endpoints workloads already
+	// serve, rather than the profiler the node attaches. It is independent of
+	// Enabled above — that one governs the eBPF targeting endpoint — because
+	// the two need different privileges and answer for different workloads
+	// (ADR 0057).
+	Pprof PprofDiscovery `json:"pprof"`
+}
+
+// PprofDiscovery is whether the controller looks for `/debug/pprof` endpoints
+// among the workloads it already collects.
+type PprofDiscovery struct {
+	// Enabled is written by the chart in every installation that runs a node
+	// DaemonSet, and its value there is true. This is the one collection
+	// control whose default is yes: the discovery it turns on costs the
+	// workload nothing — an index page, no profiler started — and the
+	// alternative is a capability every installation has and none uses
+	// (ADR 0057 §4).
+	Enabled bool `json:"enabled"`
 }
 
 // NodeProfiling is the node's half: the symbol allow-list that decides what may

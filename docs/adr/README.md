@@ -114,3 +114,4 @@ line to paste.
 - [0054. Coverage says how much was hidden, never what](0054-coverage-says-how-much-was-hidden-never-what.md)
 - [0055. The installation is cluster-wide, and there is no narrower mode](0055-the-installation-is-cluster-wide.md)
 - [0056. Whether a pprof endpoint exists is proved on the node, not probed over the network](0056-a-pprof-endpoint-is-proved-not-probed.md)
+- [0057. The controller confirms an endpoint once per build, and that is its first connection to a workload](0057-the-controller-confirms-an-endpoint-once.md)

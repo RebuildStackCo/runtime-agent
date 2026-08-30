@@ -27,6 +27,9 @@ type Shape struct {
 	// how many workloads an answer may name.
 	ProfilingEnabled bool `json:"profiling_enabled"`
 	ProfilingTopN    int  `json:"profiling_top_n,omitempty"`
+	// PprofDiscoveryEnabled is whether the controller may connect to collected
+	// workloads to confirm a `/debug/pprof` endpoint.
+	PprofDiscoveryEnabled bool `json:"pprof_discovery_enabled"`
 	// NodeIntakeEnabled is whether the receiver for node reports is open.
 	NodeIntakeEnabled bool `json:"node_intake_enabled"`
 	// SpoolMaxAgeHours is 0 when the agent's own default applies.
@@ -42,8 +45,10 @@ func (c Config) Describe(path string, started time.Time) Shape {
 		NamespacesDenied:  len(c.Filters.Namespaces.Deny),
 		ProfilingEnabled:  c.Profiling.Enabled,
 		ProfilingTopN:     c.Profiling.TopN,
-		NodeIntakeEnabled: c.NodeIntake.Enabled,
-		SpoolMaxAgeHours:  c.Spool.MaxAgeHours,
+
+		PprofDiscoveryEnabled: c.Profiling.Pprof.Enabled,
+		NodeIntakeEnabled:     c.NodeIntake.Enabled,
+		SpoolMaxAgeHours:      c.Spool.MaxAgeHours,
 	}
 }
 

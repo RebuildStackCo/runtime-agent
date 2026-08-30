@@ -57,3 +57,11 @@ data:
       {{- else }}
       enabled: false
       {{- end }}
+      pprof:
+        {{- if include "runtime-agent.nodeEnabled" . }}
+        enabled: {{ .Values.profiling.pprof.enabled }}
+        {{- else }}
+        # No node DaemonSet in this profile, so neither the linked-package fact
+        # nor the bound port is ever read and there is nothing to confirm.
+        enabled: false
+        {{- end }}

@@ -11,6 +11,7 @@
       "namespaces_denied": 3,
       "profiling_enabled": true,
       "profiling_top_n": 5,
+      "pprof_discovery_enabled": false,
       "node_intake_enabled": true
     },
     "usage_signals": [
@@ -67,5 +68,10 @@
     "filtered_scope": 1204,
     "filtered_infra": 512,
     "unreadable": 28
+  },
+  "pprof": {
+    "confirmed": 6,
+    "absent": 11,
+    "unreachable": 2
   }
 }

@@ -413,6 +413,18 @@ a record is absent, never zero, when none were read. The record is keyed by
 image digest as well as container: a peak belongs to the build that reached it,
 and MUST NOT be carried across a rollout.
 
+**`collection_coverage.pprof` counts endpoint targets, not workloads, and the
+block is absent when discovery is off**
+([ADR 0057](adr/0057-the-controller-confirms-an-endpoint-once.md)). A target is
+one (image digest, port), so a workload with several bound ports contributes
+several. `confirmed` served the pprof index; `absent` answered and did not,
+which for a build whose `pprof_endpoint` is true means that port is not the one
+serving it — the backend MUST NOT read `absent` as the package being missing.
+`unreachable` is a statement about the network, not the endpoint, and is
+retried, so it MUST NOT be presented as a workload that cannot be profiled. An
+absent block means discovery is switched off or no node role is deployed; it
+does not mean zero.
+
 **`listening_ports` is what the processes bind, and `go_build.pprof_endpoint` is
 what the build contains; neither implies the other**
 ([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)). The flag says

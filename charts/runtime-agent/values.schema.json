@@ -7,7 +7,7 @@
   "required": ["profile", "image", "filters", "spool", "nodeIntake", "profiling", "controller", "node"],
   "properties": {
     "profile": {
-      "description": "Which installation profile to install: metrics-only, inventory or ebpf. The accepted set is not repeated as an enum here — the template validates it, so one place decides and the refusal can explain itself (notably for `pprof`, which docs/security.md marks [planned]).",
+      "description": "Which installation profile to install: metrics-only, inventory or ebpf. The accepted set is not repeated as an enum here — the template validates it, so one place decides and the refusal can explain itself.",
       "type": "string",
       "minLength": 1
     },
@@ -60,6 +60,13 @@
       "additionalProperties": false,
       "properties": {
         "topN": {"type": "integer", "minimum": 0},
+        "pprof": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"}
+          }
+        },
         "allowedModulePrefixes": {
           "description": "Required non-empty by profile `ebpf`; the chart refuses to render an empty allow-list with the profiler on.",
           "type": "array",

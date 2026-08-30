@@ -732,6 +732,54 @@ func (w *PodWatcher) HostNetwork(uid types.UID) bool {
 	return ok && entry.info.Placement.HostNetwork
 }
 
+// PodAddress returns the IP of one admitted, running pod of the given workload
+// whose named container runs the given image digest, for a caller that needs to
+// open a connection to it.
+//
+// It is the only place a pod IP is read, and the value is a connection
+// parameter rather than a fact: it is not indexed, not reported and not carried
+// in any payload (ADR 0057 §3). Any replica will do — the question the caller
+// asks is about the build, and every replica of a build answers it the same.
+func (w *PodWatcher) PodAddress(namespace string, workload WorkloadRef, container, imageDigest string) (string, bool) {
+	w.indexMu.RLock()
+	var names []string
+	for _, entry := range w.index {
+		if entry.namespace != namespace || entry.workload != workload {
+			continue
+		}
+		if entry.info.Phase != string(corev1.PodRunning) {
+			continue
+		}
+		if !runsBuild(entry, container, imageDigest) {
+			continue
+		}
+		names = append(names, entry.name)
+	}
+	w.indexMu.RUnlock()
+
+	// Sorted so the same replica is asked each time: a stable choice makes a
+	// repeated failure a fact about one pod rather than a tour of the workload.
+	sort.Strings(names)
+	for _, name := range names {
+		pod, err := w.podLister.Pods(namespace).Get(name)
+		if err != nil || pod.Status.PodIP == "" {
+			continue
+		}
+		return pod.Status.PodIP, true
+	}
+	return "", false
+}
+
+// runsBuild reports whether the pod's named container is running imageDigest.
+func runsBuild(entry podIndexEntry, container, imageDigest string) bool {
+	for _, id := range entry.containers {
+		if id.name == container && id.imageDigest == imageDigest {
+			return true
+		}
+	}
+	return false
+}
+
 // LookupPodByName is LookupPod for sources that identify pods by namespace and
 // name instead of UID — the cAdvisor exposition is one. It returns the UID as
 // well as the workload, because a name is not an identity: a StatefulSet
