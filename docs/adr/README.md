@@ -110,3 +110,4 @@ line to paste.
 - [0050. The GOMAXPROCS finding rests on a build fact, not on the toolchain version](0050-godebug-defaults-are-a-build-fact.md)
 - [0051. Topology-aware routing is a request the cluster can silently decline](0051-topology-routing-is-asked-and-not-granted.md)
 - [0052. The peak the kernel remembers, and the second file the scanner opens](0052-the-peak-the-kernel-remembers.md)
+- [0053. The network counters are the pod's, and they say nothing about where the bytes went](0053-network-counters-are-the-pods.md)

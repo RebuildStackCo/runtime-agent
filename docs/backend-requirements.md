@@ -360,6 +360,24 @@ in nothing. A `GODEBUG` variable in `workload_metadata.runtime_env` overrides
 both at startup; it is a fact about a workload, this is a fact about a build, and
 the backend MUST NOT merge them into one value.
 
+**`network_window` says how much moved, never where it went**
+([ADR 0053](adr/0053-network-counters-are-the-pods.md)). The counters are read at
+the pod's own interfaces, so the payload carries no destination, no peer and no
+address, and the backend MUST NOT derive a cross-zone or cross-region transfer
+figure from it. What it supports is ranking: which workloads move enough traffic
+for a routing or placement finding to be worth acting on.
+
+Records are keyed by workload, not by container, because every container in a pod
+shares one network namespace — so these MUST NOT be joined to a usage record's
+container, and a sidecar's traffic is not separable from its application's. A
+record whose `host_network` is true carries the **node's** interface counters,
+which describe the machine and everything else on it; the backend MUST NOT sum
+those with the rest, and MUST NOT present them as that workload's own traffic.
+`samples` separates a quiet workload from a cluster whose runtime does not report
+these counters at all: zero bytes with `samples` above zero is silence, zero
+bytes with `samples` at zero is ignorance. Only closed windows are sent, so the
+current hour is absent by design and MUST NOT be read as a drop to zero.
+
 **`process_peaks.records[].peak_rss_bytes` is a floor, and the evidence it gives
 is one-sided** ([ADR 0052](adr/0052-the-peak-the-kernel-remembers.md)). It is the
 largest `VmHWM` among a container's Go processes: the resident memory of one

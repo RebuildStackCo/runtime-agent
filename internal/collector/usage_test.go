@@ -29,6 +29,13 @@ func (r stubResolver) LookupPod(uid types.UID) (string, WorkloadRef, bool) {
 	return entry.namespace, entry.workload, ok
 }
 
+// HostNetwork answers from the same index entry the real watcher reads, so a
+// test can make a pod host-networked by setting it on the entry's info.
+func (r stubResolver) HostNetwork(uid types.UID) bool {
+	entry, ok := r[uid]
+	return ok && entry.info.Placement.HostNetwork
+}
+
 func (r stubResolver) LookupPodByName(namespace, name string) (types.UID, WorkloadRef, bool) {
 	for uid, entry := range r {
 		if entry.namespace == namespace && entry.name == name {
@@ -41,7 +48,7 @@ func (r stubResolver) LookupPodByName(namespace, name string) (types.UID, Worklo
 var usageTestStart = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 
 func testPoller(resolver PodResolver) *UsagePoller {
-	return NewUsagePoller(nil, func() []string { return nil }, resolver, nil, nil, nil)
+	return NewUsagePoller(nil, func() []string { return nil }, resolver, nil, nil, nil, nil)
 }
 
 // summaryWith wraps one container's stats into a node summary for the pod
@@ -116,7 +123,7 @@ func TestObservationCountsEveryKubeletRequestAndItsFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := NewUsagePoller(clientset, func() []string { return []string{"node-1"} },
-			webResolver(), nil, nil, func(string, error) {})
+			webResolver(), nil, nil, nil, func(string, error) {})
 
 		p.pollOnce(context.Background(), usageTestStart)
 		server.Close()
@@ -294,6 +301,7 @@ func TestUsageFlushEmitsClosedThenSnapshots(t *testing.T) {
 		},
 		func(records []*rollup.Record) { closedCount += len(records) },
 		nil,
+		nil,
 	)
 
 	at := usageTestStart.Add(30 * time.Second)
@@ -389,5 +397,172 @@ func TestUsageSignalsReportWhatWasSeen(t *testing.T) {
 	got := p.Signals()
 	if len(got) != 1 || got[0] != "cpu" {
 		t.Fatalf("signals = %v, want [cpu]", got)
+	}
+}
+
+// summaryWithNetwork wraps one pod's network stats into a node summary for the
+// pod with UID "uid-1". No containers: the counters being tested belong to the
+// pod, and nothing about a container is needed to reach them.
+func summaryWithNetwork(at time.Time, ifaces ...statsapi.InterfaceStats) *statsapi.Summary {
+	net := &statsapi.NetworkStats{Time: metav1.NewTime(at)}
+	if len(ifaces) == 1 {
+		net.InterfaceStats = ifaces[0]
+	} else {
+		net.Interfaces = ifaces
+	}
+	return &statsapi.Summary{
+		Pods: []statsapi.PodStats{{
+			PodRef:  statsapi.PodReference{Name: "web-abc", Namespace: "shop", UID: "uid-1"},
+			Network: net,
+		}},
+	}
+}
+
+func iface(name string, rx, tx, rxErr, txErr uint64) statsapi.InterfaceStats {
+	return statsapi.InterfaceStats{
+		Name:     name,
+		RxBytes:  ptr.To(rx),
+		TxBytes:  ptr.To(tx),
+		RxErrors: ptr.To(rxErr),
+		TxErrors: ptr.To(txErr),
+	}
+}
+
+func onlyNetworkRecord(t *testing.T, p *UsagePoller) *rollup.NetworkRecord {
+	t.Helper()
+	records := p.netAcc.CloseBefore(usageTestStart.Add(3 * time.Hour))
+	if len(records) != 1 {
+		t.Fatalf("network records = %d, want 1", len(records))
+	}
+	return records[0]
+}
+
+// The first observation of a pod establishes a baseline and emits nothing.
+// Unlike a container, a pod's network stats carry no start time, so there is no
+// interval to attribute the counters to (ADR 0053 §1).
+func TestFirstNetworkObservationOnlyBaselines(t *testing.T) {
+	p := testPoller(webResolver())
+	at := usageTestStart.Add(time.Minute)
+	p.ingest(summaryWithNetwork(at, iface("eth0", 1000, 2000, 0, 0)), at)
+
+	if records := p.netAcc.CloseBefore(usageTestStart.Add(3 * time.Hour)); len(records) != 0 {
+		t.Errorf("records = %+v after one observation, want none", records)
+	}
+}
+
+func TestNetworkDeltasAreCountedFromTheResponseTimestamps(t *testing.T) {
+	p := testPoller(webResolver())
+	first := usageTestStart.Add(time.Minute)
+	second := first.Add(30 * time.Second)
+	p.ingest(summaryWithNetwork(first, iface("eth0", 1000, 2000, 1, 2)), first)
+	p.ingest(summaryWithNetwork(second, iface("eth0", 5000, 9000, 3, 2)), second)
+
+	r := onlyNetworkRecord(t, p)
+	if r.RxBytes != 4000 || r.TxBytes != 7000 {
+		t.Errorf("rx/tx = %d/%d, want 4000/7000", r.RxBytes, r.TxBytes)
+	}
+	if r.RxErrors != 2 || r.TxErrors != 0 {
+		t.Errorf("rx/tx errors = %d/%d, want 2/0", r.RxErrors, r.TxErrors)
+	}
+	if r.WorkloadName != "web" || r.WorkloadKind != "Deployment" {
+		t.Errorf("record keyed on %s/%s, want the workload", r.WorkloadKind, r.WorkloadName)
+	}
+	if r.CoveredNanoseconds != int64(30*time.Second) {
+		t.Errorf("covered = %d, want the 30s between the two response timestamps", r.CoveredNanoseconds)
+	}
+}
+
+// A re-served snapshot carries the same timestamp. Counting it again would
+// invent traffic that never happened.
+func TestARepeatedNetworkSnapshotIsDiscarded(t *testing.T) {
+	p := testPoller(webResolver())
+	first := usageTestStart.Add(time.Minute)
+	p.ingest(summaryWithNetwork(first, iface("eth0", 1000, 2000, 0, 0)), first)
+	p.ingest(summaryWithNetwork(first.Add(30*time.Second), iface("eth0", 5000, 9000, 0, 0)), first.Add(30*time.Second))
+	p.ingest(summaryWithNetwork(first.Add(30*time.Second), iface("eth0", 5000, 9000, 0, 0)), first.Add(time.Minute))
+
+	if r := onlyNetworkRecord(t, p); r.RxBytes != 4000 || r.Samples != 1 {
+		t.Errorf("rx/samples = %d/%d, want 4000/1 — the re-served snapshot was counted", r.RxBytes, r.Samples)
+	}
+}
+
+// A counter running backwards means the sandbox was recreated. Emitting the
+// difference would be a negative; emitting the new value would be a spike of
+// the pod's whole lifetime attributed to one window.
+func TestABackwardsNetworkCounterRebaselines(t *testing.T) {
+	p := testPoller(webResolver())
+	first := usageTestStart.Add(time.Minute)
+	p.ingest(summaryWithNetwork(first, iface("eth0", 100000, 200000, 0, 0)), first)
+	p.ingest(summaryWithNetwork(first.Add(30*time.Second), iface("eth0", 50, 60, 0, 0)), first.Add(30*time.Second))
+	p.ingest(summaryWithNetwork(first.Add(time.Minute), iface("eth0", 90, 100, 0, 0)), first.Add(time.Minute))
+
+	r := onlyNetworkRecord(t, p)
+	if r.RxBytes != 40 || r.TxBytes != 40 {
+		t.Errorf("rx/tx = %d/%d, want 40/40 measured from the new baseline", r.RxBytes, r.TxBytes)
+	}
+}
+
+// Interfaces are summed and counted; their names are never read.
+func TestEveryInterfaceIsSummedAndOnlyCounted(t *testing.T) {
+	p := testPoller(webResolver())
+	first := usageTestStart.Add(time.Minute)
+	second := first.Add(30 * time.Second)
+	p.ingest(summaryWithNetwork(first, iface("eth0", 100, 200, 0, 0), iface("net1", 10, 20, 0, 0)), first)
+	p.ingest(summaryWithNetwork(second, iface("eth0", 300, 500, 0, 0), iface("net1", 40, 60, 0, 0)), second)
+
+	r := onlyNetworkRecord(t, p)
+	if r.RxBytes != 230 || r.TxBytes != 340 {
+		t.Errorf("rx/tx = %d/%d, want the sum over both interfaces (230/340)", r.RxBytes, r.TxBytes)
+	}
+	if r.Interfaces != 2 {
+		t.Errorf("interfaces = %d, want 2", r.Interfaces)
+	}
+}
+
+// A host-networked pod reports the node's interfaces. The flag is what stops a
+// DaemonSet's records being summed with everything else into the whole
+// cluster's traffic (ADR 0053 §2).
+func TestHostNetworkIsFlagged(t *testing.T) {
+	resolver := stubResolver{
+		"uid-1": {
+			namespace: "shop", name: "web-abc",
+			workload: WorkloadRef{Kind: "DaemonSet", Name: "web"},
+			info:     PodInfo{Placement: Placement{HostNetwork: true}},
+		},
+	}
+	p := testPoller(resolver)
+	first := usageTestStart.Add(time.Minute)
+	p.ingest(summaryWithNetwork(first, iface("eth0", 100, 200, 0, 0)), first)
+	p.ingest(summaryWithNetwork(first.Add(30*time.Second), iface("eth0", 300, 500, 0, 0)), first.Add(30*time.Second))
+
+	if r := onlyNetworkRecord(t, p); !r.HostNetwork {
+		t.Error("host_network is false for a pod on the node's network namespace")
+	}
+}
+
+// A pod the filter never admitted has no record, and its counters are not read:
+// the lookup gates the whole pod, network included (invariant 6).
+func TestAnUnknownPodContributesNoNetworkRecord(t *testing.T) {
+	p := testPoller(stubResolver{})
+	at := usageTestStart.Add(time.Minute)
+	p.ingest(summaryWithNetwork(at, iface("eth0", 1000, 2000, 0, 0)), at)
+	p.ingest(summaryWithNetwork(at.Add(30*time.Second), iface("eth0", 5000, 9000, 0, 0)), at.Add(30*time.Second))
+
+	if records := p.netAcc.CloseBefore(usageTestStart.Add(3 * time.Hour)); len(records) != 0 {
+		t.Errorf("records = %+v for an unadmitted pod, want none", records)
+	}
+}
+
+// A cluster whose runtime reports no network block at all must not produce a
+// "network" signal: the payload would then claim the counters were observed.
+func TestNoNetworkBlockRaisesNoSignal(t *testing.T) {
+	p := testPoller(webResolver())
+	at := usageTestStart.Add(time.Minute)
+	p.ingest(summaryWith(cpuMemStats(usageTestStart, at, 15e9, 64<<20)), at)
+
+	for _, s := range p.Observation().Signals {
+		if s == "network" {
+			t.Error("the network signal is set on a cluster that reported no network stats")
+		}
 	}
 }

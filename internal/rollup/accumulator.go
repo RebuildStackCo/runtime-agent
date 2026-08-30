@@ -1,8 +1,6 @@
 package rollup
 
 import (
-	"math"
-	"math/bits"
 	"sort"
 	"time"
 )
@@ -11,8 +9,8 @@ import (
 // holds the open records. It is owned by a single goroutine — the poller —
 // and is not safe for concurrent use.
 type Accumulator struct {
-	windowLength time.Duration
-	open         map[openKey]*Record
+	win  windowing
+	open map[openKey]*Record
 }
 
 type openKey struct {
@@ -26,48 +24,34 @@ func NewAccumulator(windowLength time.Duration) *Accumulator {
 	if windowLength <= 0 {
 		panic("rollup: window length must be positive")
 	}
-	return &Accumulator{windowLength: windowLength, open: map[openKey]*Record{}}
+	return &Accumulator{win: windowing{length: windowLength}, open: map[openKey]*Record{}}
 }
 
 // record returns the open record for the window containing at, creating it
 // on first touch.
 func (a *Accumulator) record(k Key, at time.Time) *Record {
-	start := at.UTC().Truncate(a.windowLength)
+	return a.recordAt(k, a.win.startOf(at))
+}
+
+// recordAt is record for a start already aligned to a window boundary.
+func (a *Accumulator) recordAt(k Key, start time.Time) *Record {
 	ok := openKey{Key: k, start: start.UnixNano()}
 	r := a.open[ok]
 	if r == nil {
-		r = newRecord(k, start, int64(a.windowLength/time.Second))
+		r = newRecord(k, start, a.win.seconds())
 		a.open[ok] = r
 	}
 	return r
 }
 
-// addProRata splits a counter delta accrued over [from, to) across the
-// windows the interval overlaps, pro rata by overlap, and adds each part to
-// the window's record via add. Parts sum exactly to amount — the last
-// segment absorbs rounding — so window totals stay exact regardless of poll
-// alignment. Non-positive intervals and negative deltas are ignored: the
-// delta tracker upstream handles counter resets by rebaselining, never by
-// emitting them here.
+// addProRata splits a counter delta accrued over [from, to) across the windows
+// the interval overlaps, adding each part to that window's record via add. The
+// arithmetic is windowing.split's; what belongs here is only which record each
+// part lands in.
 func (a *Accumulator) addProRata(k Key, from, to time.Time, amount int64, add func(*Record, int64)) {
-	total := to.Sub(from).Nanoseconds()
-	if total <= 0 || amount < 0 {
-		return
-	}
-	remaining := amount
-	segFrom := from
-	for segFrom.Before(to) {
-		segTo := segFrom.UTC().Truncate(a.windowLength).Add(a.windowLength)
-		part := remaining
-		if segTo.Before(to) {
-			part = mulDiv(amount, segTo.Sub(segFrom).Nanoseconds(), total)
-			remaining -= part
-		} else {
-			segTo = to
-		}
-		add(a.record(k, segFrom), part)
-		segFrom = segTo
-	}
+	a.win.split(from, to, amount, func(start time.Time, part int64) {
+		add(a.recordAt(k, start), part)
+	})
 }
 
 // ObserveCPUDelta records one CPU counter delta: coreNanos of CPU time
@@ -133,7 +117,7 @@ func (a *Accumulator) ObserveMemory(k Key, at time.Time, workingSetBytes int64) 
 func (a *Accumulator) CloseBefore(now time.Time) []*Record {
 	var out []*Record
 	for ok, r := range a.open {
-		if !r.WindowStart.Add(a.windowLength).After(now) {
+		if !r.WindowStart.Add(a.win.length).After(now) {
 			out = append(out, r)
 			delete(a.open, ok)
 		}
@@ -170,22 +154,4 @@ func sortRecords(rs []*Record) {
 		}
 		return a.Container < b.Container
 	})
-}
-
-// mulDiv returns a*b/c without intermediate overflow, for a, b ≥ 0 and
-// c > 0 (anything else returns 0), saturating at MaxInt64 when the quotient
-// does not fit.
-func mulDiv(a, b, c int64) int64 {
-	if a < 0 || b < 0 || c <= 0 {
-		return 0
-	}
-	hi, lo := bits.Mul64(uint64(a), uint64(b)) // #nosec G115 -- guarded non-negative above
-	if hi >= uint64(c) {                       // #nosec G115 -- guarded positive above
-		return math.MaxInt64
-	}
-	q, _ := bits.Div64(hi, lo, uint64(c)) // #nosec G115 -- guarded positive above
-	if q > math.MaxInt64 {
-		return math.MaxInt64
-	}
-	return int64(q)
 }

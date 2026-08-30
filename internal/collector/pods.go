@@ -685,6 +685,16 @@ func (w *PodWatcher) LookupPod(uid types.UID) (namespace string, workload Worklo
 	return entry.namespace, entry.workload, ok
 }
 
+// HostNetwork reports whether the pod shares its node's network namespace. An
+// unknown pod answers false, which is the safe direction: the flag only ever
+// widens what a consumer must not do with the counters (ADR 0053 §2).
+func (w *PodWatcher) HostNetwork(uid types.UID) bool {
+	w.indexMu.RLock()
+	defer w.indexMu.RUnlock()
+	entry, ok := w.index[uid]
+	return ok && entry.info.Placement.HostNetwork
+}
+
 // LookupPodByName is LookupPod for sources that identify pods by namespace and
 // name instead of UID — the cAdvisor exposition is one. It returns the UID as
 // well as the workload, because a name is not an identity: a StatefulSet

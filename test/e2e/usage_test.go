@@ -78,7 +78,7 @@ func TestUsagePollerAgainstRealCluster(t *testing.T) {
 	}
 
 	spoolDir := t.TempDir()
-	records := startUsagePipeline(ctx, t, clientset, spoolDir)
+	records, poller := startUsagePipeline(ctx, t, clientset, spoolDir)
 
 	// A snapshot record for the burner must accumulate at least 3 CPU
 	// core-seconds (300m for ~10 s of attributed runtime), real memory
@@ -95,12 +95,30 @@ func TestUsagePollerAgainstRealCluster(t *testing.T) {
 				r.CPU.ThrottledPeriods > 0 {
 				assertBurnerRecord(t, r)
 				assertSpoolHoldsBurner(t, spoolDir, ns)
+				assertNetworkCountersWereRead(t, poller)
 				return
 			}
 		}
 		time.Sleep(2 * time.Second)
 	}
 	t.Fatalf("no burner snapshot with enough usage before deadline; last record: %+v", last)
+}
+
+// Whether the kubelet reports pod network counters at all depends on the
+// runtime and the CNI (ADR 0053 §5), and the payload distinguishes "quiet" from
+// "not reported" precisely because of that. This asserts the signal on the one
+// cluster we control, so a change in kind's runtime that silently removes the
+// counters fails here rather than in a customer's empty report.
+func assertNetworkCountersWereRead(t *testing.T, poller *collector.UsagePoller) {
+	t.Helper()
+	signals := poller.Observation().Signals
+	for _, s := range signals {
+		if s == "network" {
+			t.Logf("kubelet signals: %v", signals)
+			return
+		}
+	}
+	t.Errorf("signals = %v, want one of them to be \"network\"; the summary carried no pod network block", signals)
 }
 
 func assertBurnerRecord(t *testing.T, r *rollup.Record) {
@@ -194,7 +212,7 @@ func assertSpoolHoldsBurner(t *testing.T, spoolDir, ns string) {
 // startUsagePipeline wires pod watcher, node watcher, usage poller, and the
 // local spool the same way the agent's main does, and returns the sink
 // receiving snapshots.
-func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.Interface, spoolDir string) *recordSink {
+func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.Interface, spoolDir string) (*recordSink, *collector.UsagePoller) {
 	t.Helper()
 	results := &recordSink{latest: make(map[string]*rollup.Record)}
 	spool, err := sink.NewSpool(spoolDir, 0)
@@ -221,6 +239,15 @@ func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.
 				t.Errorf("spooling closed windows: %v", err)
 			}
 		},
+		func(records []*rollup.NetworkRecord) {
+			// Windows are hourly, so no e2e run reaches one. The payload is
+			// covered by its golden; what this run proves is that the counters
+			// were read at all — see the network signal below.
+			t.Logf("network windows closed: %d records", len(records))
+			if err := spool.WriteNetworkWindows(records, poller.Observation()); err != nil {
+				t.Errorf("spooling network windows: %v", err)
+			}
+		},
 		func(node string, err error) { t.Logf("kubelet poll failed on %s: %v", node, err) },
 	)
 
@@ -233,5 +260,5 @@ func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.
 			}
 		}()
 	}
-	return results
+	return results, poller
 }

@@ -1,0 +1,47 @@
+{
+  "kind": "network_window",
+  "source": "measured",
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "observation": {
+    "poll_interval_seconds": 30,
+    "polls_attempted": 240,
+    "polls_failed": 3,
+    "signals": [
+      "cpu",
+      "memory",
+      "throttling"
+    ]
+  },
+  "records": [
+    {
+      "namespace": "observability",
+      "workload_kind": "DaemonSet",
+      "workload_name": "log-shipper",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "rx_bytes": 3145728,
+      "tx_bytes": 4294967296,
+      "rx_errors": 0,
+      "tx_errors": 17,
+      "samples": 1,
+      "covered_nanoseconds": 300000000000,
+      "interfaces": 2,
+      "host_network": true
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "rx_bytes": 12582912,
+      "tx_bytes": 50331648,
+      "rx_errors": 0,
+      "tx_errors": 0,
+      "samples": 1,
+      "covered_nanoseconds": 300000000000,
+      "interfaces": 1
+    }
+  ]
+}

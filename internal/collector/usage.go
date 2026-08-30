@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
+	"k8s.io/utils/ptr"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -43,6 +44,10 @@ const (
 // kubelet sources key their counter state on the same pod identity.
 type PodResolver interface {
 	LookupPod(uid types.UID) (namespace string, workload WorkloadRef, ok bool)
+	// HostNetwork reports whether the pod shares its node's network namespace.
+	// The network counters mean something different when it does, and only the
+	// pod spec says which (ADR 0053 §2).
+	HostNetwork(uid types.UID) bool
 	LookupPodByName(namespace, name string) (uid types.UID, workload WorkloadRef, ok bool)
 }
 
@@ -62,12 +67,17 @@ type UsagePoller struct {
 
 	onSnapshot func(records []*rollup.Record)
 	onClosed   func(records []*rollup.Record)
+	onNetwork  func(records []*rollup.NetworkRecord)
 	onError    func(node string, err error)
 
 	// The accumulator and trackers are owned by the Run goroutine.
 	acc      *rollup.Accumulator
+	netAcc   *rollup.NetworkAccumulator
 	tracker  map[trackerKey]*counterState
 	throttle map[trackerKey]*throttleState
+	// netTracker is keyed by pod, not by container: one network namespace per
+	// pod, so there is nothing finer to baseline (ADR 0053 §1).
+	netTracker map[types.UID]*netCounterState
 
 	// Observation state: which kubelet signals this cluster actually exposes
 	// (runtime probing, ADR 0006) and how the polling itself is going. Written
@@ -113,6 +123,19 @@ type counterState struct {
 	lastSeen   time.Time
 }
 
+// netCounterState is the per-pod baseline for the network counters. Simpler
+// than its per-container sibling: a pod's network namespace lives as long as the
+// pod, so a container restart does not reset these — only a pod replacement
+// does, and that arrives under a new UID.
+type netCounterState struct {
+	at       time.Time
+	rxBytes  uint64
+	txBytes  uint64
+	rxErrors uint64
+	txErrors uint64
+	lastSeen time.Time
+}
+
 // NewUsagePoller wires a poller to its node list, pod attribution, and
 // output callbacks. Any callback may be nil. onSnapshot receives deep
 // copies of the open-window records; onClosed receives final records of ended
@@ -124,6 +147,7 @@ func NewUsagePoller(
 	pods PodResolver,
 	onSnapshot func(records []*rollup.Record),
 	onClosed func(records []*rollup.Record),
+	onNetwork func(records []*rollup.NetworkRecord),
 	onError func(node string, err error),
 ) *UsagePoller {
 	return &UsagePoller{
@@ -134,10 +158,13 @@ func NewUsagePoller(
 
 		onSnapshot: onSnapshot,
 		onClosed:   onClosed,
+		onNetwork:  onNetwork,
 		onError:    onError,
 		acc:        rollup.NewAccumulator(UsageWindowLength),
+		netAcc:     rollup.NewNetworkAccumulator(UsageWindowLength),
 		tracker:    make(map[trackerKey]*counterState),
 		throttle:   make(map[trackerKey]*throttleState),
+		netTracker: make(map[types.UID]*netCounterState),
 		signals:    make(map[string]bool),
 	}
 }
@@ -325,7 +352,84 @@ func (p *UsagePoller) ingest(summary *statsapi.Summary, now time.Time) {
 			}
 			p.ingestContainer(trackerKey{pod: types.UID(pod.PodRef.UID), container: c.Name}, key, c, now)
 		}
+		p.ingestNetwork(types.UID(pod.PodRef.UID), rollup.NetworkKey{
+			Namespace:    namespace,
+			WorkloadKind: workload.Kind,
+			WorkloadName: workload.Name,
+		}, pod, now)
 	}
+}
+
+// ingestNetwork applies the delta rules of ADR 0006 to one pod's network
+// counters. They are the pod's, not any container's: every container shares the
+// namespace they are counted on (ADR 0053 §1).
+//
+// The counters are summed across the pod's interfaces. Their names are not read
+// — an interface name is cluster network topology — so what says a second
+// interface exists is the count.
+func (p *UsagePoller) ingestNetwork(uid types.UID, key rollup.NetworkKey, pod *statsapi.PodStats, now time.Time) {
+	net := pod.Network
+	if net == nil {
+		return
+	}
+	p.markSignal("network")
+
+	var rx, tx, rxErr, txErr uint64
+	interfaces := 0
+	for _, iface := range interfacesOf(net) {
+		if iface.RxBytes == nil && iface.TxBytes == nil {
+			continue
+		}
+		interfaces++
+		rx += ptr.Deref(iface.RxBytes, 0)
+		tx += ptr.Deref(iface.TxBytes, 0)
+		rxErr += ptr.Deref(iface.RxErrors, 0)
+		txErr += ptr.Deref(iface.TxErrors, 0)
+	}
+	if interfaces == 0 {
+		return
+	}
+
+	at := net.Time.Time
+	st := p.netTracker[uid]
+	if st == nil {
+		st = &netCounterState{}
+		p.netTracker[uid] = st
+	}
+	st.lastSeen = now
+
+	switch {
+	case st.at.IsZero():
+		// First observation of this pod: nothing to subtract from, and unlike a
+		// container there is no start time to attribute the counters to — the
+		// summary dates the pod's stats, not its network namespace. So this one
+		// establishes the baseline and emits nothing.
+	case !at.After(st.at):
+		return // re-served or stale snapshot: keep the baseline, emit nothing
+	case rx < st.rxBytes || tx < st.txBytes || rxErr < st.rxErrors || txErr < st.txErrors:
+		// A counter ran backwards: the sandbox was recreated under the same pod
+		// UID, or an interface went away. Rebaseline rather than emit a
+		// negative or a false spike.
+	default:
+		p.netAcc.Observe(key, st.at, at, rollup.NetworkDelta{
+			RxBytes:    clampToInt64(rx - st.rxBytes),
+			TxBytes:    clampToInt64(tx - st.txBytes),
+			RxErrors:   clampToInt64(rxErr - st.rxErrors),
+			TxErrors:   clampToInt64(txErr - st.txErrors),
+			Interfaces: interfaces,
+		}, p.pods.HostNetwork(uid))
+	}
+	st.at, st.rxBytes, st.txBytes, st.rxErrors, st.txErrors = at, rx, tx, rxErr, txErr
+}
+
+// interfacesOf returns the per-interface stats to sum. The kubelet reports the
+// default interface inline and repeats it in Interfaces when it reports that
+// list at all, so preferring the list avoids counting it twice.
+func interfacesOf(net *statsapi.NetworkStats) []statsapi.InterfaceStats {
+	if len(net.Interfaces) > 0 {
+		return net.Interfaces
+	}
+	return []statsapi.InterfaceStats{net.InterfaceStats}
 }
 
 // ingestContainer applies the delta rules of ADR 0006 to one container's
@@ -432,6 +536,11 @@ func (p *UsagePoller) sweep(now time.Time) {
 			delete(p.throttle, ck)
 		}
 	}
+	for uid, st := range p.netTracker {
+		if st.lastSeen.Before(cutoff) {
+			delete(p.netTracker, uid)
+		}
+	}
 }
 
 // flush emits closed windows first, then a fresh snapshot of the still-open
@@ -444,6 +553,13 @@ func (p *UsagePoller) flush(now time.Time) {
 	}
 	if snapshots := p.acc.Snapshots(); len(snapshots) > 0 && p.onSnapshot != nil {
 		p.onSnapshot(snapshots)
+	}
+	// Only closed windows: a network window means something complete and
+	// nothing partial. Bytes accumulate, so half an hour of them read as a rate
+	// over the full hour is simply wrong, and unlike CPU nothing inside the
+	// agent consumes the open window (ADR 0053 §4).
+	if closed := p.netAcc.CloseBefore(now); len(closed) > 0 && p.onNetwork != nil {
+		p.onNetwork(closed)
 	}
 }
 

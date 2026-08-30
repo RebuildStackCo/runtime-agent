@@ -47,7 +47,7 @@ func pollerAgainst(t *testing.T, server *httptest.Server, timeout time.Duration,
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := NewUsagePoller(clientset, func() []string { return nodes }, webResolver(), nil, nil, func(string, error) {})
+	p := NewUsagePoller(clientset, func() []string { return nodes }, webResolver(), nil, nil, nil, func(string, error) {})
 	p.requestTimeout = timeout
 	return p
 }
