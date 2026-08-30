@@ -494,6 +494,7 @@ test fails if a kind ships without appearing here (ADR 0022).
 
 | Payload | What it carries | Names pods? |
 |---|---|---|
+| `collection_coverage` | What the agent did rather than what it found: how many pods and Jobs it observed, how many each of your four controls excluded, how many placement terms the reduction dropped, what the node scanners walked and skipped, which of the agent's reads worked, its version, and the shape of your configuration. **Aggregate counts only — no name of anything you excluded appears here or anywhere else** ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)) | no |
 | `usage_snapshot` | The still-open hour's resource rollup: per (namespace, workload, container) histograms of CPU and memory, throttling and PSI counters, plus how much of the window was observed. Shipped once a minute, each replacing the last | no |
 | `usage_window` | The same shape, final, when the hour closes | no |
 | `network_window` | Per collected workload and closed hour: bytes and errors received and transmitted, summed over its pods and their interfaces. Interface **names are not read** — only how many there were. Counters are the *pod's*, so nothing here is attributed to a container, and a `host_network` workload's counters are the **node's** and describe the whole machine ([ADR 0053](adr/0053-network-counters-are-the-pods.md)). The kubelet counts bytes at the interface and never says where they went: there is no destination, no peer and no address in this payload | no |
@@ -761,9 +762,12 @@ Node-level totals (allocatable, aggregate node usage) are collected regardless o
 workload filters. They attribute to no workload and are what reconciles cluster
 cost against your invoice.
 
-**[planned]** A payload carrying the per-filter exclusion counts and a
-fingerprint of the effective configuration with the time it last changed. The
-counters exist in the agent; no payload carries them out yet.
+The per-filter exclusion counts leave in the `collection_coverage` payload,
+beside the *shape* of the configuration in force — how many entries each filter
+list holds and when the file last changed, never a name from it. There is
+deliberately **no hash of your configuration**: a digest of a few short
+namespace names is reversible by trying the plausible ones, and what it would
+expose is your deny list ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)).
 
 ### Transport **[planned]**
 
@@ -916,12 +920,21 @@ one; it was never decided in an ADR and never existed in the configuration
 
 ### What the agent says about itself
 
-The agent tallies pods observed and pods excluded by each filter, so filtering
-behavior is verifiable from output rather than only from configuration.
-Delivering those counts out of the cluster is **[planned]**, as is a startup
-self-audit that would enumerate the agent's effective permissions via
-`SelfSubjectRulesReview`. What holds today: a 403 degrades with a log line, never
-a crash-loop or retry storm.
+The agent tallies pods observed and pods excluded by each filter, and those
+counts leave in `collection_coverage`, so filtering behavior is verifiable from
+what we receive and not only from what you configured. The same payload reports
+which of the agent's own reads worked — measured from its caches, not read back
+from the rules, so a grant defeated by a webhook reads as failing rather than as
+granted. No startup self-audit via `SelfSubjectRulesReview` is performed: it is a
+`create` call, and this agent makes none (ADR 0054 §3). A 403 still degrades with
+a log line, never a crash-loop or retry storm.
+
+**What those counts can and cannot tell us.** They say how much was excluded and
+under which of your four controls, never which object. One inference remains and
+is stated rather than hidden ([ADR 0039](adr/0039-stated-limits-are-measured-limits.md)):
+a workload that was collected and then opted out disappears from the data, and
+that disappearance is visible whether or not a counter explains it. The counter
+explains it; without it the conclusion would be that you deleted the workload.
 
 ### Opt-out
 

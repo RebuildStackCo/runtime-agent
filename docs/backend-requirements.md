@@ -360,6 +360,27 @@ in nothing. A `GODEBUG` variable in `workload_metadata.runtime_env` overrides
 both at startup; it is a fact about a workload, this is a fact about a build, and
 the backend MUST NOT merge them into one value.
 
+**`collection_coverage` is how the backend knows an empty report is empty rather
+than broken** ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)).
+It arrives on every flush, including one where nothing else did, and supersedes
+its predecessor. A stale or absent `captured_at` is therefore a statement about
+the **agent**, not about the cluster, and the backend SHOULD treat it as one: no
+other kind's silence means anything.
+
+Its counters are cumulative from `since`, which is when that process started
+counting; a restart moves the base, and a drop across a change in `since` MUST
+NOT be read as a decline. `agent.config` carries the *shape* of the customer's
+configuration — entry counts and switches — and never a name from it, and never
+a hash of it; `agent.config.since` is when that configuration took effect, and it
+is what separates "the data changed" from "the filters changed". `sources[]`
+reports what the agent's reads actually did, so a source that is `synced: false`
+or `failing: true` bounds every finding resting on it — the backend MUST NOT
+present such a finding as complete. The scan block is a fleet aggregate over the
+latest pass of each reporting node and MUST NOT be summed across flushes.
+
+No field of this payload names an object the customer excluded, and the backend
+MUST NOT ask for one.
+
 **`network_window` says how much moved, never where it went**
 ([ADR 0053](adr/0053-network-counters-are-the-pods.md)). The counters are read at
 the pod's own interfaces, so the payload carries no destination, no peer and no

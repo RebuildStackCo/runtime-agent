@@ -111,3 +111,4 @@ line to paste.
 - [0051. Topology-aware routing is a request the cluster can silently decline](0051-topology-routing-is-asked-and-not-granted.md)
 - [0052. The peak the kernel remembers, and the second file the scanner opens](0052-the-peak-the-kernel-remembers.md)
 - [0053. The network counters are the pod's, and they say nothing about where the bytes went](0053-network-counters-are-the-pods.md)
+- [0054. Coverage says how much was hidden, never what](0054-coverage-says-how-much-was-hidden-never-what.md)

@@ -53,6 +53,16 @@ type PayloadKind struct {
 // registry is the fixed list. Order here is irrelevant — Registry sorts.
 var registry = []PayloadKind{
 	{
+		// Written on every flush, including one with nothing to report: it is
+		// the only kind whose absence or staleness is a fact about the agent
+		// rather than about the cluster (ADR 0054).
+		Kind:       "collection_coverage",
+		Source:     SourceAgent,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0054",
+	},
+	{
 		Kind:       "usage_snapshot",
 		Source:     SourceMeasured,
 		NaturalKey: "(window start, window length)",

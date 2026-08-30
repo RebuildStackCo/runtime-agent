@@ -208,26 +208,26 @@ func (f *Filter) countUnresolvedWorkload(reason UnresolvedWorkload) {
 // report (docs/security.md §11): full information about what is collected,
 // only counts about what is not.
 type Coverage struct {
-	PodsObserved                int64
-	ExcludedNamespaceFilter     int64
-	ExcludedNamespaceAnnotation int64
-	ExcludedWorkloadAnnotation  int64
-	ExcludedPodAnnotation       int64
+	PodsObserved                int64 `json:"pods_observed"`
+	ExcludedNamespaceFilter     int64 `json:"excluded_namespace_filter"`
+	ExcludedNamespaceAnnotation int64 `json:"excluded_namespace_annotation"`
+	ExcludedWorkloadAnnotation  int64 `json:"excluded_workload_annotation"`
+	ExcludedPodAnnotation       int64 `json:"excluded_pod_annotation"`
 	// WorkloadUnknownKind and WorkloadNotCached are the blind spot: pods
 	// admitted without their workload-level opt-out being checked. They are
 	// kept apart because they mean different things — the first is a standing
 	// property of a cluster running operators the agent does not read, the
 	// second should sit at zero.
-	WorkloadUnknownKind int64
-	WorkloadNotCached   int64
+	WorkloadUnknownKind int64 `json:"workload_unknown_kind"`
+	WorkloadNotCached   int64 `json:"workload_not_cached"`
 
 	// Job counters, kept apart from the pod ones on purpose: one Job produces
 	// many pods, so a shared counter would answer neither question.
-	JobsObserved                    int64
-	JobsExcludedNamespaceFilter     int64
-	JobsExcludedNamespaceAnnotation int64
-	JobsExcludedWorkloadAnnotation  int64
-	JobsExcludedAnnotation          int64
+	JobsObserved                    int64 `json:"jobs_observed"`
+	JobsExcludedNamespaceFilter     int64 `json:"jobs_excluded_namespace_filter"`
+	JobsExcludedNamespaceAnnotation int64 `json:"jobs_excluded_namespace_annotation"`
+	JobsExcludedWorkloadAnnotation  int64 `json:"jobs_excluded_workload_annotation"`
+	JobsExcludedAnnotation          int64 `json:"jobs_excluded_annotation"`
 }
 
 // Snapshot returns the current coverage counters.
