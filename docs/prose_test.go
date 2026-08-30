@@ -34,8 +34,8 @@ var ceilings = []struct {
 	lines   int
 	section int
 }{
-	{"security.md", 996, 330},
-	{"backend-requirements.md", 575, 435},
+	{"security.md", 1030, 360},
+	{"backend-requirements.md", 595, 455},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

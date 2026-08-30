@@ -12,6 +12,8 @@
       "profiling_enabled": true,
       "profiling_top_n": 5,
       "pprof_discovery_enabled": false,
+      "pprof_pull_enabled": false,
+      "symbol_prefixes_allowed": 0,
       "node_intake_enabled": true
     },
     "usage_signals": [
@@ -73,5 +75,11 @@
     "confirmed": 6,
     "absent": 11,
     "unreachable": 2
+  },
+  "pprof_pull": {
+    "shipped": 4,
+    "refused": 1,
+    "unreachable": 0,
+    "invalid": 1
   }
 }

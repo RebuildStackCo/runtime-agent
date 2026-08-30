@@ -84,6 +84,10 @@ type Candidate struct {
 	WorkloadKind string
 	WorkloadName string
 	Container    string
+	// OwnModules are the module paths the build compiles from source, read from
+	// the binary. The prober does not use them; they ride here because this is
+	// where the digest is joined to what is known about the build (ADR 0058 §5).
+	OwnModules []string
 }
 
 // Address resolves a candidate to one reachable `host:port` to ask, or reports
@@ -244,6 +248,21 @@ func (p *Prober) Endpoints() []Target {
 	return out
 }
 
+// Confirmed narrows candidates to those whose endpoint answered with the pprof
+// index. It is the whole of what this package tells the puller: where an
+// endpoint is, never whether it is worth profiling.
+func (p *Prober) Confirmed(candidates []Candidate) []Candidate {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		if a, ok := p.answers[c.Target]; ok && a.state == StateConfirmed {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // Coverage is what the prober has established, for the collection-coverage
 // payload. Counts only: which workload was asked about is already in the
 // inventory beside it, and which was refused is not a name this reports
@@ -301,10 +320,11 @@ func (s State) String() string {
 //
 // A loopback port is dropped rather than asked about: nothing outside the pod
 // can open it, so a probe would prove only that the agent is not inside.
-func Candidates(ports []inventory.PortRecord, linked map[string]struct{}) []Candidate {
+func Candidates(ports []inventory.PortRecord, builds map[string][]string) []Candidate {
 	var out []Candidate
 	for _, rec := range ports {
-		if _, ok := linked[rec.ImageDigest]; !ok {
+		ownModules, ok := builds[rec.ImageDigest]
+		if !ok {
 			continue
 		}
 		for _, port := range rec.Ports {
@@ -317,6 +337,7 @@ func Candidates(ports []inventory.PortRecord, linked map[string]struct{}) []Cand
 				WorkloadKind: rec.WorkloadKind,
 				WorkloadName: rec.WorkloadName,
 				Container:    rec.Container,
+				OwnModules:   ownModules,
 			})
 		}
 	}

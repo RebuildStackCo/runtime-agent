@@ -1,0 +1,16 @@
+{
+  "kind": "pprof_profile",
+  "namespace": "acme",
+  "workload": "api",
+  "container": "server",
+  "image_digest": "sha256:deadbeef",
+  "capture_start": "2023-11-14T22:13:20Z",
+  "capture_end": "2023-11-14T22:13:30Z",
+  "source": "sampled",
+  "dropped": {
+    "third_party_frames": 812,
+    "unsymbolized_frames": 4,
+    "samples_touched": 173
+  },
+  "pprof": "RklYRUQtUFBST0YtQllURVMAAQID"
+}

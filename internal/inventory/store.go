@@ -628,19 +628,45 @@ func (s *Store) PortSnapshot() []PortRecord {
 	return out
 }
 
-// PprofDigests returns the image digests whose build links net/http/pprof
-// (ADR 0056 §1). It is the second stage of the endpoint funnel, and the one
-// that answers for a whole image at once.
-func (s *Store) PprofDigests() map[string]struct{} {
+// PprofBuilds returns, per image digest whose build links net/http/pprof, the
+// module paths that build compiles from source (ADR 0056 §1). It is the second
+// stage of the endpoint funnel, and the one that answers for a whole image at
+// once.
+//
+// The modules travel with the digest because they are what says which frames of
+// a profile of that build are the customer's own code — read from the binary,
+// where no configured list can be wrong about it (ADR 0058 §5).
+func (s *Store) PprofBuilds() map[string][]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make(map[string]struct{})
+	out := make(map[string][]string)
 	for digest, b := range s.builds {
 		if b.HasPprof {
-			out[digest] = struct{}{}
+			out[digest] = ownModules(b)
 		}
 	}
 	return out
+}
+
+// ownModules is the code a build is built from rather than the code it consumes:
+// the main module, and every dependency a `replace` directive redirected.
+//
+// The second is not a guess. A module you `replace` is one you build from source
+// — the shape of every Go monorepo — while a module you merely require arrives
+// as a published version. The replacement's own path is not read and is not
+// needed: what is kept is the required path, which is what appears in a frame
+// (ADR 0019, ADR 0048 §3).
+func ownModules(b BuildFacts) []string {
+	own := make([]string, 0, 1+len(b.Modules))
+	if b.MainModule != "" {
+		own = append(own, b.MainModule)
+	}
+	for _, m := range b.Modules {
+		if m.Replaced && m.Path != "" {
+			own = append(own, m.Path)
+		}
+	}
+	return own
 }
 
 // ScanCoverage is what the node scanners did, summed over the nodes that
