@@ -20,7 +20,9 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	done := make(chan error, 1)
 	// A minimal REST config; node intake is disabled in this config, so it is
 	// never used to build a JWKS client.
-	go func() { done <- run(ctx, logger, fake.NewClientset(), &rest.Config{}, config.Config{}) }()
+	go func() {
+		done <- run(ctx, logger, fake.NewClientset(), &rest.Config{}, config.Config{}, config.Shape{}, time.Now())
+	}()
 
 	cancel()
 	select {

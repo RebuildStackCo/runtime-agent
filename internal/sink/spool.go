@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
@@ -76,6 +77,13 @@ const (
 	// (`ebpf_profile`), and a profile pulled from a /debug/pprof endpoint would
 	// be a different kind of the same class (ADR 0023).
 	SourceSampled = "sampled"
+	// SourceAgent is a fact about the agent's own collection rather than about
+	// the cluster: what it looked at, what it was configured to skip, and which
+	// of its reads worked. The other four classes all answer "where in the
+	// cluster did this come from", and stretching one of them over a fact whose
+	// subject is the agent would make the discriminator lie in the one payload
+	// whose whole purpose is to be trusted about itself (ADR 0054 §1).
+	SourceAgent = "agent"
 )
 
 // Spool writes payload files into one directory. Methods may be called from
@@ -132,6 +140,47 @@ type networkPayload struct {
 	WindowSeconds int64                   `json:"window_seconds"`
 	Observation   collector.Observation   `json:"observation"`
 	Records       []*rollup.NetworkRecord `json:"records"`
+}
+
+// collectionCoveragePayload is what the agent did, not what it found: what it
+// saw, what it was told to skip and under which control, which of its reads
+// worked, and the shape of the configuration in force.
+//
+// It ships on every flush whether or not anything changed, so an old CapturedAt
+// says the agent stopped where silence in every other kind says nothing
+// (ADR 0054 §5). Every number here is an aggregate; no name of an excluded
+// object appears (CLAUDE.md invariant 6).
+type collectionCoveragePayload struct {
+	Kind       string    `json:"kind"`
+	Source     string    `json:"source"`
+	CapturedAt time.Time `json:"captured_at"`
+	// Since is the base of every cumulative counter below: the moment this
+	// process started counting. It travels in the bytes so a restart reads as a
+	// new base rather than as counters that fell.
+	Since   time.Time                `json:"since"`
+	Agent   AgentInfo                `json:"agent"`
+	Sources []collector.SourceHealth `json:"sources"`
+	Filter  collector.Coverage       `json:"filter"`
+	// Placement counts the placement terms and values the reduction refused to
+	// carry (ADR 0031). Not an exclusion — the workload is collected — but it is
+	// something the customer's manifests hold and the payload does not.
+	Placement collector.PlacementDrops `json:"placement"`
+	// Inventory and Scan are present only when the node role is deployed.
+	Inventory *inventory.Counters     `json:"inventory,omitempty"`
+	Scan      *inventory.ScanCoverage `json:"scan,omitempty"`
+}
+
+// AgentInfo is what the agent is and how it is set up, for a report that needs
+// to state what its findings rest on.
+type AgentInfo struct {
+	// Version is the build. "dev" means an unstamped binary.
+	Version string `json:"version"`
+	// Config is the shape of the configuration in force — counts and switches,
+	// never a name from it (ADR 0054 §2).
+	Config config.Shape `json:"config"`
+	// UsageSignals is which kubelet signals this cluster actually exposes. A
+	// finding resting on PSI cannot be made on a cluster that reports none.
+	UsageSignals []string `json:"usage_signals,omitempty"`
 }
 
 // oomPayload is one OOM kill event; events bypass windows and ship
@@ -451,6 +500,25 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs collect
 		}
 	}
 	return nil
+}
+
+// WriteCollectionCoverage writes the coverage payload, superseding its
+// predecessor. It is written on every flush, including one that found nothing:
+// an empty report and a broken agent are the same bytes without it (ADR 0054).
+func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, inv *inventory.Counters, scan *inventory.ScanCoverage) error {
+	payload := collectionCoveragePayload{
+		Kind:       "collection_coverage",
+		Source:     SourceAgent,
+		CapturedAt: capturedAt.UTC(),
+		Since:      since.UTC(),
+		Agent:      agent,
+		Sources:    sources,
+		Filter:     filter,
+		Placement:  placement,
+		Inventory:  inv,
+		Scan:       scan,
+	}
+	return s.write("collection-coverage.json", payload)
 }
 
 // WriteContainerRestarts writes the restart records of each window they belong

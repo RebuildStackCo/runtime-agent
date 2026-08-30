@@ -95,10 +95,15 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 		return err
 	}
 
+	startedAt := time.Now()
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return fmt.Errorf("loading configuration: %w", err)
 	}
+	// Counts and switches, never a name from the file: a digest of a handful of
+	// short namespace names is reversible, and the list it would expose is the
+	// one the customer chose to hide (ADR 0054 §2).
+	configShape := cfg.Describe(*configPath, startedAt)
 
 	clientset, restConfig, err := connect()
 	if err != nil {
@@ -106,7 +111,7 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 	}
 	logger.Info("connected to cluster", "host", restConfig.Host)
 
-	return run(ctx, logger, clientset, restConfig, cfg)
+	return run(ctx, logger, clientset, restConfig, cfg, configShape, startedAt)
 }
 
 // connect builds a clientset from the in-cluster service account when
@@ -133,12 +138,14 @@ func connect() (kubernetes.Interface, *rest.Config, error) {
 	return clientset, config, nil
 }
 
-// coverageInterval is how often the aggregate coverage counters are logged.
+// coverageInterval is how often the aggregate coverage counters are logged and
+// written as a payload. Unlike every other flush it runs whether or not there is
+// anything to report: staleness here is a fact about the agent (ADR 0054 §5).
 const coverageInterval = time.Minute
 
 // run is the agent's lifecycle: it starts, works until ctx is canceled, and
 // returns.
-func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface, restConfig *rest.Config, cfg config.Config) error {
+func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface, restConfig *rest.Config, cfg config.Config, configShape config.Shape, startedAt time.Time) error {
 	logger.Info("agent starting", "version", version)
 	defer logger.Info("agent stopping")
 
@@ -531,6 +538,29 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			)
 		}
 		logger.Info("coverage", attrs...)
+
+		// The same counters as a payload. The log serves whoever is reading the
+		// agent's own output; this serves the report, which otherwise cannot
+		// tell an empty cluster from a blind agent (ADR 0054).
+		if spool == nil {
+			return
+		}
+		var inv *inventory.Counters
+		var scan *inventory.ScanCoverage
+		if goStore != nil {
+			ic := goStore.Counters()
+			sc := goStore.ScanCoverage()
+			inv, scan = &ic, &sc
+		}
+		agentInfo := sink.AgentInfo{
+			Version:      version,
+			Config:       configShape,
+			UsageSignals: usagePoller.Signals(),
+		}
+		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
+			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), inv, scan); err != nil {
+			logger.Error("spooling collection coverage", "error", err)
+		}
 	}
 
 	// Watchers run until ctx is canceled; a failing watcher must bring the

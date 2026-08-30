@@ -88,13 +88,16 @@ func TestEveryRegisteredKindShips(t *testing.T) {
 }
 
 // Provenance is a closed vocabulary (ADR 0012 §2): the backend switches on it,
-// so a fifth class invented at a call site would be silently unhandled there.
+// so a class invented at a call site would be silently unhandled there. The list
+// below is the whole vocabulary, and widening it is a decision that shows up in
+// this diff — which is what ADR 0054 did to add `agent`.
 func TestRegistrySourcesAreKnownProvenanceClasses(t *testing.T) {
 	known := map[string]bool{
 		SourceStructural: true,
 		SourceMeasured:   true,
 		SourceJournal:    true,
 		SourceSampled:    true,
+		SourceAgent:      true,
 	}
 	for _, entry := range Registry() {
 		if !known[entry.Source] {

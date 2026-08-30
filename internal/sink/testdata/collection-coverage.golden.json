@@ -1,0 +1,71 @@
+{
+  "kind": "collection_coverage",
+  "source": "agent",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "since": "2026-08-06T04:12:00Z",
+  "agent": {
+    "version": "1.4.2",
+    "config": {
+      "since": "2026-08-03T10:12:00Z",
+      "namespaces_allowed": 0,
+      "namespaces_denied": 3,
+      "profiling_enabled": true,
+      "profiling_top_n": 5,
+      "node_intake_enabled": true
+    },
+    "usage_signals": [
+      "cpu",
+      "memory",
+      "network",
+      "throttling"
+    ]
+  },
+  "sources": [
+    {
+      "name": "endpoint_slices",
+      "synced": false,
+      "failing": true
+    },
+    {
+      "name": "services",
+      "synced": true
+    }
+  ],
+  "filter": {
+    "pods_observed": 412,
+    "excluded_namespace_filter": 37,
+    "excluded_namespace_annotation": 0,
+    "excluded_workload_annotation": 2,
+    "excluded_pod_annotation": 0,
+    "workload_unknown_kind": 6,
+    "workload_not_cached": 0,
+    "jobs_observed": 18,
+    "jobs_excluded_namespace_filter": 4,
+    "jobs_excluded_namespace_annotation": 0,
+    "jobs_excluded_workload_annotation": 0,
+    "jobs_excluded_annotation": 0
+  },
+  "placement": {
+    "values_dropped": 3,
+    "terms_dropped": 1
+  },
+  "inventory": {
+    "records": 24,
+    "go_versions": 3,
+    "pgo_builds": 0,
+    "builds": 11,
+    "facts_received": 240,
+    "facts_joined": 231,
+    "facts_unjoined": 9,
+    "facts_undigested": 0,
+    "nodes_reported": 4
+  },
+  "scan": {
+    "nodes": 4,
+    "processes_scanned": 1840,
+    "go_found": 96,
+    "filtered_scope": 1204,
+    "filtered_infra": 512,
+    "unreadable": 28
+  }
+}

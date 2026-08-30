@@ -152,6 +152,12 @@ type Store struct {
 	// it (ADR 0052 §3).
 	peaks map[PeakKey]map[string]nodePeaks
 
+	// scans holds the latest scan counters each reporting node sent. Latest
+	// rather than summed: they describe one pass over a node's process table,
+	// and adding successive passes would count the same long-lived process once
+	// per scan interval (ADR 0054 §4).
+	scans map[string]nodescan.Counters
+
 	// nodesReported is the set of nodes still in the cluster that have delivered
 	// at least one report. Compared against the node count in the node-metadata
 	// payload it is what makes a DaemonSet that never started visible
@@ -182,6 +188,7 @@ func NewStore(since time.Time) *Store {
 		written:       make(map[string]struct{}),
 		peaks:         make(map[PeakKey]map[string]nodePeaks),
 		nodesReported: make(map[string]struct{}),
+		scans:         make(map[string]nodescan.Counters),
 		since:         since,
 	}
 }
@@ -198,6 +205,7 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 	defer s.mu.Unlock()
 	if report.Node != "" {
 		s.nodesReported[report.Node] = struct{}{}
+		s.scans[report.Node] = report.Counters
 	}
 	seen := make(map[PeakKey]bool, len(report.Binaries))
 	for _, b := range report.Binaries {
@@ -428,6 +436,7 @@ func (s *Store) RetainNodes(live []string) {
 	for n := range s.nodesReported {
 		if _, ok := set[n]; !ok {
 			delete(s.nodesReported, n)
+			delete(s.scans, n)
 		}
 	}
 	// A departed node's peaks go with it. Its pods are gone, so the number it
@@ -500,25 +509,64 @@ func (s *Store) PeakSnapshot() []PeakRecord {
 	return out
 }
 
+// ScanCoverage is what the node scanners did, summed over the nodes that
+// reported: how many processes they walked and how many they dropped, by
+// reason.
+//
+// Aggregate, never per node. The question "how many processes did the fleet
+// skip" is a cluster question, and a per-node breakdown would grow the payload
+// with the fleet for an answer nobody asks that way (ADR 0054 §4).
+type ScanCoverage struct {
+	// Nodes is how many nodes contributed the counters below.
+	Nodes int `json:"nodes"`
+	// ProcessesScanned is every PID the passes attempted; GoFound is what they
+	// kept. The three drops in between are the whole of what the node did not
+	// report, and none of them names anything (CLAUDE.md invariant 6).
+	ProcessesScanned int `json:"processes_scanned"`
+	GoFound          int `json:"go_found"`
+	// FilteredScope is processes whose pod the controller's filters excluded —
+	// the customer's own choice, counted on the node before an executable was
+	// opened. FilteredInfra is cluster infrastructure and this agent itself.
+	// Unreadable is a real executable carrying no Go build information.
+	FilteredScope int `json:"filtered_scope"`
+	FilteredInfra int `json:"filtered_infra"`
+	Unreadable    int `json:"unreadable"`
+}
+
+// ScanCoverage sums the latest scan counters of every reporting node.
+func (s *Store) ScanCoverage() ScanCoverage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := ScanCoverage{Nodes: len(s.scans)}
+	for _, c := range s.scans {
+		out.ProcessesScanned += c.ProcessesScanned
+		out.GoFound += c.GoFound
+		out.FilteredScope += c.FilteredScope
+		out.FilteredInfra += c.FilteredInfra
+		out.Unreadable += c.Unreadable
+	}
+	return out
+}
+
 // Counters is the aggregate inventory state for the coverage report.
 type Counters struct {
 	// Records is the number of distinct (namespace, workload, container)
 	// records currently held.
-	Records int
+	Records int `json:"records"`
 	// GoVersions is the number of distinct Go versions across those records.
-	GoVersions int
+	GoVersions int `json:"go_versions"`
 	// PGOBuilds is how many records were built with PGO.
-	PGOBuilds int
+	PGOBuilds int `json:"pgo_builds"`
 	// Builds is the number of distinct image digests whose facts are held.
-	Builds int
+	Builds int `json:"builds"`
 	// FactsReceived / FactsJoined / FactsUnjoined / FactsUndigested are
 	// cumulative since start.
-	FactsReceived   int64
-	FactsJoined     int64
-	FactsUnjoined   int64
-	FactsUndigested int64
+	FactsReceived   int64 `json:"facts_received"`
+	FactsJoined     int64 `json:"facts_joined"`
+	FactsUnjoined   int64 `json:"facts_unjoined"`
+	FactsUndigested int64 `json:"facts_undigested"`
 	// NodesReported is how many distinct nodes have delivered a report.
-	NodesReported int
+	NodesReported int `json:"nodes_reported"`
 }
 
 // Counters returns a snapshot of the aggregate inventory state.

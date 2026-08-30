@@ -43,6 +43,8 @@ const nodeMetadataSpoolPath = spoolDir + "/node-metadata.json"
 
 const processPeaksSpoolPath = spoolDir + "/process-peaks.json"
 
+const coverageSpoolPath = spoolDir + "/collection-coverage.json"
+
 // buildSpoolPath mirrors the sink's filename rule for a build payload: one file
 // per image digest, with the digest's colon replaced so the name is filesystem-
 // and tooling-safe (internal/sink.digestFileToken).
@@ -156,6 +158,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			checkSampleBuild(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkSamplePeak(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkNodeArchitecture(ctx, t, config, clientset, ns, controllerPod)
+			checkCoverageReported(ctx, t, config, clientset, ns, controllerPod)
 			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
 			return
 		}
@@ -247,6 +250,74 @@ func findSampleRecord(ctx context.Context, t *testing.T, config *rest.Config, cs
 		}
 	}
 	return goInventoryRecord{}, inventoryCoverage{}, false
+}
+
+// checkCoverageReported asserts that the agent says what it did, from a real
+// cluster: what it observed, which of its reads worked, and the shape of the
+// configuration — without a name of anything excluded (ADR 0054).
+func checkCoverageReported(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, coverageSpoolPath)
+	if !ok {
+		t.Errorf("collection_coverage payload never appeared at %s", coverageSpoolPath)
+		return
+	}
+	var payload struct {
+		Kind   string `json:"kind"`
+		Source string `json:"source"`
+		Agent  struct {
+			Version string `json:"version"`
+			Config  struct {
+				Since             string `json:"since"`
+				NamespacesAllowed int    `json:"namespaces_allowed"`
+				NamespacesDenied  int    `json:"namespaces_denied"`
+			} `json:"config"`
+			UsageSignals []string `json:"usage_signals"`
+		} `json:"agent"`
+		Sources []struct {
+			Name    string `json:"name"`
+			Synced  bool   `json:"synced"`
+			Failing bool   `json:"failing"`
+		} `json:"sources"`
+		Filter struct {
+			PodsObserved int64 `json:"pods_observed"`
+		} `json:"filter"`
+		Scan struct {
+			Nodes            int `json:"nodes"`
+			ProcessesScanned int `json:"processes_scanned"`
+			GoFound          int `json:"go_found"`
+			FilteredScope    int `json:"filtered_scope"`
+		} `json:"scan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("coverage payload not valid JSON: %v", err)
+	}
+	if payload.Kind != "collection_coverage" || payload.Source != "agent" {
+		t.Errorf("kind/source = %q/%q", payload.Kind, payload.Source)
+	}
+	if payload.Filter.PodsObserved == 0 {
+		t.Error("pods_observed = 0; the agent claims to have looked at nothing")
+	}
+	if payload.Agent.Config.Since == "" {
+		t.Error("config.since is empty; nothing dates the configuration in force")
+	}
+	// Measured access, not declared: every source the chart granted should have
+	// filled its cache on a healthy cluster.
+	if len(payload.Sources) == 0 {
+		t.Error("sources is empty; the payload says nothing about what the agent could read")
+	}
+	for _, s := range payload.Sources {
+		if !s.Synced || s.Failing {
+			t.Errorf("source %s: synced=%v failing=%v, want a healthy cache", s.Name, s.Synced, s.Failing)
+		}
+	}
+	// The node half arrived over the channel and was not dropped at the join.
+	if payload.Scan.Nodes == 0 || payload.Scan.ProcessesScanned == 0 || payload.Scan.GoFound == 0 {
+		t.Errorf("scan = %+v; the node scanners' own counters did not reach the payload", payload.Scan)
+	}
+	t.Logf("coverage: %d pods observed, %d processes scanned on %d node(s) (%d Go, %d out of scope), signals %v",
+		payload.Filter.PodsObserved, payload.Scan.ProcessesScanned, payload.Scan.Nodes,
+		payload.Scan.GoFound, payload.Scan.FilteredScope, payload.Agent.UsageSignals)
 }
 
 // checkSamplePeak asserts that the measured half of the same node reports

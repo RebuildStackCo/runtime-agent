@@ -14,6 +14,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
@@ -100,6 +101,50 @@ func TestGoldenNetworkWindowPayload(t *testing.T) {
 	}
 	name := fmt.Sprintf("network-%d-3600.json", windowStart.Unix())
 	checkGolden(t, filepath.Join(dir, name), "network-window.golden.json")
+}
+
+// The coverage fixture is a cluster where the customer hid things and one read
+// is refused: three namespaces excluded by the filter, two workloads opted out,
+// and the EndpointSlice cache never synced. Nothing here names any of them.
+func TestGoldenCollectionCoveragePayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	agent := AgentInfo{
+		Version: "1.4.2",
+		Config: config.Shape{
+			Since:             capturedAt.Add(-72 * time.Hour),
+			NamespacesAllowed: 0,
+			NamespacesDenied:  3,
+			ProfilingEnabled:  true,
+			ProfilingTopN:     5,
+			NodeIntakeEnabled: true,
+		},
+		UsageSignals: []string{"cpu", "memory", "network", "throttling"},
+	}
+	sources := []collector.SourceHealth{
+		{Name: "endpoint_slices", Synced: false, Failing: true},
+		{Name: "services", Synced: true},
+	}
+	filter := collector.Coverage{
+		PodsObserved:                412,
+		ExcludedNamespaceFilter:     37,
+		ExcludedWorkloadAnnotation:  2,
+		WorkloadUnknownKind:         6,
+		JobsObserved:                18,
+		JobsExcludedNamespaceFilter: 4,
+	}
+	inv := inventory.Counters{
+		Records: 24, GoVersions: 3, Builds: 11,
+		FactsReceived: 240, FactsJoined: 231, FactsUnjoined: 9, NodesReported: 4,
+	}
+	scan := inventory.ScanCoverage{
+		Nodes: 4, ProcessesScanned: 1840, GoFound: 96,
+		FilteredScope: 1204, FilteredInfra: 512, Unreadable: 28,
+	}
+	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
+		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
 }
 
 func fixedObservation() collector.Observation {
@@ -1653,5 +1698,55 @@ func TestTheSpoolIsBoundedOnAClusterThatWritesNoUsage(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("%d expired payloads survived on a cluster with no usage records", len(entries))
+	}
+}
+
+// The payload has to say that something was hidden without saying what. This
+// builds it from a configuration whose deny list names real namespaces and
+// asserts not one of those strings reaches the bytes — the property the counts
+// exist to preserve, and the reason there is no hash of the configuration in
+// here to reverse (ADR 0054 §2, CLAUDE.md invariant 6).
+func TestCoverageNamesNothingItExcluded(t *testing.T) {
+	secret := []string{"acme-payments", "customer-pii", "hr-internal"}
+	cfg := config.Config{}
+	cfg.Filters.Namespaces.Deny = secret
+	cfg.Filters.Namespaces.Allow = []string{"shop"}
+
+	s, dir := newTestSpool(t)
+	agent := AgentInfo{Version: "1.4.2", Config: cfg.Describe("", capturedAt)}
+	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
+		[]collector.SourceHealth{{Name: "services", Synced: true}},
+		collector.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
+		collector.PlacementDrops{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "collection-coverage.json")) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range append(secret, "shop") {
+		if strings.Contains(string(raw), name) {
+			t.Errorf("the coverage payload carries the namespace name %q", name)
+		}
+	}
+
+	// And it still says the filters exist and how big they are, or it would be
+	// preserving privacy by saying nothing at all.
+	var payload struct {
+		Agent struct {
+			Config config.Shape `json:"config"`
+		} `json:"agent"`
+		Filter collector.Coverage `json:"filter"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Agent.Config.NamespacesDenied != 3 || payload.Agent.Config.NamespacesAllowed != 1 {
+		t.Errorf("config shape = %+v, want 1 allowed and 3 denied", payload.Agent.Config)
+	}
+	if payload.Filter.ExcludedNamespaceFilter != 3 {
+		t.Errorf("excluded count = %d, want 3", payload.Filter.ExcludedNamespaceFilter)
 	}
 }

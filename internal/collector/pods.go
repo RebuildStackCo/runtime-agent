@@ -239,8 +239,8 @@ type PodWatcher struct {
 // PlacementDrops is what the placement reduction refused to carry, for the
 // coverage report.
 type PlacementDrops struct {
-	Values int64
-	Terms  int64
+	Values int64 `json:"values_dropped"`
+	Terms  int64 `json:"terms_dropped"`
 }
 
 // PlacementDrops returns the running totals.
@@ -389,6 +389,43 @@ func (w *PodWatcher) clock() time.Time {
 		return time.Now()
 	}
 	return w.now()
+}
+
+// SourceHealth is one watched source as the agent actually found it: the
+// agent's effective read access, measured rather than declared. A grant the
+// ClusterRole holds but a webhook defeats reads as granted in any review of the
+// rules, and as failing here (ADR 0054 §3).
+type SourceHealth struct {
+	// Name is the resource class, not a customer object: "services",
+	// "endpoint_slices", and so on.
+	Name string `json:"name"`
+	// Synced is whether the cache ever filled.
+	Synced bool `json:"synced"`
+	// Failing is whether its watch has been erroring recently enough to treat
+	// the cache as no longer fed (ADR 0035).
+	Failing bool `json:"failing,omitempty"`
+}
+
+// SourceHealths reports every non-gating source the agent watches, sorted by
+// name. The gating caches — pods, namespaces, nodes and the owner chain — are
+// absent on purpose: their failure stops the agent, so a payload arriving at all
+// is the evidence about them (ADR 0035).
+func (w *PodWatcher) SourceHealths() []SourceHealth {
+	now := w.clock()
+	window := w.limits.unavailableFor
+	if window == 0 {
+		window = watchUnavailableFor
+	}
+	out := make([]SourceHealth, 0, len(w.policySources))
+	for _, source := range w.policySources {
+		out = append(out, SourceHealth{
+			Name:    source.name,
+			Synced:  source.synced != nil && source.synced(),
+			Failing: source.health != nil && source.health.failedWithin(now, window),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // unavailablePolicySources returns the names of the caches this payload cannot
