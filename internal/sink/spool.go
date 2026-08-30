@@ -23,6 +23,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofprobe"
+	"github.com/RebuildStackCo/runtime-agent/internal/pprofpull"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -173,6 +174,10 @@ type collectionCoveragePayload struct {
 	// their latest answer, which is what makes "no profiles for this workload"
 	// legible as one of three different things (ADR 0057 §5).
 	Pprof *pprofprobe.Coverage `json:"pprof,omitempty"`
+	// PprofPull is present only when profiles are pulled. `refused` is the one
+	// to read first: it is a workload whose own profiler holds the single CPU
+	// profile Go allows, not a workload the agent failed on (ADR 0058 §3).
+	PprofPull *pprofpull.Coverage `json:"pprof_pull,omitempty"`
 }
 
 // AgentInfo is what the agent is and how it is set up, for a report that needs
@@ -237,6 +242,38 @@ type listeningPortsPayload struct {
 	Source     string                 `json:"source"`
 	CapturedAt time.Time              `json:"captured_at"`
 	Records    []inventory.PortRecord `json:"records"`
+}
+
+// ProfileDrops is how much of a pulled profile the allow-list removed. It is the
+// count and never the identity: which functions were redacted is the thing the
+// filter exists to keep inside the cluster (CLAUDE.md invariant 6).
+type ProfileDrops struct {
+	// ThirdPartyFrames and UnsymbolizedFrames are frames replaced by the
+	// neutral placeholder; SamplesTouched is how many stacks lost at least one.
+	ThirdPartyFrames   uint64 `json:"third_party_frames"`
+	UnsymbolizedFrames uint64 `json:"unsymbolized_frames"`
+	SamplesTouched     uint64 `json:"samples_touched"`
+}
+
+// pulledProfilePayload is one CPU profile fetched from a workload's own
+// endpoint: allow-list-filtered pprof bytes (gzipped protobuf, base64 in JSON)
+// and the key of the workload and window they belong to.
+//
+// It accumulates rather than supersedes, like the eBPF kind (ADR 0011 §6). What
+// is not here matters as much: no mapping, so no path or build ID of the
+// executable, and no sample label — those are strings the service chose
+// (ADR 0058 §4).
+type pulledProfilePayload struct {
+	Kind         string       `json:"kind"`
+	Namespace    string       `json:"namespace"`
+	Workload     string       `json:"workload"`
+	Container    string       `json:"container"`
+	ImageDigest  string       `json:"image_digest,omitempty"`
+	CaptureStart time.Time    `json:"capture_start"`
+	CaptureEnd   time.Time    `json:"capture_end"`
+	Source       string       `json:"source"`
+	Dropped      ProfileDrops `json:"dropped"`
+	Pprof        []byte       `json:"pprof"`
 }
 
 // goBuildPayload is what one build is made of and how it was built, keyed by its
@@ -528,7 +565,7 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs collect
 // WriteCollectionCoverage writes the coverage payload, superseding its
 // predecessor. It is written on every flush, including one that found nothing:
 // an empty report and a broken agent are the same bytes without it (ADR 0054).
-func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, probe *pprofprobe.Coverage) error {
+func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
 	payload := collectionCoveragePayload{
 		Kind:       "collection_coverage",
 		Source:     SourceAgent,
@@ -541,6 +578,7 @@ func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent Agent
 		Inventory:  inv,
 		Scan:       scan,
 		Pprof:      probe,
+		PprofPull:  pull,
 	}
 	return s.write("collection-coverage.json", payload)
 }
@@ -831,6 +869,30 @@ func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
 		Pprof:        pprof,
 	}
 	name := fmt.Sprintf("profile-%s-%s-%s-%s-%d-%d.json",
+		fileToken(key.Namespace), fileToken(key.Workload), fileToken(key.Container),
+		shortDigest(key.ImageDigest), key.CaptureStart.Unix(), key.CaptureEnd.Unix())
+	return s.write(name, payload)
+}
+
+// WritePulledProfile writes one profile fetched from a workload's own
+// `/debug/pprof` endpoint. Same shape and same accumulate-by-window discipline
+// as the eBPF kind beside it, and a separate kind because the capture is a
+// different claim: this one is the workload's own runtime sampling itself, at
+// its own rate, for a window the agent asked for (ADR 0058).
+func (s *Spool) WritePulledProfile(key ProfileKey, pprof []byte, dropped ProfileDrops) error {
+	payload := pulledProfilePayload{
+		Kind:         "pprof_profile",
+		Namespace:    key.Namespace,
+		Workload:     key.Workload,
+		Container:    key.Container,
+		ImageDigest:  key.ImageDigest,
+		CaptureStart: key.CaptureStart,
+		CaptureEnd:   key.CaptureEnd,
+		Source:       SourceSampled,
+		Dropped:      dropped,
+		Pprof:        pprof,
+	}
+	name := fmt.Sprintf("pprof-%s-%s-%s-%s-%d-%d.json",
 		fileToken(key.Namespace), fileToken(key.Workload), fileToken(key.Container),
 		shortDigest(key.ImageDigest), key.CaptureStart.Unix(), key.CaptureEnd.Unix())
 	return s.write(name, payload)

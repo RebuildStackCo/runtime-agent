@@ -35,8 +35,10 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofprobe"
+	"github.com/RebuildStackCo/runtime-agent/internal/pprofpull"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
@@ -149,6 +151,12 @@ const coverageInterval = time.Minute
 // has one — so the cadence costs a map walk and buys a new image being confirmed
 // within a minute of the node reporting it (ADR 0057 §2).
 const pprofProbeInterval = time.Minute
+
+// pprofPullInterval is how often a round of profiles is fetched. One round
+// visits the least recently profiled workloads, one at a time, so the interval
+// and the per-round bound together are what the cluster pays: at most ten
+// ten-second captures, consecutively, per interval (ADR 0058 §2).
+const pprofPullInterval = 5 * time.Minute
 
 // run is the agent's lifecycle: it starts, works until ctx is canceled, and
 // returns.
@@ -352,6 +360,37 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			}
 			return pprofprobe.HostPort(ip, c.Port), true
 		}, logger)
+	}
+
+	// The puller, which exists only where a confirmed endpoint can: it profiles
+	// what the prober found and nothing else (ADR 0058).
+	var puller *pprofpull.Puller
+	if prober != nil && cfg.Profiling.Pprof.Pull && spool != nil {
+		address := func(c pprofprobe.Candidate) (string, bool) {
+			ip, ok := podWatcher.PodAddress(c.Namespace,
+				collector.WorkloadRef{Kind: c.WorkloadKind, Name: c.WorkloadName},
+				c.Container, c.ImageDigest)
+			if !ok {
+				return "", false
+			}
+			return pprofprobe.HostPort(ip, c.Port), true
+		}
+		puller = pprofpull.New(cfg.Profiling.AllowedModulePrefixes,
+			nodeprofile.ThirdPartyPolicy(cfg.Profiling.ThirdPartySymbols),
+			address, func(p pprofpull.Pulled) error {
+				return spool.WritePulledProfile(sink.ProfileKey{
+					Namespace:    p.Namespace,
+					Workload:     p.WorkloadName,
+					Container:    p.Container,
+					ImageDigest:  p.ImageDigest,
+					CaptureStart: p.Start,
+					CaptureEnd:   p.End,
+				}, p.Pprof, sink.ProfileDrops{
+					ThirdPartyFrames:   p.Dropped.ThirdPartyDropped,
+					UnsymbolizedFrames: p.Dropped.UnsymbolizedDropped,
+					SamplesTouched:     p.Dropped.SamplesFiltered,
+				})
+			}, logger)
 	}
 	var inventoryMu sync.Mutex
 	flushInventory := func() {
@@ -592,8 +631,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			pc := prober.Snapshot()
 			probeCoverage = &pc
 		}
+		var pullCoverage *pprofpull.Coverage
+		if puller != nil {
+			pc := puller.Snapshot()
+			pullCoverage = &pc
+		}
 		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
-			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), inv, scan, probeCoverage); err != nil {
+			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), inv, scan,
+			probeCoverage, pullCoverage); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
 		}
 	}
@@ -604,9 +649,15 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	defer cancel()
 
 	if prober != nil {
-		go prober.Run(ctx, pprofProbeInterval, func() []pprofprobe.Candidate {
-			return pprofprobe.Candidates(goStore.PortSnapshot(), goStore.PprofDigests())
-		})
+		candidates := func() []pprofprobe.Candidate {
+			return pprofprobe.Candidates(goStore.PortSnapshot(), goStore.PprofBuilds())
+		}
+		go prober.Run(ctx, pprofProbeInterval, candidates)
+		if puller != nil {
+			go puller.Run(ctx, pprofPullInterval, func() []pprofprobe.Candidate {
+				return prober.Confirmed(candidates())
+			})
+		}
 	}
 
 	go func() {

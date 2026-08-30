@@ -20,6 +20,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofprobe"
+	"github.com/RebuildStackCo/runtime-agent/internal/pprofpull"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -144,8 +145,11 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	// One target of each answer, so the golden shows that "no profiles for this
 	// workload" has three distinguishable causes (ADR 0057 §5).
 	probe := pprofprobe.Coverage{Confirmed: 6, Absent: 11, Unreachable: 2}
+	// A refusal beside the shipped profiles, because that is the number a reader
+	// will otherwise mistake for a broken agent (ADR 0058 §3).
+	pull := pprofpull.Coverage{Shipped: 4, Refused: 1, Unreachable: 0, Invalid: 1}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
-		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan, &probe); err != nil {
+		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan, &probe, &pull); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -1148,6 +1152,26 @@ func TestWorkloadRevisionsSupersedeOnDisk(t *testing.T) {
 	}
 }
 
+func TestGoldenPulledProfilePayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	key := ProfileKey{
+		Namespace:    "acme",
+		Workload:     "api",
+		Container:    "server",
+		ImageDigest:  "sha256:deadbeef",
+		CaptureStart: time.Unix(1_700_000_000, 0).UTC(),
+		CaptureEnd:   time.Unix(1_700_000_010, 0).UTC(),
+	}
+	// The same fixed fixture the eBPF golden uses, and for the same reason.
+	pprofBytes := []byte("FIXED-PPROF-BYTES\x00\x01\x02\x03")
+	drops := ProfileDrops{ThirdPartyFrames: 812, UnsymbolizedFrames: 4, SamplesTouched: 173}
+	if err := s.WritePulledProfile(key, pprofBytes, drops); err != nil {
+		t.Fatal(err)
+	}
+	name := "pprof-acme-api-server-deadbeef-1700000000-1700000010.json"
+	checkGolden(t, filepath.Join(dir, name), "pprof-profile.golden.json")
+}
+
 func TestGoldenProfilePayload(t *testing.T) {
 	s, dir := newTestSpool(t)
 	key := ProfileKey{
@@ -1760,7 +1784,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]collector.SourceHealth{{Name: "services", Synced: true}},
 		collector.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		collector.PlacementDrops{}, nil, nil, nil)
+		collector.PlacementDrops{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

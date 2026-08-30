@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/pprof/profile"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -161,6 +162,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			checkSamplePeak(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkSamplePorts(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkEndpointConfirmed(ctx, t, config, clientset, ns, controllerPod)
+			checkProfilePulled(ctx, t, config, clientset, ns, controllerPod)
 			checkNodeArchitecture(ctx, t, config, clientset, ns, controllerPod)
 			checkCoverageReported(ctx, t, config, clientset, ns, controllerPod)
 			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
@@ -495,6 +497,91 @@ func checkSamplePorts(ctx context.Context, t *testing.T, config *rest.Config, cs
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// checkProfilePulled asserts that a profile was fetched from the sample's own
+// endpoint, filtered, and spooled — with the chart's allow-list left empty, so
+// the frames that survive can only have survived because the binary states its
+// own module (ADR 0058 §5).
+func checkProfilePulled(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	deadline := time.Now().Add(6 * time.Minute)
+	for {
+		if p, ok := readPulledProfile(ctx, t, config, cs, ns, pod); ok {
+			var own, filtered int
+			for _, fn := range p.Function {
+				switch {
+				case strings.HasPrefix(fn.Name, sampleModulePath):
+					own++
+				case fn.Name == "[filtered]":
+					filtered++
+				}
+				if strings.Contains(fn.Filename, "/") {
+					t.Errorf("filename %q is a path; only a base name may leave", fn.Filename)
+				}
+			}
+			if len(p.Mapping) != 0 {
+				t.Errorf("the pulled profile still carries %d mapping(s)", len(p.Mapping))
+			}
+			if own == 0 {
+				t.Errorf("no frame of %s survived; the build's own module was not admitted", sampleModulePath)
+			}
+			t.Logf("pulled profile: %d own frames, %d redacted placeholders, %d samples",
+				own, filtered, len(p.Sample))
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("no pprof_profile for the sample ever reached the spool")
+			return
+		}
+		time.Sleep(15 * time.Second)
+	}
+}
+
+// readPulledProfile lists the controller spool for a pulled profile of the
+// sample. The name is pprof-<ns>-<workload>-<container>-<digest>-<start>-<end>
+// (internal/sink), so the prefix match ignores everything after the container.
+func readPulledProfile(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) (*profile.Profile, bool) {
+	t.Helper()
+	listing, ok := execSpoolReader(ctx, t, config, cs, ns, pod, []string{"ls", spoolDir})
+	if !ok {
+		return nil, false
+	}
+	name := ""
+	for _, line := range strings.Fields(listing) {
+		if strings.HasPrefix(line, "pprof-"+ns+"-goworkload-") && strings.HasSuffix(line, ".json") {
+			name = line
+			break
+		}
+	}
+	if name == "" {
+		return nil, false
+	}
+	raw, ok := execSpoolReader(ctx, t, config, cs, ns, pod, []string{"cat", spoolDir + "/" + name})
+	if !ok {
+		return nil, false
+	}
+	var payload struct {
+		Kind    string `json:"kind"`
+		Source  string `json:"source"`
+		Dropped struct {
+			ThirdPartyFrames uint64 `json:"third_party_frames"`
+		} `json:"dropped"`
+		Pprof []byte `json:"pprof"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Logf("pulled profile %s not valid JSON yet (will retry): %v", name, err)
+		return nil, false
+	}
+	if payload.Kind != "pprof_profile" || payload.Source != "sampled" {
+		t.Errorf("kind/source = %q/%q, want pprof_profile/sampled", payload.Kind, payload.Source)
+	}
+	p, err := profile.ParseData(payload.Pprof)
+	if err != nil {
+		t.Errorf("the shipped profile does not parse: %v", err)
+		return nil, false
+	}
+	return p, true
 }
 
 // checkSampleBuild asserts that the build payload for the sample reached the

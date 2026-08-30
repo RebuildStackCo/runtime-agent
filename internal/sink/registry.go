@@ -219,6 +219,17 @@ var registry = []PayloadKind{
 		Delivery:   DeliveryAccumulates,
 		ADR:        "0011, 0023",
 	},
+	{
+		// The same class and the same key as the eBPF kind, and a separate kind
+		// because the capture differs: the workload's own runtime sampled
+		// itself, at its own rate, over a window the agent asked for. Which
+		// capture produced a profile is what the kind names (ADR 0012 §2).
+		Kind:       "pprof_profile",
+		Source:     SourceSampled,
+		NaturalKey: "(namespace, workload, container, image digest, capture start–end)",
+		Delivery:   DeliveryAccumulates,
+		ADR:        "0058",
+	},
 }
 
 // Registry returns the payload kinds this agent ships, sorted by kind so the

@@ -60,8 +60,20 @@ data:
       pprof:
         {{- if include "runtime-agent.nodeEnabled" . }}
         enabled: {{ .Values.profiling.pprof.enabled }}
+        pull: {{ and .Values.profiling.pprof.enabled .Values.profiling.pprof.pull }}
         {{- else }}
         # No node DaemonSet in this profile, so neither the linked-package fact
         # nor the bound port is ever read and there is nothing to confirm.
         enabled: false
+        pull: false
         {{- end }}
+      {{- with .Values.profiling.allowedModulePrefixes }}
+      # The controller's copy of the symbol allow-list: it filters the profiles
+      # it pulls itself, from its own file, exactly as the node filters the ones
+      # it captures (ADR 0058 §4).
+      allowedModulePrefixes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.profiling.thirdPartySymbols }}
+      thirdPartySymbols: {{ . | quote }}
+      {{- end }}

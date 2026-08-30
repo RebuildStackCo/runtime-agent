@@ -413,6 +413,26 @@ a record is absent, never zero, when none were read. The record is keyed by
 image digest as well as container: a peak belongs to the build that reached it,
 and MUST NOT be carried across a rollout.
 
+**A `pprof_profile` is the workload's own runtime sampling itself, and `dropped`
+bounds what may be concluded from it**
+([ADR 0058](adr/0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)).
+It is a ten-second capture at the rate that runtime chose, not a window the
+agent measured, so it MUST NOT be summed with `ebpf_profile` captures of the
+same workload as if they were one series. Frames outside the allow-list are the
+placeholder `[filtered]`, and `dropped.third_party_frames` says how many became
+one; a flame graph rendered from this MUST show the placeholder as redacted
+rather than as a function. No mapping, no build ID, no sample label and no
+source path is present, so nothing here locates the binary or the request it ran
+under. `capture_start`/`capture_end` bound the capture and the payload
+accumulates per window like `ebpf_profile`.
+
+**`collection_coverage.pprof_pull.refused` is a fact about the customer's setup,
+not a failure.** It counts attempts a process declined, which in Go means its own
+CPU profiler holds the single slot available. The backend MUST NOT present such
+a workload as unprofilable or as an agent error; the honest rendering is that
+the workload profiles itself. `invalid` counts profiles that arrived and were
+not shippable, and `shipped` counts what became a payload.
+
 **`collection_coverage.pprof` counts endpoint targets, not workloads, and the
 block is absent when discovery is off**
 ([ADR 0057](adr/0057-the-controller-confirms-an-endpoint-once.md)). A target is

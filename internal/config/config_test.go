@@ -150,16 +150,34 @@ func TestNodeConfigRejectsControllerSettings(t *testing.T) {
 // And the controller's schema does not silently accept the node's, for the same
 // reason in reverse: a symbol allow-list set on the controller enforces nothing.
 func TestControllerConfigRejectsNodeSettings(t *testing.T) {
+	// The allow-list and the third-party policy left this list when the
+	// controller started filtering pulled profiles itself: it enforces them now,
+	// so accepting them is the rule holding rather than bending (ADR 0058 §4).
+	// What is left is the one setting only a node can act on.
 	for _, c := range []struct{ name, yaml string }{
-		{"symbol allow-list", "profiling:\n  allowedModulePrefixes: [\"github.com/acme/\"]\n"},
-		{"third-party symbols", "profiling:\n  thirdPartySymbols: keep\n"},
 		{"overhead ceiling", "profiling:\n  overheadCeilingPercent: 9\n"},
+		{"capture duration", "profiling:\n  captureDurationSeconds: 30\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if _, err := Load(write(t, c.yaml)); err == nil {
 				t.Errorf("Load accepted %s, which only the node enforces", c.name)
 			}
 		})
+	}
+}
+
+// And the two that moved must actually arrive, or the controller would filter
+// against an allow-list the operator wrote and it never read.
+func TestControllerConfigCarriesTheSymbolAllowList(t *testing.T) {
+	cfg, err := Load(write(t, "profiling:\n  allowedModulePrefixes: [\"github.com/acme/lib\"]\n  thirdPartySymbols: keep\n"))
+	if err != nil {
+		t.Fatalf("the controller schema rejects the allow-list it enforces: %v", err)
+	}
+	if got := cfg.Profiling.AllowedModulePrefixes; len(got) != 1 || got[0] != "github.com/acme/lib" {
+		t.Errorf("allowedModulePrefixes = %v", got)
+	}
+	if cfg.Profiling.ThirdPartySymbols != "keep" {
+		t.Errorf("thirdPartySymbols = %q", cfg.Profiling.ThirdPartySymbols)
 	}
 }
 

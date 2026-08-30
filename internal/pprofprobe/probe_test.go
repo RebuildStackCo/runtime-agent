@@ -228,7 +228,7 @@ func TestCandidatesAreTheFunnelsOutput(t *testing.T) {
 			Ports: []nodescan.ListeningPort{{Port: 5432}},
 		},
 	}
-	got := Candidates(ports, map[string]struct{}{"sha256:linked": {}})
+	got := Candidates(ports, map[string][]string{"sha256:linked": {"github.com/acme/web"}})
 
 	want := []Candidate{{
 		Target:       Target{ImageDigest: "sha256:linked", Port: 8080},
@@ -236,6 +236,7 @@ func TestCandidatesAreTheFunnelsOutput(t *testing.T) {
 		WorkloadKind: "Deployment",
 		WorkloadName: "web",
 		Container:    "app",
+		OwnModules:   []string{"github.com/acme/web"},
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("candidates = %+v, want %+v (loopback and unlinked builds are not asked about)", got, want)

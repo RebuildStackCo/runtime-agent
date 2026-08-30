@@ -101,7 +101,7 @@ your goals; profiles can be upgraded later.
 | Profile | Components | Node privileges | What you get |
 |---|---|---|---|
 | `metrics-only` | controller | none | Cost and efficiency findings from usage metrics (kubelet counters via the API server, ADR 0006) and workload metadata |
-| `inventory` | controller + node DaemonSet | host PID, `CAP_SYS_PTRACE` (see [§7.1](#71-the-go-binary-scanner-the-current-node-role)) | Above + which of your binaries are Go, their version and module path (ADR 0009), which of them serve a `/debug/pprof` endpoint and where ([§10.3](#103-pprof-endpoint-discovery)) |
+| `inventory` | controller + node DaemonSet | host PID, `CAP_SYS_PTRACE` (see [§7.1](#71-the-go-binary-scanner-the-current-node-role)) | Above + which of your binaries are Go, their version and module path (ADR 0009), which of them serve a `/debug/pprof` endpoint and where ([§10.3](#103-pprof-endpoint-discovery-and-profile-pulling)) |
 | `ebpf` | controller + node DaemonSet | adds `CAP_BPF`, `CAP_PERFMON` (see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011)) | Above + CPU profiles for services without pprof endpoints |
 
 The profile is the whole of the choice: `helm install --set profile=...`. There
@@ -207,7 +207,7 @@ collection stage rather than at the API server, and the counts in
 
 | Access | Direction | Why | Notes |
 |---|---|---|---|
-| Pod pprof endpoints | controller → pods | Confirm which of your collected workloads serve `/debug/pprof` ([ADR 0057](adr/0057-the-controller-confirms-an-endpoint-once.md)) | **One GET of the index page per image and port, and no other path** — never `/debug/pprof/cmdline`, which returns the process's argv. Nothing is swept, no profiler is started, and no address is collected; the bounds are in [§10.3](#103-pprof-endpoint-discovery). On by default, off with one value, inert without a node DaemonSet. Pulling a profile is **[planned]** and is a separate switch |
+| Pod pprof endpoints | controller → pods | Confirm which of your collected workloads serve `/debug/pprof` ([ADR 0057](adr/0057-the-controller-confirms-an-endpoint-once.md)) | **One GET of the index page per image and port, and no other path** — never `/debug/pprof/cmdline`, which returns the process's argv. Nothing is swept, no profiler is started, and no address is collected; the bounds are in [§10.3](#103-pprof-endpoint-discovery-and-profile-pulling). On by default, off with one value, inert without a node DaemonSet. Pulling a profile is a **separate switch**, also on, and the one request that runs your process's profiler |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress **[planned]** | controller → one fixed domain | Ship aggregated rollups and filtered profiles | mTLS, pinned domain. The only cross-boundary connection in the system, and it does not exist yet: the controller writes payloads to its local spool and ships nothing. A NetworkPolicy restricting controller egress to this domain plus in-cluster targets ships with the chart **[planned]** — the chart exists ([`charts/runtime-agent`](../charts/runtime-agent)), the policy does not |
 | Node → controller reports | node → controller, in-cluster only | Deliver on-node Go build-info findings and captured profiles for aggregation (ADR 0010, ADR 0011), and ask which pods on this node passed your filters (ADR 0015) | Plain HTTP on the cluster network; the node always initiates and authenticates with a projected controller-audience ServiceAccount token, validated locally (no `TokenReview`). The report endpoints answer ack/error only. The **scope** query answers from the controller's already-filtered pod index, so it can only narrow what the node scans — it cannot name a pod your filters exclude. The **profiling-target** query is the one reply the node acts on; see [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011) for what bounds it. The receiver is not reachable from outside the cluster, and a NetworkPolicy shipped with the chart restricts it to the node DaemonSet (ADR 0040 — it was described as shipping for months before it did, ADR 0039). Read that policy for what it is: it is enforced by your CNI, so on a cluster whose CNI does not implement NetworkPolicy it is inert, and it restricts who may be *heard*, never what a caller may *say*. The DaemonSet has **no** external egress. Honest disclosure: the token and the (already-filtered) facts travel in cleartext in-cluster, so a party who can sniff pod traffic can replay a node's token until it expires. What that buys is now bounded to **the node it was taken from**: the token names the node its bearer runs on, every endpoint refuses a request that speaks for a different one, and a fact can only join to a pod on the reporting node (ADR 0040). So a replayed or compromised node token can post fabricated inventory facts and profiles about workloads on *that* node, and read which of *that* node's pods passed your filters. It cannot read or write anything about any other node, it cannot reach the API, and it controls nothing |
@@ -505,7 +505,7 @@ test fails if a kind ships without appearing here (ADR 0022).
 
 | Payload | What it carries | Names pods? |
 |---|---|---|
-| `collection_coverage` | What the agent did rather than what it found: how many pods and Jobs it observed, how many each of your four controls excluded, how many placement terms the reduction dropped, what the node scanners walked and skipped, which of the agent's reads worked, how many pprof endpoints it confirmed and how many it could not, its version, and the shape of your configuration. **Aggregate counts only — no name of anything you excluded appears here or anywhere else** ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)) | no |
+| `collection_coverage` | What the agent did rather than what it found: how many pods and Jobs it observed, how many each of your four controls excluded, how many placement terms the reduction dropped, what the node scanners walked and skipped, which of the agent's reads worked, how many pprof endpoints it confirmed and how many it could not, how many profiles it pulled and how many workloads declined to start one, its version, and the shape of your configuration. **Aggregate counts only — no name of anything you excluded appears here or anywhere else** ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)) | no |
 | `usage_snapshot` | The still-open hour's resource rollup: per (namespace, workload, container) histograms of CPU and memory, throttling and PSI counters, plus how much of the window was observed. Shipped once a minute, each replacing the last | no |
 | `usage_window` | The same shape, final, when the hour closes | no |
 | `network_window` | Per collected workload and closed hour: bytes and errors received and transmitted, summed over its pods and their interfaces. Interface **names are not read** — only how many there were. Counters are the *pod's*, so nothing here is attributed to a container, and a `host_network` workload's counters are the **node's** and describe the whole machine ([ADR 0053](adr/0053-network-counters-are-the-pods.md)). The kubelet counts bytes at the interface and never says where they went: there is no destination, no peer and no address in this payload | no |
@@ -524,6 +524,7 @@ test fails if a kind ships without appearing here (ADR 0022).
 | `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings, two allow-listed GODEBUG defaults, and whether `net/http/pprof` is linked into the build. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
 | `listening_ports` | Per collected workload container and build: the TCP ports its Go processes accept connections on, each with whether it is bound to loopback. Read from the processes' own sockets, so a port nothing declared is here and a declared port nothing binds is not ([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)). No address, and no connection the workload has open | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
+| `pprof_profile` | One ten-second CPU profile fetched from the workload's own `/debug/pprof` endpoint, allow-list-filtered, under the same key ([ADR 0058](adr/0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)). The mappings — the executable's path on disk and its build ID — the sample labels, and the full source paths are removed with the redacted frames, so what remains is function names your allow-list admits, base file names and line numbers. Beside it travel the counts of what was redacted, never what | no |
 
 Each declares its provenance in a `source` field — `structural` (read from a
 spec), `measured` (polled from the kubelet), `journal` (from object history) or
@@ -681,6 +682,16 @@ and nothing else; the underlying error stays in the agent's log.
 - The allow-list therefore bounds **dependencies**, not your own identifiers
   (ADR 0041). What you exclude from collection you exclude with namespace filters
   and opt-out annotations; profiling scope follows collection scope (ADR 0025).
+- **Your own code is recognized without being configured, for pulled profiles.**
+  A build states its main module and every dependency a `replace` redirects, and
+  the agent reads both from the binary — so a default install keeps your service
+  layer rather than redacting it as third-party. The configured list adds to
+  that, for shared internal modules a build merely requires (ADR 0058 §5).
+- A pulled profile carries fields a captured one never had, and they go with the
+  redacted frames: the **mappings**, which name the executable's path on disk and
+  its build ID; the **sample labels**, which are strings your service attached and
+  may hold anything; and the comments. The bytes that leave are rebuilt from what
+  survived, so a redacted name is not left behind in a table nothing references.
 - A kept frame carries its source file's **base name and line number** —
   `server.go`, never a directory — cut where the profiler hands the frame over,
   so the path the compiler recorded never enters the agent (ADR 0041).
@@ -876,7 +887,7 @@ everything, costing one pass rather than widening what is collected.
 A process belonging to no pod — the kubelet, a systemd unit — is never in scope,
 because it is in no namespace and so no namespace filter of yours can permit it.
 
-### 10.3 pprof endpoint discovery
+### 10.3 pprof endpoint discovery and profile pulling
 
 **The agent connects to your workloads, on by default.** It is the only thing in
 this document that does, every other access being a read of the API server, so
@@ -900,9 +911,32 @@ and a loopback-only endpoint is not contacted.
 **Turning it off** is `profiling.pprof.enabled: false`. It is also inert in
 `metrics-only`, where neither fact it depends on is ever read.
 
-Pulling an actual profile is a separate matter and is **[planned]**: that request
-starts a profiler inside your process, which this one does not, and it will
-arrive with its own switch and its own paragraph here.
+**Pulling a profile is the one thing your process can notice.** Everything else
+in this document is a read; a workload cannot tell it is being collected. `GET
+/debug/pprof/profile?seconds=10` can: it runs **your process's own CPU profiler**
+for those ten seconds
+([ADR 0058](adr/0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)).
+
+What it costs is bounded by construction rather than by a setting: ten seconds
+per capture, one capture at a time in the whole cluster, at most ten per
+five-minute round. Workloads are visited least-recently-profiled first, so
+coverage is even rather than concentrated on whichever service looks expensive.
+
+**If you already run a continuous profiler**, Go allows only one CPU profile per
+process at a time, so one of the two requests loses. When it is ours, the
+workload is left alone for six hours rather than competed with, and the refusal
+is counted in `collection_coverage` so a report can say why that service has no
+profile. There remains a narrow window — your profiler idle at the moment we
+ask — in which our capture is the one that wins; if that is unacceptable, turn
+`profiling.pprof.pull` off and keep everything else.
+
+**Where the filtering happens is different for these profiles, and it is worth
+knowing.** A profile the node captures is reduced on the node, before any byte
+crosses to the controller. A profile pulled from your endpoint arrives already
+assembled, so the controller holds the unreduced stacks for the moments between
+the read and the filter. Nothing unreduced leaves the cluster either way, and
+this is the only path where the reduction is not physically upstream of the
+transfer.
 
 ### 10.4 The build inventory is a bill of materials
 

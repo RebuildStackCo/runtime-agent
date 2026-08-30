@@ -55,6 +55,15 @@ type ControllerProfiling struct {
 	// the two need different privileges and answer for different workloads
 	// (ADR 0057).
 	Pprof PprofDiscovery `json:"pprof"`
+
+	// AllowedModulePrefixes and ThirdPartySymbols are the controller's copy of
+	// the symbol allow-list, for profiles it filters itself. Same Helm value as
+	// the node's, rendered into both ConfigMaps rather than sent over the wire.
+	//
+	// It adds to the modules a build states it was compiled from, which the
+	// filter admits without configuration (ADR 0058 §4, §5).
+	AllowedModulePrefixes []string `json:"allowedModulePrefixes"`
+	ThirdPartySymbols     string   `json:"thirdPartySymbols"`
 }
 
 // PprofDiscovery is whether the controller looks for `/debug/pprof` endpoints
@@ -67,6 +76,13 @@ type PprofDiscovery struct {
 	// alternative is a capability every installation has and none uses
 	// (ADR 0057 §4).
 	Enabled bool `json:"enabled"`
+
+	// Pull is whether a CPU profile is fetched from a confirmed endpoint. It is
+	// separate from Enabled because the two are different events: confirming an
+	// endpoint costs the workload nothing, while pulling starts that workload's
+	// own profiler for the capture. Both ship on; turning this off keeps the
+	// discovery and the findings that rest on it (ADR 0058 §1).
+	Pull bool `json:"pull"`
 }
 
 // NodeProfiling is the node's half: the symbol allow-list that decides what may

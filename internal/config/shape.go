@@ -30,6 +30,14 @@ type Shape struct {
 	// PprofDiscoveryEnabled is whether the controller may connect to collected
 	// workloads to confirm a `/debug/pprof` endpoint.
 	PprofDiscoveryEnabled bool `json:"pprof_discovery_enabled"`
+	// PprofPullEnabled is whether a profile is fetched from a confirmed
+	// endpoint, which is the one thing the agent does that a profiled process
+	// can notice.
+	PprofPullEnabled bool `json:"pprof_pull_enabled"`
+	// SymbolPrefixesAllowed is how many module prefixes the operator added to
+	// what the binaries already state. A count, never a prefix: a module path
+	// names the customer's own code.
+	SymbolPrefixesAllowed int `json:"symbol_prefixes_allowed"`
 	// NodeIntakeEnabled is whether the receiver for node reports is open.
 	NodeIntakeEnabled bool `json:"node_intake_enabled"`
 	// SpoolMaxAgeHours is 0 when the agent's own default applies.
@@ -47,6 +55,8 @@ func (c Config) Describe(path string, started time.Time) Shape {
 		ProfilingTopN:     c.Profiling.TopN,
 
 		PprofDiscoveryEnabled: c.Profiling.Pprof.Enabled,
+		PprofPullEnabled:      c.Profiling.Pprof.Pull,
+		SymbolPrefixesAllowed: len(c.Profiling.AllowedModulePrefixes),
 		NodeIntakeEnabled:     c.NodeIntake.Enabled,
 		SpoolMaxAgeHours:      c.Spool.MaxAgeHours,
 	}

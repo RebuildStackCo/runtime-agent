@@ -87,8 +87,25 @@ profiling:
     # which is where both of those facts are read.
     enabled: true
 
-  # Node: the Go module-path prefixes of your own code whose stack frames may
-  # leave the node. Everything else is redacted before anything is sent.
+    # Whether a CPU profile is then fetched from the endpoints found. Also on,
+    # and it is the one thing the agent does that your process can notice: the
+    # request runs that process's own profiler for ten seconds
+    # (docs/security.md §10.3).
+    #
+    # A workload that will not start one — because its own continuous profiler
+    # holds the single slot Go allows — is left alone for six hours rather than
+    # competed with. Turning this off keeps the discovery above and everything
+    # that rests on it.
+    pull: true
+
+  # The Go module-path prefixes of your own code whose stack frames may leave.
+  # Everything else is redacted before anything is sent.
+  #
+  # This adds to what the agent can already tell is yours: a pulled profile is
+  # also reduced against the modules its build states it was compiled from — its
+  # main module and anything a `replace` redirects — which the binary carries and
+  # no list can be wrong about (ADR 0058 §5). Set this for shared internal
+  # modules a build merely requires.
   #
   # This is the load-bearing control of the whole profiling path (ADR 0011 §4).
   # It is enforced on the node, from the node's own file, and no reply from the
