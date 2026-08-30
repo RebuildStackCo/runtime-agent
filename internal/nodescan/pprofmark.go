@@ -44,9 +44,15 @@ func binaryKeyOf(f *os.File) (binaryKey, bool) {
 	if !ok {
 		return binaryKey{}, false
 	}
-	// #nosec G115 -- Dev is signed on some platforms and unsigned on others; the
-	// value is an opaque identifier here, compared only against itself.
-	return binaryKey{dev: uint64(st.Dev), ino: st.Ino}, true
+	return binaryKey{dev: asUint64(st.Dev), ino: asUint64(st.Ino)}, true
+}
+
+// asUint64 widens whichever integer type the platform chose for a Stat_t field.
+// Dev is signed on some and unsigned on others, so a plain conversion is
+// redundant on one and required on the other; a type parameter is right on both.
+// The value is an opaque identifier here, only ever compared against itself.
+func asUint64[T int32 | int64 | uint32 | uint64](v T) uint64 {
+	return uint64(v) // #nosec G115 -- an identifier, not a quantity
 }
 
 // scanForMarker streams r looking for pprofMarker, holding one chunk plus the
