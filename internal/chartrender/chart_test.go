@@ -495,19 +495,21 @@ func TestTheProfilerIsAbsentUnlessTheProfileAsksForIt(t *testing.T) {
 	}
 }
 
-// The rule the chart adds that no manifest ever enforced. The sample shipped
-// before the chart turned the profiler on with an empty allow-list, which
-// admits no frame: profiling would run and produce nothing, forever, silently
-// (ADR 0011 §4, and the shape of trap ADR 0025 found in `eligibleNamespaces`).
-func TestTheProfilerWillNotInstallWithAnEmptyAllowList(t *testing.T) {
-	_, err := chartrender.Manifests(chartDir, chartrender.Options{
+// The chart used to refuse this, because an empty allow-list admitted no frame
+// of a service under its own domain-bearing module: profiling ran and produced
+// nothing, forever, silently. The node now reads each build's own modules from
+// the binary, so the empty list is a working install rather than a trap, and
+// requiring a value nobody needs is the inert knob ADR 0025 abolished
+// (ADR 0059 §4).
+func TestTheProfilerInstallsWithNothingConfigured(t *testing.T) {
+	docs, err := chartrender.Manifests(chartDir, chartrender.Options{
 		Values: map[string]any{"profile": "ebpf"},
 	})
-	if err == nil {
-		t.Fatal("the chart rendered the profiler with an empty allow-list")
+	if err != nil {
+		t.Fatalf("the chart refuses an ebpf install with no allow-list: %v", err)
 	}
-	if !strings.Contains(err.Error(), "allowedModulePrefixes") {
-		t.Errorf("the refusal does not name the value to set: %v", err)
+	if len(docs) == 0 {
+		t.Fatal("the ebpf profile rendered nothing")
 	}
 }
 

@@ -116,3 +116,4 @@ line to paste.
 - [0056. Whether a pprof endpoint exists is proved on the node, not probed over the network](0056-a-pprof-endpoint-is-proved-not-probed.md)
 - [0057. The controller confirms an endpoint once per build, and that is its first connection to a workload](0057-the-controller-confirms-an-endpoint-once.md)
 - [0058. The pull starts a profiler, and the binary says whose code it is](0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)
+- [0059. The node knows whose code it profiles, so the allow-list stops being a prerequisite](0059-the-node-knows-whose-code-it-profiles.md)

@@ -215,6 +215,26 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 	})
 }
 
+// OwnModules is the code a build is built from rather than the code it consumes:
+// the main module, and every dependency a `replace` directive redirected.
+//
+// The second is not a guess. A module you `replace` is one you build from source
+// — the shape of every Go monorepo — while a module you merely require arrives
+// as a published version. The replacement's own path is never read: what is kept
+// is the required path, which is what a stack frame carries (ADR 0058 §5).
+func OwnModules(mainModule string, deps []Module) []string {
+	own := make([]string, 0, 1+len(deps))
+	if mainModule != "" {
+		own = append(own, mainModule)
+	}
+	for _, m := range deps {
+		if m.Replaced && m.Path != "" {
+			own = append(own, m.Path)
+		}
+	}
+	return own
+}
+
 // binding reads and parses the process cgroup. A missing or unreadable cgroup
 // file yields the zero binding — the process is still a valid find, just
 // unattributed to a pod.

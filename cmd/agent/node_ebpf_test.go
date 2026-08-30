@@ -14,6 +14,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 )
 
 // writeGateFixture builds a proc/sys pair the gate can probe: an osrelease file
@@ -106,7 +107,7 @@ func TestRunProfilingPipelineGraceful(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := newEBPFGateMetrics()
 	runProfilingPipeline(context.Background(), logger, config.NodeProfiling{}.Normalized(),
-		t.TempDir(), "node", nil, nil, nil, m)
+		t.TempDir(), "node", nil, nil, nil, m, &nodeprofile.ModuleIndex{})
 	if m.refusals[ebpfgate.ReasonProgramLoadFailed] != 1 {
 		t.Errorf("program_load_failed = %d, want 1", m.refusals[ebpfgate.ReasonProgramLoadFailed])
 	}

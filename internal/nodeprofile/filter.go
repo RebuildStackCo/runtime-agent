@@ -27,7 +27,8 @@ const (
 
 // SymbolFilter reduces captured samples to allowed frames. It is stateless;
 // counting is returned per call. The allow-list holds the customer's own Go
-// module-path prefixes; it arrives from the node ConfigMap in a later slice.
+// module-path prefixes: those the node's ConfigMap names, and those the profiled
+// build states it was compiled from (ADR 0059).
 type SymbolFilter struct {
 	allowed    []string
 	thirdParty ThirdPartyPolicy
@@ -37,7 +38,16 @@ type SymbolFilter struct {
 // paths to keep (e.g. "github.com/acme/app"); an empty list still keeps stdlib,
 // main, and kernel frames, and redacts every third-party module.
 func NewSymbolFilter(allowedModulePrefixes []string, thirdParty ThirdPartyPolicy) *SymbolFilter {
-	return &SymbolFilter{allowed: allowedModulePrefixes, thirdParty: thirdParty}
+	// Entries that cannot be a module path are dropped rather than kept as a
+	// prefix matching half the internet. Part of this list now comes from
+	// binaries, so it has to survive one declaring something absurd (ADR 0059 §3).
+	allowed := make([]string, 0, len(allowedModulePrefixes))
+	for _, prefix := range allowedModulePrefixes {
+		if ValidModulePrefix(prefix) {
+			allowed = append(allowed, prefix)
+		}
+	}
+	return &SymbolFilter{allowed: allowed, thirdParty: thirdParty}
 }
 
 // FilterCounters are aggregate-only drop counts. They are safe to log and ship;
