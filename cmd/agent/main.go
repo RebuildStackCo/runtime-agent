@@ -36,6 +36,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
+	"github.com/RebuildStackCo/runtime-agent/internal/pprofprobe"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
@@ -142,6 +143,12 @@ func connect() (kubernetes.Interface, *rest.Config, error) {
 // written as a payload. Unlike every other flush it runs whether or not there is
 // anything to report: staleness here is a fact about the agent (ADR 0054 §5).
 const coverageInterval = time.Minute
+
+// pprofProbeInterval is how often endpoint discovery asks about targets it has
+// no answer for. A round on a steady cluster does nothing — every target already
+// has one — so the cadence costs a map walk and buys a new image being confirmed
+// within a minute of the node reporting it (ADR 0057 §2).
+const pprofProbeInterval = time.Minute
 
 // run is the agent's lifecycle: it starts, works until ctx is canceled, and
 // returns.
@@ -329,6 +336,22 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	var goStore *inventory.Store
 	if cfg.NodeIntake.Enabled {
 		goStore = inventory.NewStore(time.Now())
+	}
+
+	// Endpoint discovery, which exists only where the node role does: the two
+	// facts it funnels on — the linked package and the bound port — are read on
+	// the node and arrive nowhere else (ADR 0057 §1).
+	var prober *pprofprobe.Prober
+	if goStore != nil && cfg.Profiling.Pprof.Enabled {
+		prober = pprofprobe.New(func(c pprofprobe.Candidate) (string, bool) {
+			ip, ok := podWatcher.PodAddress(c.Namespace,
+				collector.WorkloadRef{Kind: c.WorkloadKind, Name: c.WorkloadName},
+				c.Container, c.ImageDigest)
+			if !ok {
+				return "", false
+			}
+			return pprofprobe.HostPort(ip, c.Port), true
+		}, logger)
 	}
 	var inventoryMu sync.Mutex
 	flushInventory := func() {
@@ -564,8 +587,13 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			Config:       configShape,
 			UsageSignals: usagePoller.Signals(),
 		}
+		var probeCoverage *pprofprobe.Coverage
+		if prober != nil {
+			pc := prober.Snapshot()
+			probeCoverage = &pc
+		}
 		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
-			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), inv, scan); err != nil {
+			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), inv, scan, probeCoverage); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
 		}
 	}
@@ -574,6 +602,12 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// agent down rather than leave it half-blind.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	if prober != nil {
+		go prober.Run(ctx, pprofProbeInterval, func() []pprofprobe.Candidate {
+			return pprofprobe.Candidates(goStore.PortSnapshot(), goStore.PprofDigests())
+		})
+	}
 
 	go func() {
 		ticker := time.NewTicker(coverageInterval)

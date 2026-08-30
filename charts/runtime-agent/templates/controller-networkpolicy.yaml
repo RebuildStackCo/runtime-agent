@@ -31,9 +31,18 @@ spec:
       app.kubernetes.io/name: runtime-agent
       app.kubernetes.io/instance: {{ .Release.Name }}
       app.kubernetes.io/component: controller
-  # Ingress only. The controller's egress is the API server today and a backend
-  # later; restricting it belongs with the change that gives it something to
-  # egress to, and a policy written now would have to be rewritten then.
+  # Still ingress only, and now deliberately so rather than pending.
+  #
+  # The controller does egress to workloads since ADR 0057, which is the change
+  # this comment used to defer to. An egress policy would have to permit the API
+  # server — whose address is cluster-specific and not knowable in a template —
+  # plus DNS, plus arbitrary pod addresses and ports for endpoint confirmation,
+  # plus a backend later. That set is everything, and a rule permitting
+  # everything is a boundary in name only (ADR 0039).
+  #
+  # What bounds the egress is the code, and the bound is auditable: one package
+  # opens outbound connections, to one path, at addresses of pods your filters
+  # admitted, on ports their own processes were observed to bind.
   policyTypes:
     - Ingress
   ingress:

@@ -160,6 +160,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			checkSampleBuild(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkSamplePeak(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkSamplePorts(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
+			checkEndpointConfirmed(ctx, t, config, clientset, ns, controllerPod)
 			checkNodeArchitecture(ctx, t, config, clientset, ns, controllerPod)
 			checkCoverageReported(ctx, t, config, clientset, ns, controllerPod)
 			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
@@ -291,6 +292,11 @@ func checkCoverageReported(ctx context.Context, t *testing.T, config *rest.Confi
 			GoFound          int `json:"go_found"`
 			FilteredScope    int `json:"filtered_scope"`
 		} `json:"scan"`
+		Pprof struct {
+			Confirmed   int `json:"confirmed"`
+			Absent      int `json:"absent"`
+			Unreachable int `json:"unreachable"`
+		} `json:"pprof"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("coverage payload not valid JSON: %v", err)
@@ -321,6 +327,44 @@ func checkCoverageReported(ctx context.Context, t *testing.T, config *rest.Confi
 	t.Logf("coverage: %d pods observed, %d processes scanned on %d node(s) (%d Go, %d out of scope), signals %v",
 		payload.Filter.PodsObserved, payload.Scan.ProcessesScanned, payload.Scan.Nodes,
 		payload.Scan.GoFound, payload.Scan.FilteredScope, payload.Agent.UsageSignals)
+	t.Logf("pprof endpoints: %d confirmed, %d absent, %d unreachable",
+		payload.Pprof.Confirmed, payload.Pprof.Absent, payload.Pprof.Unreachable)
+}
+
+// checkEndpointConfirmed asserts that the controller really opened a connection
+// to the sample and recognized its pprof index. The sample serves it on
+// 0.0.0.0:6060 and declares that port nowhere, so a confirmation proves the
+// whole funnel end to end: linked package, bound port, one request (ADR 0057).
+//
+// Discovery runs on its own tick after the node's facts arrive, so this polls
+// rather than reading once.
+func checkEndpointConfirmed(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, coverageSpoolPath)
+		if ok {
+			var payload struct {
+				Pprof struct {
+					Confirmed   int `json:"confirmed"`
+					Absent      int `json:"absent"`
+					Unreachable int `json:"unreachable"`
+				} `json:"pprof"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("coverage payload not valid JSON: %v", err)
+			}
+			if payload.Pprof.Confirmed > 0 {
+				t.Logf("endpoint discovery confirmed %d target(s)", payload.Pprof.Confirmed)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("no pprof endpoint was ever confirmed; the sample serves one on :6060")
+			return
+		}
+		time.Sleep(10 * time.Second)
+	}
 }
 
 // checkSamplePeak asserts that the measured half of the same node reports

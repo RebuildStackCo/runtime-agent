@@ -21,9 +21,9 @@
 #                 exactly CAP_BPF and CAP_PERFMON and a read-only /sys/kernel
 #                 mount. Requires profiling.allowedModulePrefixes to be set.
 #
-# The `pprof` profile named in docs/security.md §3 is not installable: no puller
-# exists yet, and a value the agent cannot honour must fail rather than look
-# honoured (ADR 0025).
+# There is no `pprof` profile. Pulling from `/debug/pprof` needs the two facts
+# the node reads — a linked package and a bound port — so it is part of
+# `inventory`, not an alternative to it (ADR 0057).
 profile: metrics-only
 
 image:
@@ -74,6 +74,18 @@ profiling:
   # Controller: how many top-consuming workloads an answer may name. 0 selects
   # the agent's built-in default.
   topN: 0
+
+  pprof:
+    # Whether the controller confirms which of your collected workloads serve a
+    # `/debug/pprof` endpoint. On, and it is the one collection control shipped
+    # that way (docs/security.md §10.3).
+    #
+    # What it costs the workload is one GET of the index page, once per image
+    # and port — no profiler is started and no connection is held. Which
+    # workloads are asked comes from your own filters; which ports, from what
+    # their processes were observed to bind. Inert without a node DaemonSet,
+    # which is where both of those facts are read.
+    enabled: true
 
   # Node: the Go module-path prefixes of your own code whose stack frames may
   # leave the node. Everything else is redacted before anything is sent.

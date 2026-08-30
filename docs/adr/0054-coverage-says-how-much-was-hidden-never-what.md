@@ -4,6 +4,8 @@ Date: 2026-08-30
 
 Status: Accepted
 
+Amended by: 0057
+
 Amends: 0012 §2, 0033
 
 Adds the payload kind `collection_coverage` and a fifth provenance class,

@@ -19,6 +19,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
+	"github.com/RebuildStackCo/runtime-agent/internal/pprofprobe"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -140,8 +141,11 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		Nodes: 4, ProcessesScanned: 1840, GoFound: 96,
 		FilteredScope: 1204, FilteredInfra: 512, Unreadable: 28,
 	}
+	// One target of each answer, so the golden shows that "no profiles for this
+	// workload" has three distinguishable causes (ADR 0057 §5).
+	probe := pprofprobe.Coverage{Confirmed: 6, Absent: 11, Unreachable: 2}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
-		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan); err != nil {
+		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan, &probe); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -1756,7 +1760,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]collector.SourceHealth{{Name: "services", Synced: true}},
 		collector.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		collector.PlacementDrops{}, nil, nil)
+		collector.PlacementDrops{}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

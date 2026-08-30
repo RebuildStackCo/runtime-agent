@@ -70,9 +70,6 @@ where a knob read as deny-by-default and was inert. An install that cannot
 produce its own output should not start.
 */}}
 {{- define "runtime-agent.validate" -}}
-{{- if eq .Values.profile "pprof" -}}
-{{- fail "profile \"pprof\" is not installable: no pprof puller exists yet (docs/security.md §3 marks it [planned]). Use metrics-only, inventory or ebpf." -}}
-{{- end -}}
 {{- if not (has .Values.profile (list "metrics-only" "inventory" "ebpf")) -}}
 {{- fail (printf "unknown profile %q: expected metrics-only, inventory or ebpf" .Values.profile) -}}
 {{- end -}}

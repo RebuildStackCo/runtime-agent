@@ -511,8 +511,10 @@ func TestTheProfilerWillNotInstallWithAnEmptyAllowList(t *testing.T) {
 	}
 }
 
-// A profile the agent cannot honour must fail rather than look honoured. The
-// `pprof` puller does not exist, and docs/security.md says so.
+// A profile the agent cannot honour must fail rather than look honoured.
+// "pprof" is in the list because it reads like a profile and is not one: pulling
+// from `/debug/pprof` is part of `inventory`, not an alternative to it
+// (ADR 0057).
 func TestAProfileTheAgentCannotHonourIsRefused(t *testing.T) {
 	for _, profile := range []string{"pprof", "everything"} {
 		_, err := chartrender.Manifests(chartDir, chartrender.Options{

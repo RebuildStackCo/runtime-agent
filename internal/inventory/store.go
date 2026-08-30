@@ -628,6 +628,21 @@ func (s *Store) PortSnapshot() []PortRecord {
 	return out
 }
 
+// PprofDigests returns the image digests whose build links net/http/pprof
+// (ADR 0056 §1). It is the second stage of the endpoint funnel, and the one
+// that answers for a whole image at once.
+func (s *Store) PprofDigests() map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]struct{})
+	for digest, b := range s.builds {
+		if b.HasPprof {
+			out[digest] = struct{}{}
+		}
+	}
+	return out
+}
+
 // ScanCoverage is what the node scanners did, summed over the nodes that
 // reported: how many processes they walked and how many they dropped, by
 // reason.
