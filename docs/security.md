@@ -188,23 +188,19 @@ the node from the token instead of believing the request (ADR 0040). A token tha
 was not projected into a running pod carries no node and is refused. Resolving
 the OIDC discovery and JWKS endpoints is a read-only non-resource URL `GET`.
 
-### Cluster-wide vs. namespace-scoped installation
+### The installation is cluster-wide
 
-- **Cluster-wide (default):** a single ClusterRole with the rules above.
-- **Namespace-scoped [planned]:** Role + RoleBinding only in namespaces you
-  list; no ClusterRole is created. This would be a hard boundary enforced by
-  the API server, not by agent configuration. Not built: the agent's informers
-  are cluster-wide today, so this mode has no implementation behind it, and the
-  trade-offs below describe what it would cost rather than what it costs.
+One ClusterRole with the rules above, in every installation. This is not a
+default with a narrower alternative on offer: `nodes`, `nodes/proxy`,
+`namespaces`, `priorityclasses` and `storageclasses` are cluster-scoped, and
+`nodes/proxy` is how the agent reaches every kubelet — so an installation
+without a ClusterRole would collect no usage at all
+([ADR 0055](adr/0055-the-installation-is-cluster-wide.md)).
 
-  Honest trade-off: `nodes` and `namespaces` are cluster-scoped resources, so
-  in this mode the agent cannot compute node idle capacity, cannot read
-  instance types for pricing, and cannot reconcile totals against your cloud
-  invoice. It reports requests-vs-usage findings for the permitted namespaces
-  only. `priorityclasses` and `storageclasses` are cluster-scoped for the same
-  reason, so in this mode `cluster_policy` carries namespace policy without the
-  two catalogs: a workload's priority class and a claim's storage class are
-  reported by name, and what those names mean is not.
+What scopes collection is the four controls in
+[§11](#11-your-controls-and-what-the-agent-says-about-itself), applied at the
+collection stage rather than at the API server, and the counts in
+`collection_coverage` are how you check that they were.
 
 ---
 
