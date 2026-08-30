@@ -31,5 +31,6 @@
   "godebug": {
     "containermaxprocs": "0",
     "updatemaxprocs": "0"
-  }
+  },
+  "pprof_endpoint": true
 }

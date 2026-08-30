@@ -413,6 +413,19 @@ a record is absent, never zero, when none were read. The record is keyed by
 image digest as well as container: a peak belongs to the build that reached it,
 and MUST NOT be carried across a rollout.
 
+**`listening_ports` is what the processes bind, and `go_build.pprof_endpoint` is
+what the build contains; neither implies the other**
+([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)). The flag says
+`net/http/pprof` is linked into the image — false is conclusive, true is not: a
+service may import the package without serving it. The ports are read from the
+processes' own sockets, so they are the ports actually bound and not the
+`containerPorts` of the spec; the two disagreeing is a finding, not an error. A
+port marked `loopback` is reachable only from inside the pod and MUST NOT be
+presented as an exposed one. No address is carried, so no endpoint may be
+addressed from this payload. Records are keyed by image digest as well as
+container and MUST NOT be carried across a rollout; a port absent from the
+latest report is a port no process still binds.
+
 **`workload_policy` Service endpoint counts are per address family and MUST NOT
 be summed across them** ([ADR 0051](adr/0051-topology-routing-is-asked-and-not-granted.md)).
 A dual-stack Service lists each pod once in an IPv4 slice and once in an IPv6

@@ -85,6 +85,26 @@ type nodePeaks struct {
 	cpusMin, cpusMax int
 }
 
+// PortKey extends Key with the build, for the reason PeakKey does: a rollout
+// that moves an endpoint must not inherit the port the previous build served.
+type PortKey struct {
+	Key
+	ImageDigest string `json:"image_digest,omitempty"`
+}
+
+// PortRecord is what the processes of one workload container, of one build,
+// accept connections on — merged across every replica the agent can see.
+//
+// Rebuilt from the latest report of each node, like the peaks beside it: a port
+// no live process still binds is not a port the workload serves, and a record
+// that outlived its process would send a reader after an endpoint that is gone
+// (ADR 0056 §3).
+type PortRecord struct {
+	PortKey
+	// Ports is the union of what the replicas listen on, in port order.
+	Ports []nodescan.ListeningPort `json:"ports"`
+}
+
 // BuildFacts is everything immutable the agent knows about one build, keyed by
 // the image digest that identifies it. Deliberately not a field on GoRecord: a
 // record merges across every replica and node, and one image usually backs
@@ -108,6 +128,10 @@ type BuildFacts struct {
 	// is read beside GoVersion, never alone: absence is the toolchain's own
 	// default, not a missing value (ADR 0050 §2).
 	GoDebug map[string]string `json:"godebug,omitempty"`
+	// HasPprof is true when net/http/pprof is linked into the build. A property
+	// of the image like everything else here, which is why it is filed per
+	// digest and asked once rather than once per replica (ADR 0056 §1).
+	HasPprof bool `json:"has_pprof,omitempty"`
 }
 
 // Resolved is what a ContainerResolver returns for a (pod UID, container ID)
@@ -152,6 +176,12 @@ type Store struct {
 	// it (ADR 0052 §3).
 	peaks map[PeakKey]map[string]nodePeaks
 
+	// ports holds, per (record key, build) and per reporting node, the listening
+	// ports that node's latest report saw. Node-keyed for the reason peaks are:
+	// a contribution is replaced wholesale on the node's next report, so a port
+	// survives only while some node still serves it (ADR 0056 §3).
+	ports map[PortKey]map[string][]nodescan.ListeningPort
+
 	// scans holds the latest scan counters each reporting node sent. Latest
 	// rather than summed: they describe one pass over a node's process table,
 	// and adding successive passes would count the same long-lived process once
@@ -187,6 +217,7 @@ func NewStore(since time.Time) *Store {
 		builds:        make(map[string]BuildFacts),
 		written:       make(map[string]struct{}),
 		peaks:         make(map[PeakKey]map[string]nodePeaks),
+		ports:         make(map[PortKey]map[string][]nodescan.ListeningPort),
 		nodesReported: make(map[string]struct{}),
 		scans:         make(map[string]nodescan.Counters),
 		since:         since,
@@ -207,7 +238,8 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 		s.nodesReported[report.Node] = struct{}{}
 		s.scans[report.Node] = report.Counters
 	}
-	seen := make(map[PeakKey]bool, len(report.Binaries))
+	seenPeaks := make(map[PeakKey]bool, len(report.Binaries))
+	seenPorts := make(map[PortKey]bool, len(report.Binaries))
 	for _, b := range report.Binaries {
 		s.factsReceived++
 		res, ok := resolver.LookupContainer(types.UID(b.PodUID), b.ContainerID)
@@ -230,9 +262,11 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 			PGO:         b.PGO,
 		}
 		s.ingestBuild(b, res.ImageDigest)
-		s.ingestPeaks(b, key, res.ImageDigest, report.Node, seen)
+		s.ingestPeaks(b, key, res.ImageDigest, report.Node, seenPeaks)
+		s.ingestPorts(b, key, res.ImageDigest, report.Node, seenPorts)
 	}
-	s.forgetUnreported(report.Node, seen)
+	s.forgetUnreported(report.Node, seenPeaks)
+	s.forgetUnreportedPorts(report.Node, seenPorts)
 }
 
 // ingestPeaks folds one binary's measured facts into this node's contribution
@@ -291,6 +325,46 @@ func (s *Store) forgetUnreported(node string, seen map[PeakKey]bool) {
 	}
 }
 
+// ingestPorts folds one binary's listening ports into this node's contribution
+// for its key, as ingestPeaks folds its measured facts. seen carries the same
+// meaning: the first binary of a key in a report starts the node's contribution
+// over, the rest merge into it.
+//
+// Callers hold s.mu.
+func (s *Store) ingestPorts(b nodescan.BinaryInfo, key Key, digest, node string, seen map[PortKey]bool) {
+	if len(b.ListeningPorts) == 0 {
+		return
+	}
+	pk := PortKey{Key: key, ImageDigest: digest}
+	byNode, ok := s.ports[pk]
+	if !ok {
+		byNode = make(map[string][]nodescan.ListeningPort, 1)
+		s.ports[pk] = byNode
+	}
+	var acc []nodescan.ListeningPort
+	if seen[pk] {
+		acc = byNode[node]
+	}
+	seen[pk] = true
+	byNode[node] = nodescan.MergeListeningPorts(acc, b.ListeningPorts)
+}
+
+// forgetUnreportedPorts drops this node's contribution to every port key its
+// latest report did not mention, and the key itself once no node contributes.
+//
+// Callers hold s.mu.
+func (s *Store) forgetUnreportedPorts(node string, seen map[PortKey]bool) {
+	for pk, byNode := range s.ports {
+		if seen[pk] {
+			continue
+		}
+		delete(byNode, node)
+		if len(byNode) == 0 {
+			delete(s.ports, pk)
+		}
+	}
+}
+
 // ingestBuild files one binary's build facts under its image digest. A joined
 // fact with no digest — the controller has the pod but not yet a running
 // container status — cannot identify a build, so its facts are dropped and
@@ -316,6 +390,7 @@ func (s *Store) ingestBuild(b nodescan.BinaryInfo, digest string) {
 		Modules:     modules,
 		Settings:    maps.Clone(b.Settings),
 		GoDebug:     maps.Clone(b.GoDebug),
+		HasPprof:    b.HasPprof,
 	}
 }
 
@@ -369,6 +444,8 @@ type Evicted struct {
 	Builds int
 	// Peaks is peak records whose workload container is gone.
 	Peaks int
+	// Ports is port records whose workload container is gone.
+	Ports int
 }
 
 // Retain drops every record whose key is absent from live, and then the build
@@ -398,6 +475,12 @@ func (s *Store) Retain(live []Key) Evicted {
 		if _, ok := set[pk.Key]; !ok {
 			delete(s.peaks, pk)
 			ev.Peaks++
+		}
+	}
+	for pk := range s.ports {
+		if _, ok := set[pk.Key]; !ok {
+			delete(s.ports, pk)
+			ev.Ports++
 		}
 	}
 
@@ -439,8 +522,8 @@ func (s *Store) RetainNodes(live []string) {
 			delete(s.scans, n)
 		}
 	}
-	// A departed node's peaks go with it. Its pods are gone, so the number it
-	// contributed stands behind nothing (ADR 0052 §3).
+	// A departed node's peaks and ports go with it. Its pods are gone, so what
+	// it contributed stands behind nothing (ADR 0052 §3).
 	for pk, byNode := range s.peaks {
 		for node := range byNode {
 			if _, ok := set[node]; !ok {
@@ -449,6 +532,16 @@ func (s *Store) RetainNodes(live []string) {
 		}
 		if len(byNode) == 0 {
 			delete(s.peaks, pk)
+		}
+	}
+	for pk, byNode := range s.ports {
+		for node := range byNode {
+			if _, ok := set[node]; !ok {
+				delete(byNode, node)
+			}
+		}
+		if len(byNode) == 0 {
+			delete(s.ports, pk)
 		}
 	}
 }
@@ -499,6 +592,32 @@ func (s *Store) PeakSnapshot() []PeakRecord {
 			continue
 		}
 		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Key != out[j].Key {
+			return lessKey(out[i].Key, out[j].Key)
+		}
+		return out[i].ImageDigest < out[j].ImageDigest
+	})
+	return out
+}
+
+// PortSnapshot returns one record per (workload container, build) that some node
+// still reports a listening port for, sorted deterministically.
+func (s *Store) PortSnapshot() []PortRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]PortRecord, 0, len(s.ports))
+	for pk, byNode := range s.ports {
+		lists := make([][]nodescan.ListeningPort, 0, len(byNode))
+		for _, ports := range byNode {
+			lists = append(lists, ports)
+		}
+		merged := nodescan.MergeListeningPorts(lists...)
+		if len(merged) == 0 {
+			continue
+		}
+		out = append(out, PortRecord{PortKey: pk, Ports: merged})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Key != out[j].Key {

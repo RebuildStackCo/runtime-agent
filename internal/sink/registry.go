@@ -150,6 +150,16 @@ var registry = []PayloadKind{
 		ADR:        "0052",
 	},
 	{
+		// Structural, not measured: a bound port is a fact about how the
+		// workload is configured, and reading it from the process rather than
+		// from the spec does not make it an instrument reading (ADR 0012 §2).
+		Kind:       "listening_ports",
+		Source:     SourceStructural,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0056",
+	},
+	{
 		Kind:       "go_build",
 		Source:     SourceStructural,
 		NaturalKey: "image digest",

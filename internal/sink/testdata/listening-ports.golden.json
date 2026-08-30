@@ -1,0 +1,34 @@
+{
+  "kind": "listening_ports",
+  "source": "structural",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "records": [
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "app",
+      "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "ports": [
+        {
+          "port": 8080
+        },
+        {
+          "port": 6060,
+          "loopback": true
+        }
+      ]
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "StatefulSet",
+      "workload_name": "db",
+      "container": "db",
+      "ports": [
+        {
+          "port": 5432
+        }
+      ]
+    }
+  ]
+}
