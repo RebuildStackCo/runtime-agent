@@ -78,7 +78,7 @@ func TestProcessWindowShipsOnlyTargetedContainers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	processWindow(context.Background(), logger, staticFilter(filter), 20, procRoot, "node",
 		time.Unix(100, 0), time.Unix(160, 0), samples, targetSet,
-		nodescan.NewScope([]string{podUID}), shipper)
+		nodescan.NewScope([]string{podUID}), shipper, newProfilingMetrics())
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -135,7 +135,7 @@ func TestOwnCodeSurvivesWithNothingConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	processWindow(context.Background(), logger, filterFor, 20, procRoot, "node",
 		time.Unix(100, 0), time.Unix(160, 0), samples, map[string]struct{}{cid: {}},
-		nodescan.NewScope([]string{podUID}), newProfileShipper(srv.URL, writeToken(t, "tok")))
+		nodescan.NewScope([]string{podUID}), newProfileShipper(srv.URL, writeToken(t, "tok")), newProfilingMetrics())
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -172,7 +172,7 @@ func TestWithoutTheIndexTheSameWindowShipsNothing(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	processWindow(context.Background(), logger, staticFilter(nil), 20, procRoot, "node",
 		time.Unix(100, 0), time.Unix(160, 0), samples, map[string]struct{}{cid: {}},
-		nodescan.NewScope([]string{podUID}), nil)
+		nodescan.NewScope([]string{podUID}), nil, newProfilingMetrics())
 }
 
 func TestProcessWindowNoTargetsShipsNothing(t *testing.T) {
@@ -183,7 +183,7 @@ func TestProcessWindowNoTargetsShipsNothing(t *testing.T) {
 	// empty target set -> nothing shipped, no shipper touched
 	processWindow(context.Background(), logger, staticFilter(nil),
 		20, procRoot, "node", time.Unix(1, 0), time.Unix(2, 0), samples, map[string]struct{}{},
-		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), nil)
+		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), nil, newProfilingMetrics())
 }
 
 // A container the controller targeted but whose pod its own scan scope excludes
@@ -216,7 +216,7 @@ func TestProcessWindowShipsNothingOutsideTheScanScope(t *testing.T) {
 		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
 		map[string]struct{}{cid: {}},
 		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}),
-		newProfileShipper(srv.URL, writeToken(t, "tok")))
+		newProfileShipper(srv.URL, writeToken(t, "tok")), newProfilingMetrics())
 
 	if shipped {
 		t.Error("shipped a profile for a pod outside the controller's own scan scope")
@@ -247,7 +247,7 @@ func TestProcessWindowFailsClosedWithoutAScope(t *testing.T) {
 	processWindow(context.Background(), logger, staticFilter(nil),
 		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
 		map[string]struct{}{cid: {}}, nodescan.DenyAll(),
-		newProfileShipper(srv.URL, writeToken(t, "tok")))
+		newProfileShipper(srv.URL, writeToken(t, "tok")), newProfilingMetrics())
 
 	if shipped {
 		t.Error("shipped a profile with no scan scope; profiling must fail closed")

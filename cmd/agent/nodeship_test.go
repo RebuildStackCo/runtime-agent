@@ -67,7 +67,7 @@ func TestReportShipperShipsWithBearerToken(t *testing.T) {
 	tokenPath := writeToken(t, "  secret-token\n") // padded to check trimming
 
 	s := newReportShipper(srv.URL, tokenPath, "kind-worker")
-	if err := s.ship(context.Background(), sampleResult()); err != nil {
+	if err := s.ship(context.Background(), sampleResult(), nodescan.ProfilingCoverage{State: "supported"}); err != nil {
 		t.Fatalf("ship: %v", err)
 	}
 
@@ -93,7 +93,7 @@ func TestReportShipperReadsTokenPerSend(t *testing.T) {
 	tokenPath := writeToken(t, "first-token")
 
 	s := newReportShipper(srv.URL, tokenPath, "n")
-	if err := s.ship(context.Background(), sampleResult()); err != nil {
+	if err := s.ship(context.Background(), sampleResult(), nodescan.ProfilingCoverage{State: "supported"}); err != nil {
 		t.Fatalf("first ship: %v", err)
 	}
 	captured.mu.Lock()
@@ -104,7 +104,7 @@ func TestReportShipperReadsTokenPerSend(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte("rotated-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ship(context.Background(), sampleResult()); err != nil {
+	if err := s.ship(context.Background(), sampleResult(), nodescan.ProfilingCoverage{State: "supported"}); err != nil {
 		t.Fatalf("second ship: %v", err)
 	}
 	captured.mu.Lock()
@@ -125,7 +125,7 @@ func TestReportShipperErrorsOnNon2xx(t *testing.T) {
 	tokenPath := writeToken(t, "tok")
 
 	s := newReportShipper(srv.URL, tokenPath, "n")
-	if err := s.ship(context.Background(), sampleResult()); err == nil {
+	if err := s.ship(context.Background(), sampleResult(), nodescan.ProfilingCoverage{State: "supported"}); err == nil {
 		t.Fatal("ship should error on a non-2xx response")
 	}
 }
@@ -135,7 +135,7 @@ func TestReportShipperErrorsOnMissingToken(t *testing.T) {
 	srv := fakeController(t, captured, http.StatusAccepted)
 
 	s := newReportShipper(srv.URL, filepath.Join(t.TempDir(), "absent"), "n")
-	if err := s.ship(context.Background(), sampleResult()); err == nil {
+	if err := s.ship(context.Background(), sampleResult(), nodescan.ProfilingCoverage{State: "supported"}); err == nil {
 		t.Fatal("ship should error when the token file is absent")
 	}
 	captured.mu.Lock()

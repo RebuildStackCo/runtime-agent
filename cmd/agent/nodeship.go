@@ -49,16 +49,17 @@ func newReportShipper(endpoint, tokenPath, node string) *reportShipper {
 // best-effort by design: a failure is logged by the caller and the next scan
 // pass retries — the controller reconstructs inventory from re-scans, so a lost
 // report costs nothing (ADR 0010, loss-harmless).
-func (s *reportShipper) ship(ctx context.Context, res nodescan.Result) error {
+func (s *reportShipper) ship(ctx context.Context, res nodescan.Result, prof nodescan.ProfilingCoverage) error {
 	token, err := s.readToken()
 	if err != nil {
 		return fmt.Errorf("reading controller token: %w", err)
 	}
 
 	report := nodescan.Report{
-		Node:     s.node,
-		Binaries: res.Binaries,
-		Counters: res.Counters,
+		Node:      s.node,
+		Binaries:  res.Binaries,
+		Counters:  res.Counters,
+		Profiling: &prof,
 	}
 	body, err := json.Marshal(report)
 	if err != nil {

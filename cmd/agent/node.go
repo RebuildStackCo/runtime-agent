@@ -85,8 +85,8 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	// When the gate passes, the profiler runs alongside the scanner in its own
 	// goroutine. A refusal — at the gate or later at eBPF program load —
 	// degrades to scanner-only, never an escalation to privileged. ebpfMetrics
-	// is the in-process counter, surfaced in the node's own log.
-	ebpfMetrics := newEBPFGateMetrics()
+	// holds what the profiler did, for the node's log and for its report.
+	ebpfMetrics := newProfilingMetrics()
 	// What the scanner learns about whose code each container runs, for the
 	// profiler beside it. Published on every pass and read per window; the two
 	// are different goroutines in this one process (ADR 0059 §1).
@@ -182,12 +182,30 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 			"containers_with_known_modules", moduleIndex.Size(),
 		)
 
+		// What the profiler beside this scanner did, on the scanner's cadence
+		// because it is the only one that fires when the profiler does not
+		// (ADR 0060 §1). Reported always, logged only where it was asked for:
+		// "disabled" is worth shipping and not worth a line every pass.
+		prof := ebpfMetrics.snapshot()
+		if *enableEBPF {
+			logger.Info("ebpf coverage",
+				"state", prof.State,
+				"windows", prof.Windows,
+				"no_scope", prof.WindowsNoScope,
+				"no_targets", prof.WindowsNoTargets,
+				"no_samples", prof.WindowsNoSamples,
+				"shipped", prof.ProfilesShipped,
+				"invalid", prof.ProfilesInvalid,
+				"unshipped", prof.ProfilesUnshipped,
+			)
+		}
+
 		// Ship to the controller when configured. Best-effort: a delivery
 		// failure is logged and the next pass retries — the controller
 		// rebuilds inventory from re-scans, so a lost report costs nothing
 		// (ADR 0010).
 		if shipper != nil {
-			if err := shipper.ship(ctx, res); err != nil {
+			if err := shipper.ship(ctx, res, prof); err != nil {
 				logger.Error("shipping report to controller failed", "error", err)
 			} else {
 				logger.Info("report shipped to controller",
@@ -214,36 +232,23 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	}
 }
 
-// ebpfGateMetrics counts eBPF readiness outcomes per reason. In this slice it is
-// in-process only; a report consumer surfaces it to the controller when the
-// profiler ships (ADR 0011). The map key is the low-cardinality refusal reason,
-// so a fleet's counts show *why* nodes declined (e.g. kernel_too_old vs
-// btf_absent), which is what we would need to know to support new kernels.
-type ebpfGateMetrics struct {
-	ready    int
-	refusals map[ebpfgate.Reason]int
-}
-
-func newEBPFGateMetrics() *ebpfGateMetrics {
-	return &ebpfGateMetrics{refusals: make(map[ebpfgate.Reason]int)}
-}
-
 // ebpfGate evaluates the eBPF readiness gate once, logs a clear line, records
-// the outcome on m, and returns it. A refusal is deliberately non-fatal: the
-// node keeps running the Go-binary scanner rather than escalating to privileged
-// (ADR 0011 §2). It logs only the kernel version and BTF fact — never anything
-// derived from a customer workload.
-func ebpfGate(logger *slog.Logger, procRoot, sysRoot string, m *ebpfGateMetrics) ebpfgate.Result {
+// the outcome on m as this node's profiling state, and returns it. A refusal is
+// deliberately non-fatal: the node keeps running the Go-binary scanner rather
+// than escalating to privileged (ADR 0011 §2). It logs only the kernel version
+// and BTF fact — never anything derived from a customer workload.
+//
+// The reason is low-cardinality because it now leaves the node (ADR 0060 §2).
+func ebpfGate(logger *slog.Logger, procRoot, sysRoot string, m *profilingMetrics) ebpfgate.Result {
 	res := ebpfgate.Probe(procRoot, sysRoot)
+	m.setState(string(res.Reason))
 	if res.Supported() {
-		m.ready++
 		logger.Info("ebpf profile ready",
 			"kernel", res.KernelVersion,
 			"btf", res.BTFPresent,
 		)
 		return res
 	}
-	m.refusals[res.Reason]++
 	logger.Warn("ebpf profile refused; continuing as scanner",
 		"reason", string(res.Reason),
 		"kernel", res.KernelVersion,

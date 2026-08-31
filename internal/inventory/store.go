@@ -188,6 +188,13 @@ type Store struct {
 	// per scan interval (ADR 0054 §4).
 	scans map[string]nodescan.Counters
 
+	// profiling holds the latest eBPF-profiling coverage each reporting node
+	// sent. Latest rather than summed for the same reason as scans, and
+	// cumulative on the node rather than per pass: a node states what its
+	// profiler has done since it started, and the fleet answer is the sum of
+	// those statements (ADR 0060 §3).
+	profiling map[string]nodescan.ProfilingCoverage
+
 	// nodesReported is the set of nodes still in the cluster that have delivered
 	// at least one report. Compared against the node count in the node-metadata
 	// payload it is what makes a DaemonSet that never started visible
@@ -220,6 +227,7 @@ func NewStore(since time.Time) *Store {
 		ports:         make(map[PortKey]map[string][]nodescan.ListeningPort),
 		nodesReported: make(map[string]struct{}),
 		scans:         make(map[string]nodescan.Counters),
+		profiling:     make(map[string]nodescan.ProfilingCoverage),
 		since:         since,
 	}
 }
@@ -237,6 +245,9 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 	if report.Node != "" {
 		s.nodesReported[report.Node] = struct{}{}
 		s.scans[report.Node] = report.Counters
+		if report.Profiling != nil {
+			s.profiling[report.Node] = *report.Profiling
+		}
 	}
 	seenPeaks := make(map[PeakKey]bool, len(report.Binaries))
 	seenPorts := make(map[PortKey]bool, len(report.Binaries))
@@ -520,6 +531,7 @@ func (s *Store) RetainNodes(live []string) {
 		if _, ok := set[n]; !ok {
 			delete(s.nodesReported, n)
 			delete(s.scans, n)
+			delete(s.profiling, n)
 		}
 	}
 	// A departed node's peaks and ports go with it. Its pods are gone, so what
@@ -683,6 +695,66 @@ func (s *Store) ScanCoverage() ScanCoverage {
 		out.FilteredScope += c.FilteredScope
 		out.FilteredInfra += c.FilteredInfra
 		out.Unreadable += c.Unreadable
+	}
+	return out
+}
+
+// ProfileCoverage is what the fleet's eBPF profilers did, summed over the nodes
+// that reported, plus the two numbers only the controller can count. It is the
+// answer to "this workload has no profile — is that the cluster or the agent?",
+// which the log lines it replaces could only answer node by node (ADR 0060).
+//
+// Aggregate, never per node, for the reason ScanCoverage is: the fleet is the
+// unit the question is asked in, and a per-node breakdown would grow the
+// payload with the cluster (ADR 0054 §4).
+type ProfileCoverage struct {
+	// Nodes is how many nodes reported profiling coverage at all. States is how
+	// many of them are in each state — "supported", "disabled", or a refusal —
+	// so a fleet that profiles nothing says why in one field.
+	Nodes  int            `json:"nodes"`
+	States map[string]int `json:"states,omitempty"`
+	// Capture windows and the ones that produced nothing, by reason.
+	Windows          int `json:"windows"`
+	WindowsNoScope   int `json:"windows_no_scope"`
+	WindowsNoTargets int `json:"windows_no_targets"`
+	WindowsNoSamples int `json:"windows_no_samples"`
+	// What the nodes built and what became of it.
+	ProfilesShipped   int `json:"profiles_shipped"`
+	ProfilesInvalid   int `json:"profiles_invalid"`
+	ProfilesUnshipped int `json:"profiles_unshipped"`
+	SamplesOutOfScope int `json:"samples_out_of_scope"`
+	// What the symbol filter redacted on the nodes, in aggregate and with no
+	// identity of anything redacted (CLAUDE.md invariant 6).
+	ThirdPartyDropped   uint64 `json:"third_party_dropped"`
+	UnsymbolizedDropped uint64 `json:"unsymbolized_dropped"`
+	SamplesFiltered     uint64 `json:"samples_filtered"`
+	// ProfilesReceived and ProfilesUnjoined are the controller's own count, not
+	// the nodes': a profile whose pod the controller cannot find is dropped
+	// here, after a node did the work of capturing it (ADR 0010 §5).
+	ProfilesReceived uint64 `json:"profiles_received"`
+	ProfilesUnjoined uint64 `json:"profiles_unjoined"`
+}
+
+// ProfileCoverage sums the latest profiling coverage of every reporting node.
+// The two controller-side counts are the caller's to fill: the store never sees
+// a profile, only the reports that say one was made.
+func (s *Store) ProfileCoverage() ProfileCoverage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := ProfileCoverage{Nodes: len(s.profiling), States: make(map[string]int, len(s.profiling))}
+	for _, c := range s.profiling {
+		out.States[c.State]++
+		out.Windows += c.Windows
+		out.WindowsNoScope += c.WindowsNoScope
+		out.WindowsNoTargets += c.WindowsNoTargets
+		out.WindowsNoSamples += c.WindowsNoSamples
+		out.ProfilesShipped += c.ProfilesShipped
+		out.ProfilesInvalid += c.ProfilesInvalid
+		out.ProfilesUnshipped += c.ProfilesUnshipped
+		out.SamplesOutOfScope += c.SamplesOutOfScope
+		out.ThirdPartyDropped += c.ThirdPartyDropped
+		out.UnsymbolizedDropped += c.UnsymbolizedDropped
+		out.SamplesFiltered += c.SamplesFiltered
 	}
 	return out
 }

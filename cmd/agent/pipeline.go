@@ -40,13 +40,13 @@ func samplesPerSecond(overheadCeilingPercent int) int {
 // cluster (ADR 0015). Both must admit a container, and scope fails closed.
 func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.NodeProfiling,
 	procRoot, node string, targets *targetsClient, scoper *scopeClient,
-	shipper *profileShipper, m *ebpfGateMetrics, modules *nodeprofile.ModuleIndex) {
+	shipper *profileShipper, m *profilingMetrics, modules *nodeprofile.ModuleIndex) {
 
 	sps := samplesPerSecond(p.OverheadCeilingPercent)
 	session, err := nodeprofile.Start(ctx, logger, nodeprofile.Config{SamplesPerSecond: sps})
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			m.refusals[ebpfgate.ReasonProgramLoadFailed]++
+			m.setState(string(ebpfgate.ReasonProgramLoadFailed))
 			logger.Warn("ebpf capture unavailable; continuing as scanner",
 				"reason", string(ebpfgate.ReasonProgramLoadFailed), "error", err)
 		}
@@ -88,6 +88,16 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// The tracer signals an unrecoverable error rather than failing
+			// quietly, and a node whose capture died would otherwise cut empty
+			// windows forever and read as idle. Say so and degrade to
+			// scanner-only, which is where a refused gate leaves it (ADR 0060 §5).
+			if session.Stopped() {
+				m.setState(string(ebpfgate.ReasonCaptureStopped))
+				logger.Error("ebpf capture stopped; continuing as scanner",
+					"reason", string(ebpfgate.ReasonCaptureStopped))
+				return
+			}
 			end := time.Now()
 			if targets != nil && (targetSet == nil || end.Sub(lastFetch) >= refresh) {
 				if ids, err := targets.fetch(ctx, node); err != nil {
@@ -111,7 +121,7 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 				scope = nodescan.NewScope(uids)
 			}
 			processWindow(ctx, logger, filterFor, sps, procRoot, node,
-				start, end, session.Drain(), targetSet, scope, shipper)
+				start, end, session.Drain(), targetSet, scope, shipper, m)
 			start = time.Now()
 		}
 	}
@@ -127,9 +137,24 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 func processWindow(ctx context.Context, logger *slog.Logger,
 	filterFor func(containerID string) *nodeprofile.SymbolFilter,
 	sps int, procRoot, node string, start, end time.Time, samples []nodeprofile.Sample,
-	targetSet map[string]struct{}, scope nodescan.Scope, shipper *profileShipper) {
+	targetSet map[string]struct{}, scope nodescan.Scope, shipper *profileShipper,
+	m *profilingMetrics) {
 
-	if len(samples) == 0 || len(targetSet) == 0 || scope.Size() == 0 {
+	// A window that produced nothing is counted with its reason, in the order
+	// that answers "is this the agent or the cluster": no scope is the agent's
+	// own fail-closed path, no targets is the controller having nothing to ask
+	// for, and no samples on a loaded profiler is either an idle node or a
+	// broken one (ADR 0060 §2).
+	m.window()
+	switch {
+	case scope.Size() == 0:
+		m.noScope()
+		return
+	case len(targetSet) == 0:
+		m.noTargets()
+		return
+	case len(samples) == 0:
+		m.noSamples()
 		return
 	}
 
@@ -168,6 +193,7 @@ func processWindow(ctx context.Context, logger *slog.Logger,
 		g.samples = append(g.samples, s)
 	}
 	if outOfScope > 0 {
+		m.outOfScope(outOfScope)
 		logger.Warn("dropped targeted samples outside the controller's own scan scope",
 			"samples", outOfScope)
 	}
@@ -185,13 +211,19 @@ func processWindow(ctx context.Context, logger *slog.Logger,
 	for _, cid := range cids {
 		g := groups[cid]
 
-		filtered, _ := filterFor(cid).Filter(g.samples)
+		filtered, drops := filterFor(cid).Filter(g.samples)
+		m.redacted(drops)
 		pprof, err := nodeprofile.Serialize(filtered, sps)
 		if err != nil {
+			m.invalid()
 			logger.Error("serializing profile failed", "error", err)
 			continue
 		}
+		// A profile of nothing but the runtime and placeholders. Counted, not
+		// only logged: it is what an allow-list that stopped matching looks
+		// like from outside the node (ADR 0060 §2).
 		if err := nodeprofile.Validate(pprof); err != nil {
+			m.invalid()
 			logger.Info("profile invalid; not shipped", "reason", err.Error())
 			continue
 		}
@@ -201,8 +233,11 @@ func processWindow(ctx context.Context, logger *slog.Logger,
 				CaptureStart: start, CaptureEnd: end, Pprof: pprof,
 			}
 			if err := shipper.ship(ctx, report); err != nil {
+				m.unshipped()
 				logger.Warn("shipping profile failed", "error", err)
+				continue
 			}
+			m.shipped()
 		}
 	}
 }

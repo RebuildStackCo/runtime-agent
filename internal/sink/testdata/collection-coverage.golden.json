@@ -71,6 +71,26 @@
     "filtered_infra": 512,
     "unreadable": 28
   },
+  "ebpf": {
+    "nodes": 4,
+    "states": {
+      "btf_absent": 1,
+      "supported": 3
+    },
+    "windows": 180,
+    "windows_no_scope": 2,
+    "windows_no_targets": 11,
+    "windows_no_samples": 7,
+    "profiles_shipped": 154,
+    "profiles_invalid": 6,
+    "profiles_unshipped": 0,
+    "samples_out_of_scope": 41,
+    "third_party_dropped": 9214,
+    "unsymbolized_dropped": 133,
+    "samples_filtered": 2760,
+    "profiles_received": 154,
+    "profiles_unjoined": 3
+  },
   "pprof": {
     "confirmed": 6,
     "absent": 11,

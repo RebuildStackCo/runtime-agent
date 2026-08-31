@@ -556,6 +556,12 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		logger.Info("job runs flushed", "records", len(records))
 	}
 
+	// What the controller itself learns about arriving profiles: how many nodes
+	// delivered, and how many it could not attribute to a pod. Declared here
+	// because the coverage report reads them and the intake below writes them
+	// (ADR 0060 §3).
+	var profilesReceived, profilesUnjoined atomic.Uint64
+
 	// Excluded pods are reported as aggregate counts only, never by name
 	// (docs/security.md §8). Inventory counters are aggregate too: no identity
 	// of an unjoined fact appears, only a count (CLAUDE.md invariant 6).
@@ -616,10 +622,19 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		var inv *inventory.Counters
 		var scan *inventory.ScanCoverage
+		var ebpf *inventory.ProfileCoverage
 		if goStore != nil {
 			ic := goStore.Counters()
 			sc := goStore.ScanCoverage()
 			inv, scan = &ic, &sc
+			// Present once a node has said what its profiler did; the two
+			// controller-side counts are added here because only this side
+			// sees a profile arrive (ADR 0060 §3).
+			if pc := goStore.ProfileCoverage(); pc.Nodes > 0 {
+				pc.ProfilesReceived = profilesReceived.Load()
+				pc.ProfilesUnjoined = profilesUnjoined.Load()
+				ebpf = &pc
+			}
 		}
 		agentInfo := sink.AgentInfo{
 			Version:      version,
@@ -638,7 +653,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
 			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), inv, scan,
-			probeCoverage, pullCoverage); err != nil {
+			ebpf, probeCoverage, pullCoverage); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
 		}
 	}
@@ -723,7 +738,6 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		// profile. An unjoinable profile (informer lag, or a pod outside the
 		// controller's filters) is counted and dropped, never guessed (ADR 0010
 		// §5, ADR 0011 §6).
-		var profilesReceived, profilesUnjoined atomic.Uint64
 		onProfile := func(id nodeauth.Identity, report nodeintake.ProfileReport) {
 			ns, workload, container, digest, ok := podWatcher.LookupContainerOnNode(types.UID(report.PodUID), report.ContainerID, id.Node)
 			if !ok {

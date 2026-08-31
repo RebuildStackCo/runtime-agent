@@ -433,6 +433,21 @@ a workload as unprofilable or as an agent error; the honest rendering is that
 the workload profiles itself. `invalid` counts profiles that arrived and were
 not shippable, and `shipped` counts what became a payload.
 
+**`collection_coverage.ebpf` says why a node is not profiling, and its counters
+have a different base from the block above them**
+([ADR 0060](adr/0060-the-node-says-what-its-profiler-did.md)). `states` maps a
+profiling state — `supported`, `disabled`, `program_load_failed`,
+`capture_stopped`, `kernel_too_old`, `btf_absent`, `kernel_unknown` — to how
+many nodes are in it: a refused kernel is not a broken agent and MUST NOT be
+presented as one, while `capture_stopped` is one and SHOULD be surfaced. Unlike
+`scan`, these counters are cumulative since each node started, not one pass, so
+they MUST NOT be summed across flushes and a fall across a node restart MUST NOT
+be read as a decline. `windows_no_scope` is the agent failing closed and
+`windows_no_samples` is a profiler that captured nothing on a node where
+something ran; `profiles_invalid` with a rising `third_party_dropped` means the
+symbol allow-list stopped matching the workload's own modules. The block is
+absent until a node reports; absent does not mean zero. No node is named.
+
 **`collection_coverage.pprof` counts endpoint targets, not workloads, and the
 block is absent when discovery is off**
 ([ADR 0057](adr/0057-the-controller-confirms-an-endpoint-once.md)). A target is

@@ -31,6 +31,10 @@ const (
 	// (LSM, kernel lockdown, perf_event_paranoid). It is handled with the same
 	// graceful discipline as a too-old kernel (ADR 0011 §2, constraint b).
 	ReasonProgramLoadFailed Reason = "program_load_failed"
+	// ReasonCaptureStopped is also set by the capture driver: the tracer loaded,
+	// ran, and then signalled an unrecoverable error. A node in this state
+	// captured nothing since, and says so rather than looking idle (ADR 0060 §5).
+	ReasonCaptureStopped Reason = "capture_stopped"
 )
 
 // Minimum kernel for CAP_BPF/CAP_PERFMON (ADR 0011, security.md §7.2).

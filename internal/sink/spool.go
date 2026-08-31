@@ -170,6 +170,11 @@ type collectionCoveragePayload struct {
 	// Inventory and Scan are present only when the node role is deployed.
 	Inventory *inventory.Counters     `json:"inventory,omitempty"`
 	Scan      *inventory.ScanCoverage `json:"scan,omitempty"`
+	// EBPF is present once a node has reported what its profiler did. Unlike
+	// Scan beside it, its counts are cumulative since each node started rather
+	// than one pass, and `states` says why a fleet is not profiling at all
+	// (ADR 0060 §3).
+	EBPF *inventory.ProfileCoverage `json:"ebpf,omitempty"`
 	// Pprof is present only when endpoint discovery is on. It counts targets by
 	// their latest answer, which is what makes "no profiles for this workload"
 	// legible as one of three different things (ADR 0057 §5).
@@ -565,7 +570,7 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs collect
 // WriteCollectionCoverage writes the coverage payload, superseding its
 // predecessor. It is written on every flush, including one that found nothing:
 // an empty report and a broken agent are the same bytes without it (ADR 0054).
-func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
+func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
 	payload := collectionCoveragePayload{
 		Kind:       "collection_coverage",
 		Source:     SourceAgent,
@@ -577,6 +582,7 @@ func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent Agent
 		Placement:  placement,
 		Inventory:  inv,
 		Scan:       scan,
+		EBPF:       ebpf,
 		Pprof:      probe,
 		PprofPull:  pull,
 	}
