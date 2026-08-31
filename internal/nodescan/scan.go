@@ -59,10 +59,36 @@ type BinaryInfo struct {
 	// least one permitted CPU.
 	PeakRSSBytes int64 `json:"peak_rss_bytes,omitempty"`
 	CPUsAllowed  int   `json:"cpus_allowed,omitempty"`
+	// Footprint is what the process holds now, beside the mark above (ADR 0061).
+	Footprint Footprint `json:"footprint,omitzero"`
 	// PodUID and ContainerID come from the process cgroup; either may be empty
 	// for a host process outside the kubepods hierarchy.
 	PodUID      string `json:"pod_uid,omitempty"`
 	ContainerID string `json:"container_id,omitempty"`
+}
+
+// Footprint is what one process currently holds, as against PeakRSSBytes, which
+// is the largest it ever held. Each field is a sample taken during the scan
+// pass; zero means the kernel did not offer it, never that the value is zero
+// (ADR 0061 §1).
+type Footprint struct {
+	// RSSAnonBytes and RSSFileBytes split resident memory into the program's
+	// own pages and the file-backed ones. Both count against a memory limit;
+	// only the first is what the program allocated.
+	RSSAnonBytes int64 `json:"rss_anon_bytes,omitempty"`
+	RSSFileBytes int64 `json:"rss_file_bytes,omitempty"`
+	// PSSBytes charges each shared page to its sharers in equal parts, and
+	// PrivateDirtyBytes is what nothing else maps and nothing can drop — the
+	// marginal cost of one more replica.
+	PSSBytes          int64 `json:"pss_bytes,omitempty"`
+	PrivateDirtyBytes int64 `json:"private_dirty_bytes,omitempty"`
+	// Threads is the process's OS threads, and OpenFiles its descriptors
+	// against OpenFilesLimit, the soft limit in force. The two descriptor
+	// numbers come from one process at one moment, so their difference is a
+	// headroom rather than a subtraction across readings (ADR 0043).
+	Threads        int   `json:"threads,omitempty"`
+	OpenFiles      int   `json:"open_files,omitempty"`
+	OpenFilesLimit int64 `json:"open_files_limit,omitempty"`
 }
 
 // Module is one dependency of a build: the module path and the version the
@@ -194,6 +220,8 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 	// and its descriptors left unopened, the same ordering the cgroup read
 	// establishes above (invariant 4).
 	status := ReadProcessStatus(s.procRoot, pid)
+	memory := ReadProcessMemory(s.procRoot, pid)
+	files := ReadProcessFiles(s.procRoot, pid)
 	hasPprof := s.marks.lookup(exePath)
 	ports := ReadListeningPorts(s.procRoot, pid)
 
@@ -210,8 +238,17 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 		ListeningPorts: ports,
 		PeakRSSBytes:   status.PeakRSSBytes,
 		CPUsAllowed:    status.CPUsAllowed,
-		PodUID:         binding.PodUID,
-		ContainerID:    binding.ContainerID,
+		Footprint: Footprint{
+			RSSAnonBytes:      status.RSSAnonBytes,
+			RSSFileBytes:      status.RSSFileBytes,
+			Threads:           status.Threads,
+			PSSBytes:          memory.PSSBytes,
+			PrivateDirtyBytes: memory.PrivateDirtyBytes,
+			OpenFiles:         files.Open,
+			OpenFilesLimit:    files.Limit,
+		},
+		PodUID:      binding.PodUID,
+		ContainerID: binding.ContainerID,
 	})
 }
 

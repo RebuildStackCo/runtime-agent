@@ -821,3 +821,74 @@ func TestProfileCoverageFollowsTheNodesThatAreLeft(t *testing.T) {
 		t.Errorf("after the node left: nodes = %d, states = %v", got.Nodes, got.States)
 	}
 }
+
+// withFootprint attaches what one process currently holds, beside the mark
+// withPeak attaches.
+func withFootprint(b nodescan.BinaryInfo, f nodescan.Footprint) nodescan.BinaryInfo {
+	b.Footprint = f
+	return b
+}
+
+// Each footprint field merges as the largest sample seen — except the
+// descriptor ceiling, which merges as the lowest: headroom is what the tightest
+// replica has (ADR 0061 §4).
+func TestFootprintTakesTheLargestSampleAndTheLowestCeiling(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withFootprint(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.Footprint{
+			RSSAnonBytes: 300 << 20, RSSFileBytes: 60 << 20, PSSBytes: 340 << 20,
+			PrivateDirtyBytes: 290 << 20, Threads: 17, OpenFiles: 900, OpenFilesLimit: 65536,
+		}),
+	}}, webResolver())
+	s.Ingest(nodescan.Report{Node: "node-2", Binaries: []nodescan.BinaryInfo{
+		withFootprint(binary("pod-web-2", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.Footprint{
+			RSSAnonBytes: 420 << 20, RSSFileBytes: 55 << 20, PSSBytes: 470 << 20,
+			PrivateDirtyBytes: 410 << 20, Threads: 9, OpenFiles: 61000, OpenFilesLimit: 1024,
+		}),
+	}}, webResolver())
+
+	peaks := s.PeakSnapshot()
+	if len(peaks) != 1 {
+		t.Fatalf("peaks = %+v, want one record", peaks)
+	}
+	p := peaks[0]
+	if p.RSSAnonBytesMax != 420<<20 || p.RSSFileBytesMax != 60<<20 {
+		t.Errorf("rss anon/file = %d/%d, want the larger of each", p.RSSAnonBytesMax, p.RSSFileBytesMax)
+	}
+	if p.PSSBytesMax != 470<<20 || p.PrivateDirtyBytesMax != 410<<20 {
+		t.Errorf("pss/private dirty = %d/%d, want the larger of each", p.PSSBytesMax, p.PrivateDirtyBytesMax)
+	}
+	if p.ThreadsMax != 17 {
+		t.Errorf("threads = %d, want 17", p.ThreadsMax)
+	}
+	if p.OpenFilesMax != 61000 || p.OpenFilesLimitMin != 1024 {
+		t.Errorf("descriptors = %d of %d, want the most held against the lowest ceiling",
+			p.OpenFilesMax, p.OpenFilesLimitMin)
+	}
+}
+
+// A process whose footprint could not be read contributes nothing rather than a
+// zero, which would drag the descriptor ceiling to "no ceiling" and claim a
+// container reached nothing.
+func TestAnUnreadFootprintContributesNothing(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withFootprint(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.Footprint{
+			Threads: 17, OpenFiles: 900, OpenFilesLimit: 65536,
+		}),
+		binary("pod-web-2", "cid-web", "go1.26.1", "github.com/acme/web", false), // nothing read
+	}}, webResolver())
+
+	p := s.PeakSnapshot()[0]
+	if p.OpenFilesLimitMin != 65536 {
+		t.Errorf("ceiling = %d; an unread limit was treated as a limit", p.OpenFilesLimitMin)
+	}
+	if p.ThreadsMax != 17 {
+		t.Errorf("threads = %d, want 17", p.ThreadsMax)
+	}
+	// And it is not counted among the processes the numbers were taken over:
+	// `processes` says how many stood behind the figures, not how many ran.
+	if p.Processes != 1 {
+		t.Errorf("processes = %d, want 1: the process that measured nothing stands behind nothing", p.Processes)
+	}
+}

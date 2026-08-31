@@ -12,7 +12,14 @@
       "peak_rss_bytes": 504365056,
       "processes": 2,
       "cpus_allowed_min": 4,
-      "cpus_allowed_max": 8
+      "cpus_allowed_max": 8,
+      "rss_anon_bytes_max": 421527552,
+      "rss_file_bytes_max": 63963136,
+      "pss_bytes_max": 461373440,
+      "private_dirty_bytes_max": 417333248,
+      "threads_max": 42,
+      "open_files_max": 61000,
+      "open_files_limit_min": 65536
     },
     {
       "namespace": "shop",
@@ -22,7 +29,12 @@
       "peak_rss_bytes": 100663296,
       "processes": 1,
       "cpus_allowed_min": 8,
-      "cpus_allowed_max": 8
+      "cpus_allowed_max": 8,
+      "rss_anon_bytes_max": 74448896,
+      "rss_file_bytes_max": 26214400,
+      "threads_max": 11,
+      "open_files_max": 34,
+      "open_files_limit_min": 1024
     }
   ]
 }

@@ -118,3 +118,4 @@ line to paste.
 - [0058. The pull starts a profiler, and the binary says whose code it is](0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)
 - [0059. The node knows whose code it profiles, so the allow-list stops being a prerequisite](0059-the-node-knows-whose-code-it-profiles.md)
 - [0060. The node says what its profiler did, on the channel that fires when it did nothing](0060-the-node-says-what-its-profiler-did.md)
+- [0061. What the process holds, beside the peak it once reached](0061-what-the-process-holds-beside-its-peak.md)
