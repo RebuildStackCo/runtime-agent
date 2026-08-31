@@ -46,14 +46,14 @@ func TestEBPFGateSupported(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	proc, sys := writeGateFixture(t, "6.8.0-1064-gcp", true)
 
-	m := newEBPFGateMetrics()
+	m := newProfilingMetrics()
 	res := ebpfGate(logger, proc, sys, m)
 
 	if !res.Supported() {
 		t.Fatalf("Supported() = false, reason %q", res.Reason)
 	}
-	if m.ready != 1 || len(m.refusals) != 0 {
-		t.Errorf("metrics = %+v, want ready=1 no refusals", m)
+	if got := m.snapshot().State; got != string(ebpfgate.ReasonSupported) {
+		t.Errorf("state = %q, want %q", got, ebpfgate.ReasonSupported)
 	}
 	if !strings.Contains(buf.String(), "ebpf profile ready") {
 		t.Errorf("log missing ready line:\n%s", buf.String())
@@ -76,17 +76,16 @@ func TestEBPFGateRefusesGracefully(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(&buf, nil))
 			proc, sys := writeGateFixture(t, tc.osrelease, tc.btf)
 
-			m := newEBPFGateMetrics()
+			m := newProfilingMetrics()
 			res := ebpfGate(logger, proc, sys, m)
 
 			if res.Supported() {
 				t.Fatal("expected a refusal, got supported")
 			}
-			if m.ready != 0 {
-				t.Errorf("ready = %d, want 0", m.ready)
-			}
-			if m.refusals[tc.reason] != 1 {
-				t.Errorf("refusals[%s] = %d, want 1 (all: %+v)", tc.reason, m.refusals[tc.reason], m.refusals)
+			// The refusal reason is the node's reported state: it is what a
+			// fleet's "why is nobody profiling" answer is made of (ADR 0060 §2).
+			if got := m.snapshot().State; got != string(tc.reason) {
+				t.Errorf("state = %q, want %q", got, tc.reason)
 			}
 			if !strings.Contains(buf.String(), "refused") {
 				t.Errorf("log missing refusal line:\n%s", buf.String())
@@ -105,11 +104,11 @@ func TestRunProfilingPipelineGraceful(t *testing.T) {
 		t.Skip("attempts a real eBPF load on linux; covered by the slice-7 capture e2e")
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m := newEBPFGateMetrics()
+	m := newProfilingMetrics()
 	runProfilingPipeline(context.Background(), logger, config.NodeProfiling{}.Normalized(),
 		t.TempDir(), "node", nil, nil, nil, m, &nodeprofile.ModuleIndex{})
-	if m.refusals[ebpfgate.ReasonProgramLoadFailed] != 1 {
-		t.Errorf("program_load_failed = %d, want 1", m.refusals[ebpfgate.ReasonProgramLoadFailed])
+	if got := m.snapshot().State; got != string(ebpfgate.ReasonProgramLoadFailed) {
+		t.Errorf("state = %q, want %q", got, ebpfgate.ReasonProgramLoadFailed)
 	}
 }
 

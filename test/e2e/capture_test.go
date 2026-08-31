@@ -87,6 +87,7 @@ func TestEBPFCaptureEndToEnd(t *testing.T) {
 	for {
 		if pprof, ok := readSampleProfile(ctx, t, config, clientset, ns, controllerPod); ok {
 			assertProfile(t, pprof)
+			checkEBPFCoverageReported(ctx, t, config, clientset, ns, controllerPod)
 			return
 		}
 		if time.Now().After(deadline) {
@@ -327,5 +328,46 @@ func captureValues(ns string) map[string]any {
 			"overheadCeilingPercent": 20,
 		},
 		"node": map[string]any{"scanInterval": "30s"},
+	}
+}
+
+// checkEBPFCoverageReported asserts that the profile just read is also accounted
+// for: the node said what its profiler did, the report carried it, and the
+// controller summed it into the payload (ADR 0060). Without this the whole path
+// is provable only by a profile arriving, which is the case that never needed
+// explaining.
+//
+// The coverage payload is written on the controller's own tick, so a profile can
+// arrive before the flush that counts it: poll rather than read once.
+func checkEBPFCoverageReported(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, coverageSpoolPath)
+		if ok {
+			var payload struct {
+				EBPF struct {
+					Nodes           int            `json:"nodes"`
+					States          map[string]int `json:"states"`
+					Windows         int            `json:"windows"`
+					ProfilesShipped int            `json:"profiles_shipped"`
+					ProfilesInvalid int            `json:"profiles_invalid"`
+				} `json:"ebpf"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("coverage payload not valid JSON: %v", err)
+			}
+			if payload.EBPF.States["supported"] > 0 && payload.EBPF.ProfilesShipped > 0 {
+				t.Logf("ebpf coverage: %d node(s) %v, %d windows, %d shipped, %d invalid",
+					payload.EBPF.Nodes, payload.EBPF.States, payload.EBPF.Windows,
+					payload.EBPF.ProfilesShipped, payload.EBPF.ProfilesInvalid)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Error("a profile was shipped but collection_coverage never accounted for it")
+			return
+		}
+		time.Sleep(10 * time.Second)
 	}
 }

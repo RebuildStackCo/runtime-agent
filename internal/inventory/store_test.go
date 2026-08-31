@@ -763,3 +763,61 @@ func TestABinaryWithoutAStatusReadContributesNothing(t *testing.T) {
 			peaks[0].Processes, peaks[0].CPUsAllowedMin)
 	}
 }
+
+// The fleet answer to "why is nobody profiling" is the sum of what each node
+// said, and the states are what makes a cluster of refusals distinguishable
+// from a cluster with nothing to profile (ADR 0060 §3).
+func TestProfileCoverageSumsTheNodesAndKeepsTheirStates(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "n1", Profiling: &nodescan.ProfilingCoverage{
+		State: "supported", Windows: 10, ProfilesShipped: 7, ThirdPartyDropped: 100,
+	}}, fakeResolver{})
+	s.Ingest(nodescan.Report{Node: "n2", Profiling: &nodescan.ProfilingCoverage{
+		State: "supported", Windows: 10, ProfilesShipped: 3, ProfilesInvalid: 2, ThirdPartyDropped: 40,
+	}}, fakeResolver{})
+	s.Ingest(nodescan.Report{Node: "n3", Profiling: &nodescan.ProfilingCoverage{
+		State: "btf_absent",
+	}}, fakeResolver{})
+	// A node reporting no profiling coverage at all — an older node build —
+	// counts as a node that has not answered, not as one answering zero.
+	s.Ingest(nodescan.Report{Node: "n4"}, fakeResolver{})
+
+	got := s.ProfileCoverage()
+	if got.Nodes != 3 {
+		t.Errorf("nodes = %d, want 3 (the fourth reported no profiling block)", got.Nodes)
+	}
+	if got.States["supported"] != 2 || got.States["btf_absent"] != 1 {
+		t.Errorf("states = %v, want 2 supported and 1 btf_absent", got.States)
+	}
+	if got.Windows != 20 || got.ProfilesShipped != 10 || got.ProfilesInvalid != 2 {
+		t.Errorf("windows/shipped/invalid = %d/%d/%d, want 20/10/2",
+			got.Windows, got.ProfilesShipped, got.ProfilesInvalid)
+	}
+	if got.ThirdPartyDropped != 140 {
+		t.Errorf("third_party_dropped = %d, want 140", got.ThirdPartyDropped)
+	}
+}
+
+// A node's latest report replaces its last, and a departed node takes its
+// counters with it — the same discipline as the scan counters beside them.
+func TestProfileCoverageFollowsTheNodesThatAreLeft(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "n1", Profiling: &nodescan.ProfilingCoverage{
+		State: "supported", Windows: 5,
+	}}, fakeResolver{})
+	s.Ingest(nodescan.Report{Node: "n1", Profiling: &nodescan.ProfilingCoverage{
+		State: "supported", Windows: 9,
+	}}, fakeResolver{})
+	s.Ingest(nodescan.Report{Node: "n2", Profiling: &nodescan.ProfilingCoverage{
+		State: "kernel_too_old",
+	}}, fakeResolver{})
+
+	if got := s.ProfileCoverage(); got.Windows != 9 {
+		t.Errorf("windows = %d, want 9: a node's report replaces its last, never adds to it", got.Windows)
+	}
+	s.RetainNodes([]string{"n1"})
+	got := s.ProfileCoverage()
+	if got.Nodes != 1 || got.States["kernel_too_old"] != 0 {
+		t.Errorf("after the node left: nodes = %d, states = %v", got.Nodes, got.States)
+	}
+}

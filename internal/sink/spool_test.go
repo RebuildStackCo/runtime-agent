@@ -142,6 +142,17 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		Nodes: 4, ProcessesScanned: 1840, GoFound: 96,
 		FilteredScope: 1204, FilteredInfra: 512, Unreadable: 28,
 	}
+	// A fleet where the profiler is not the same everywhere: three nodes
+	// capture, one refused the gate. Without `states` the four look alike from
+	// outside (ADR 0060 §2).
+	ebpf := inventory.ProfileCoverage{
+		Nodes: 4, States: map[string]int{"supported": 3, "btf_absent": 1},
+		Windows: 180, WindowsNoScope: 2, WindowsNoTargets: 11, WindowsNoSamples: 7,
+		ProfilesShipped: 154, ProfilesInvalid: 6, ProfilesUnshipped: 0,
+		SamplesOutOfScope: 41,
+		ThirdPartyDropped: 9214, UnsymbolizedDropped: 133, SamplesFiltered: 2760,
+		ProfilesReceived: 154, ProfilesUnjoined: 3,
+	}
 	// One target of each answer, so the golden shows that "no profiles for this
 	// workload" has three distinguishable causes (ADR 0057 §5).
 	probe := pprofprobe.Coverage{Confirmed: 6, Absent: 11, Unreachable: 2}
@@ -149,7 +160,7 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	// will otherwise mistake for a broken agent (ADR 0058 §3).
 	pull := pprofpull.Coverage{Shipped: 4, Refused: 1, Unreachable: 0, Invalid: 1}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
-		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan, &probe, &pull); err != nil {
+		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan, &ebpf, &probe, &pull); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -1784,7 +1795,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]collector.SourceHealth{{Name: "services", Synced: true}},
 		collector.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		collector.PlacementDrops{}, nil, nil, nil, nil)
+		collector.PlacementDrops{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

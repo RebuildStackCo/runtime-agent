@@ -48,6 +48,11 @@ const listeningPortsSpoolPath = spoolDir + "/listening-ports.json"
 
 const coverageSpoolPath = spoolDir + "/collection-coverage.json"
 
+// nodeProfilingDisabled is the state a node reports when the eBPF master switch
+// is off — restated here so the payload's vocabulary is checked against a
+// literal, not against the constant that produced it (ADR 0060 §2).
+const nodeProfilingDisabled = "disabled"
+
 // buildSpoolPath mirrors the sink's filename rule for a build payload: one file
 // per image digest, with the digest's colon replaced so the name is filesystem-
 // and tooling-safe (internal/sink.digestFileToken).
@@ -299,6 +304,10 @@ func checkCoverageReported(ctx context.Context, t *testing.T, config *rest.Confi
 			Absent      int `json:"absent"`
 			Unreachable int `json:"unreachable"`
 		} `json:"pprof"`
+		EBPF struct {
+			Nodes  int            `json:"nodes"`
+			States map[string]int `json:"states"`
+		} `json:"ebpf"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("coverage payload not valid JSON: %v", err)
@@ -331,6 +340,12 @@ func checkCoverageReported(ctx context.Context, t *testing.T, config *rest.Confi
 		payload.Scan.GoFound, payload.Scan.FilteredScope, payload.Agent.UsageSignals)
 	t.Logf("pprof endpoints: %d confirmed, %d absent, %d unreachable",
 		payload.Pprof.Confirmed, payload.Pprof.Absent, payload.Pprof.Unreachable)
+	// This profile runs the node role with the profiler off, and that has to be
+	// legible as a choice rather than as a fleet that captured nothing (ADR 0060).
+	if payload.EBPF.Nodes == 0 || payload.EBPF.States[nodeProfilingDisabled] == 0 {
+		t.Errorf("ebpf block = %d node(s) %v; want every node reporting %q",
+			payload.EBPF.Nodes, payload.EBPF.States, nodeProfilingDisabled)
+	}
 }
 
 // checkEndpointConfirmed asserts that the controller really opened a connection
