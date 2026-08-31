@@ -642,31 +642,10 @@ func (s *Store) PprofBuilds() map[string][]string {
 	out := make(map[string][]string)
 	for digest, b := range s.builds {
 		if b.HasPprof {
-			out[digest] = ownModules(b)
+			out[digest] = nodescan.OwnModules(b.MainModule, b.Modules)
 		}
 	}
 	return out
-}
-
-// ownModules is the code a build is built from rather than the code it consumes:
-// the main module, and every dependency a `replace` directive redirected.
-//
-// The second is not a guess. A module you `replace` is one you build from source
-// — the shape of every Go monorepo — while a module you merely require arrives
-// as a published version. The replacement's own path is not read and is not
-// needed: what is kept is the required path, which is what appears in a frame
-// (ADR 0019, ADR 0048 §3).
-func ownModules(b BuildFacts) []string {
-	own := make([]string, 0, 1+len(b.Modules))
-	if b.MainModule != "" {
-		own = append(own, b.MainModule)
-	}
-	for _, m := range b.Modules {
-		if m.Replaced && m.Path != "" {
-			own = append(own, m.Path)
-		}
-	}
-	return own
 }
 
 // ScanCoverage is what the node scanners did, summed over the nodes that

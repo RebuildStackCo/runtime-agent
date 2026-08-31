@@ -307,13 +307,13 @@ func execSpoolReader(ctx context.Context, t *testing.T, config *rest.Config, cs 
 }
 
 // captureValues is the whole of what this test configures, and every line is a
-// value a customer could set.
+// value a customer could set. Scope comes from the collection filter and
+// nothing else (ADR 0025).
 //
-// Scope comes from the collection filter and nothing else (ADR 0025). The
-// agent's own pods share the namespace and are ranked alongside the sample;
-// their frames do not survive the symbol allow-list, so their profiles fail
-// validation and are never shipped — the filters working, not a second knob.
-// The allow-list is exactly the sample's own module.
+// **The symbol allow-list is deliberately absent.** It used to name the
+// sample's own module, configuring the test around the defect ADR 0059 closes;
+// with nothing set, a surviving sample frame can only mean the node read the
+// module off the binary.
 func captureValues(ns string) map[string]any {
 	return map[string]any{
 		"filters": map[string]any{
@@ -321,7 +321,6 @@ func captureValues(ns string) map[string]any {
 		},
 		"profiling": map[string]any{
 			"topN":                   5,
-			"allowedModulePrefixes":  []any{sampleModulePath},
 			"thirdPartySymbols":      "drop",
 			"captureDurationSeconds": 30,
 			"intervalSeconds":        60,

@@ -61,21 +61,9 @@ be half-enabled.
 {{/*
 Validation the JSON schema cannot express, called from every template that
 renders a workload so it fires whatever is being rendered.
-
-The allow-list rule is not defensiveness. The sample shipped in this repository
-before the chart existed enabled the profiler with `allowedModulePrefixes: []`,
-which admits nothing: profiling ran, filtered everything out, and produced no
-profile ever — the same shape of trap ADR 0025 found in `eligibleNamespaces`,
-where a knob read as deny-by-default and was inert. An install that cannot
-produce its own output should not start.
 */}}
 {{- define "runtime-agent.validate" -}}
 {{- if not (has .Values.profile (list "metrics-only" "inventory" "ebpf")) -}}
 {{- fail (printf "unknown profile %q: expected metrics-only, inventory or ebpf" .Values.profile) -}}
-{{- end -}}
-{{- if eq .Values.profile "ebpf" -}}
-{{- if not .Values.profiling.allowedModulePrefixes -}}
-{{- fail "profile \"ebpf\" requires profiling.allowedModulePrefixes to name at least one Go module prefix. The allow-list admits your own domain-bearing modules; without it a profile keeps your main package and the standard library and drops your entire service layer, which is a worse profile with no warning attached (ADR 0011 §4, ADR 0041)." -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}

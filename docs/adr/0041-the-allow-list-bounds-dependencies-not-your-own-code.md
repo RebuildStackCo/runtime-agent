@@ -4,6 +4,8 @@ Date: 2026-08-26
 
 Status: Accepted
 
+Amended by: 0059
+
 Amends: 0011 §4, 0039 §5
 
 Cuts the compiler-recorded source path down to a base name before it enters the

@@ -448,7 +448,7 @@ distinction is the whole security argument, and it was previously stated wrongly
 
 | Bound | Enforced from | Stops a buggy controller | Stops a hostile one |
 |---|---|---|---|
-| Symbol allow-list — which module prefixes may leave in a frame | the node's own ConfigMap | yes | **yes, with the exemption named below** |
+| Symbol allow-list — which module prefixes may leave in a frame | the node's own ConfigMap **and the profiled binary** | yes | **yes, with the exemption named below** |
 | Overhead ceiling, capture duration, interval | the node's own ConfigMap | yes | **yes** |
 | Profile validation (parses, `cpu`/`nanoseconds`, a service function present) | the node's code | yes | **yes** |
 | The container exists on this node | the node's `/proc` | yes | **yes** |
@@ -463,8 +463,10 @@ of a controller-supplied label can constrain the controller. Giving the node a
 namespace list to check against would look like a safeguard and be none.
 
 The top five are genuinely unforgeable, and the symbol allow-list is the
-load-bearing one: it is the reason a stack trace is defensible to ship at all,
-and it is enforced on the node from a file your Helm release owns.
+load-bearing one: it is the reason a stack trace is defensible to ship at all.
+It is enforced on the node from a file your Helm release owns, plus the module
+paths the profiled binary states it was built from — which the node reads
+itself, so neither half of it can be widened by anything the controller says.
 
 **What the allow-list bounds is dependencies, not your own code** (ADR 0041).
 Your `main` package is kept without consulting it, and so is any module whose
@@ -496,7 +498,7 @@ classes with different sensitivity and different default policies:
 | Resource metrics | CPU usage, working set, throttling ratios, requests/limits, node allocatable | Low (numbers) | Collected for everything visible, minus the infrastructure deny-list and your filters |
 | Workload metadata | Workload names, namespaces, image digests, Go version, module paths and versions, node zone and instance type | Medium | Same as metrics |
 | Object history (journal) | Pod names, container names, restart counts, termination reasons and exit codes | Medium | Same as metrics. This is the one class that names individual **pods** — see below |
-| Profiles (stack traces) | Function names, call graphs | **High** — function names reveal the structure of your code | **Explicit allow-list only.** A stack trace never leaves the cluster unless its module path is on the allow-list you configured |
+| Profiles (stack traces) | Function names, call graphs | **High** — function names reveal the structure of your code | **Allow-list only.** A frame leaves only if its module is one the build states it was compiled from, or one you added to the list. Anything else becomes `[filtered]` |
 
 ### Every payload the agent produces
 
@@ -682,11 +684,14 @@ and nothing else; the underlying error stays in the agent's log.
 - The allow-list therefore bounds **dependencies**, not your own identifiers
   (ADR 0041). What you exclude from collection you exclude with namespace filters
   and opt-out annotations; profiling scope follows collection scope (ADR 0025).
-- **Your own code is recognized without being configured, for pulled profiles.**
-  A build states its main module and every dependency a `replace` redirects, and
-  the agent reads both from the binary — so a default install keeps your service
-  layer rather than redacting it as third-party. The configured list adds to
-  that, for shared internal modules a build merely requires (ADR 0058 §5).
+- **Your own code is recognized without being configured**, on both capture
+  paths. A build states its main module and every dependency a `replace`
+  redirects, and the agent reads both from the binary — so a default install
+  keeps your service layer rather than redacting it as third-party. The
+  configured list adds to that, for shared internal modules a build merely
+  requires ([ADR 0059](adr/0059-the-node-knows-whose-code-it-profiles.md)). An
+  entry that cannot be a module path — a bare host, which would admit every
+  module on it — is refused rather than used.
 - A pulled profile carries fields a captured one never had, and they go with the
   redacted frames: the **mappings**, which name the executable's path on disk and
   its build ID; the **sample labels**, which are strings your service attached and

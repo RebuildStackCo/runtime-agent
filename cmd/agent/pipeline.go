@@ -40,7 +40,7 @@ func samplesPerSecond(overheadCeilingPercent int) int {
 // cluster (ADR 0015). Both must admit a container, and scope fails closed.
 func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.NodeProfiling,
 	procRoot, node string, targets *targetsClient, scoper *scopeClient,
-	shipper *profileShipper, m *ebpfGateMetrics) {
+	shipper *profileShipper, m *ebpfGateMetrics, modules *nodeprofile.ModuleIndex) {
 
 	sps := samplesPerSecond(p.OverheadCeilingPercent)
 	session, err := nodeprofile.Start(ctx, logger, nodeprofile.Config{SamplesPerSecond: sps})
@@ -57,7 +57,21 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 	if p.ThirdPartySymbols == config.ThirdPartySymbolsKeep {
 		thirdParty = nodeprofile.ThirdPartyKeep
 	}
-	filter := nodeprofile.NewSymbolFilter(p.AllowedModulePrefixes, thirdParty)
+	// One filter per container, not one per node. The configured prefixes are
+	// what the operator added; the modules a build states it was compiled from
+	// are what the scanner read from the binary beside this profiler, and
+	// without them a service under its own domain-bearing module is redacted as
+	// third-party — the whole service layer, on a default install (ADR 0059).
+	filterFor := func(containerID string) *nodeprofile.SymbolFilter {
+		own := modules.Modules(containerID)
+		if len(own) == 0 {
+			return nodeprofile.NewSymbolFilter(p.AllowedModulePrefixes, thirdParty)
+		}
+		allowed := make([]string, 0, len(p.AllowedModulePrefixes)+len(own))
+		allowed = append(allowed, p.AllowedModulePrefixes...)
+		allowed = append(allowed, own...)
+		return nodeprofile.NewSymbolFilter(allowed, thirdParty)
+	}
 
 	window := time.Duration(p.CaptureDurationSeconds) * time.Second // ship cadence / window length
 	refresh := time.Duration(p.IntervalSeconds) * time.Second       // targets-refresh cadence
@@ -96,7 +110,7 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 			} else {
 				scope = nodescan.NewScope(uids)
 			}
-			processWindow(ctx, logger, filter, sps, procRoot, node,
+			processWindow(ctx, logger, filterFor, sps, procRoot, node,
 				start, end, session.Drain(), targetSet, scope, shipper)
 			start = time.Now()
 		}
@@ -110,7 +124,8 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 // which pods the filters admit at all. A container in the first and not the
 // second is one whose executable the scanner may not even open (ADR 0015). How
 // many a window may ship is the controller's TopN alone (ADR 0025).
-func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile.SymbolFilter,
+func processWindow(ctx context.Context, logger *slog.Logger,
+	filterFor func(containerID string) *nodeprofile.SymbolFilter,
 	sps int, procRoot, node string, start, end time.Time, samples []nodeprofile.Sample,
 	targetSet map[string]struct{}, scope nodescan.Scope, shipper *profileShipper) {
 
@@ -170,7 +185,7 @@ func processWindow(ctx context.Context, logger *slog.Logger, filter *nodeprofile
 	for _, cid := range cids {
 		g := groups[cid]
 
-		filtered, _ := filter.Filter(g.samples)
+		filtered, _ := filterFor(cid).Filter(g.samples)
 		pprof, err := nodeprofile.Serialize(filtered, sps)
 		if err != nil {
 			logger.Error("serializing profile failed", "error", err)

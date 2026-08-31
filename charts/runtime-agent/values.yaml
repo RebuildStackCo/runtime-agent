@@ -98,23 +98,17 @@ profiling:
     # that rests on it.
     pull: true
 
-  # The Go module-path prefixes of your own code whose stack frames may leave.
+  # Extra Go module-path prefixes of your own code whose stack frames may leave.
   # Everything else is redacted before anything is sent.
   #
-  # This adds to what the agent can already tell is yours: a pulled profile is
-  # also reduced against the modules its build states it was compiled from — its
-  # main module and anything a `replace` redirects — which the binary carries and
-  # no list can be wrong about (ADR 0058 §5). Set this for shared internal
-  # modules a build merely requires.
+  # You usually need none. Every profile is reduced against the modules its own
+  # build states it was compiled from — the main module, and anything a `replace`
+  # redirects — read from the binary, where no list can be wrong about it. Set
+  # this for a shared internal module a build merely requires (ADR 0059).
   #
-  # This is the load-bearing control of the whole profiling path (ADR 0011 §4).
-  # It is enforced on the node, from the node's own file, and no reply from the
-  # controller can widen it — which is why it lives here rather than arriving
-  # over the wire.
-  #
-  # Required by profile `ebpf`, and required to be non-empty: an empty list
-  # admits nothing, so profiling would run and produce nothing, forever and
-  # silently. The chart refuses to render that rather than install it.
+  # It is enforced from the agent's own file, on both paths, and no reply from
+  # the controller can widen it — which is why it lives here rather than
+  # arriving over the wire (ADR 0011 §4).
   allowedModulePrefixes: []
   # "drop" (default) or "keep": whether third-party dependency frames survive
   # the filter. Empty selects the agent's default.

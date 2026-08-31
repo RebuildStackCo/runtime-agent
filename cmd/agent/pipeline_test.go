@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/pprof/profile"
+
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
@@ -74,7 +76,7 @@ func TestProcessWindowShipsOnlyTargetedContainers(t *testing.T) {
 	targetSet := map[string]struct{}{cid1: {}}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	processWindow(context.Background(), logger, filter, 20, procRoot, "node",
+	processWindow(context.Background(), logger, staticFilter(filter), 20, procRoot, "node",
 		time.Unix(100, 0), time.Unix(160, 0), samples, targetSet,
 		nodescan.NewScope([]string{podUID}), shipper)
 
@@ -91,13 +93,95 @@ func TestProcessWindowShipsOnlyTargetedContainers(t *testing.T) {
 	}
 }
 
+// The defect ADR 0059 closes: with the configured allow-list empty — the chart's
+// default — a service under its own domain-bearing module was redacted as
+// third-party, and everything below `main` disappeared. The binary states its
+// module, so the filter admits it without anything being configured.
+func TestOwnCodeSurvivesWithNothingConfigured(t *testing.T) {
+	const (
+		podUID  = "1234abcd-12ab-34cd-56ef-1234567890ab"
+		ownFunc = "github.com/acme/web/svc.Handle"
+		depFunc = "github.com/vendor/lib.Do"
+	)
+	cid := strings.Repeat("a", 64)
+	procRoot := t.TempDir()
+	writeCgroup(t, procRoot, 100, podUID, cid)
+
+	var mu sync.Mutex
+	var shipped []nodeintake.ProfileReport
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rep nodeintake.ProfileReport
+		_ = json.NewDecoder(r.Body).Decode(&rep)
+		mu.Lock()
+		shipped = append(shipped, rep)
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	samples := []nodeprofile.Sample{{PID: 100, Value: 5, Frames: []nodeprofile.Frame{
+		{Function: ownFunc, Kind: "go"},
+		{Function: depFunc, Kind: "go"},
+	}}}
+
+	index := &nodeprofile.ModuleIndex{}
+	index.Publish(map[string][]string{cid: {"github.com/acme/web"}})
+	// No configured prefixes at all: whatever survives, survives because the
+	// scanner read the module off the binary.
+	filterFor := func(containerID string) *nodeprofile.SymbolFilter {
+		return nodeprofile.NewSymbolFilter(index.Modules(containerID), nodeprofile.ThirdPartyDrop)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	processWindow(context.Background(), logger, filterFor, 20, procRoot, "node",
+		time.Unix(100, 0), time.Unix(160, 0), samples, map[string]struct{}{cid: {}},
+		nodescan.NewScope([]string{podUID}), newProfileShipper(srv.URL, writeToken(t, "tok")))
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(shipped) != 1 {
+		t.Fatalf("shipped %d profiles, want 1 — the workload's own frame was redacted", len(shipped))
+	}
+	p, err := profile.ParseData(shipped[0].Pprof)
+	if err != nil {
+		t.Fatalf("shipped profile does not parse: %v", err)
+	}
+	names := map[string]bool{}
+	for _, fn := range p.Function {
+		names[fn.Name] = true
+	}
+	if !names[ownFunc] {
+		t.Error("the workload's own frame did not survive; the build states its module")
+	}
+	if names[depFunc] {
+		t.Error("a dependency frame survived under the drop policy")
+	}
+}
+
+// And without the index the same window ships nothing, which is what the trap
+// looked like: a profile of `main` and the runtime, rejected as unshippable.
+func TestWithoutTheIndexTheSameWindowShipsNothing(t *testing.T) {
+	const podUID = "1234abcd-12ab-34cd-56ef-1234567890ab"
+	cid := strings.Repeat("a", 64)
+	procRoot := t.TempDir()
+	writeCgroup(t, procRoot, 100, podUID, cid)
+
+	samples := []nodeprofile.Sample{{PID: 100, Value: 5, Frames: []nodeprofile.Frame{
+		{Function: "github.com/acme/web/svc.Handle", Kind: "go"},
+	}}}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	processWindow(context.Background(), logger, staticFilter(nil), 20, procRoot, "node",
+		time.Unix(100, 0), time.Unix(160, 0), samples, map[string]struct{}{cid: {}},
+		nodescan.NewScope([]string{podUID}), nil)
+}
+
 func TestProcessWindowNoTargetsShipsNothing(t *testing.T) {
 	procRoot := t.TempDir()
 	writeCgroup(t, procRoot, 100, "1234abcd-12ab-34cd-56ef-1234567890ab", strings.Repeat("a", 64))
 	samples := []nodeprofile.Sample{{PID: 100, Value: 1, Frames: []nodeprofile.Frame{{Function: "main.hot", Kind: "go"}}}}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// empty target set -> nothing shipped, no shipper touched
-	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
+	processWindow(context.Background(), logger, staticFilter(nil),
 		20, procRoot, "node", time.Unix(1, 0), time.Unix(2, 0), samples, map[string]struct{}{},
 		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}), nil)
 }
@@ -128,7 +212,7 @@ func TestProcessWindowShipsNothingOutsideTheScanScope(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Targeted, but the scope admits a different pod.
-	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
+	processWindow(context.Background(), logger, staticFilter(nil),
 		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
 		map[string]struct{}{cid: {}},
 		nodescan.NewScope([]string{"1234abcd-12ab-34cd-56ef-1234567890ab"}),
@@ -160,7 +244,7 @@ func TestProcessWindowFailsClosedWithoutAScope(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	processWindow(context.Background(), logger, nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop),
+	processWindow(context.Background(), logger, staticFilter(nil),
 		20, procRoot, "node", time.Unix(100, 0), time.Unix(160, 0), samples,
 		map[string]struct{}{cid: {}}, nodescan.DenyAll(),
 		newProfileShipper(srv.URL, writeToken(t, "tok")))
@@ -168,4 +252,13 @@ func TestProcessWindowFailsClosedWithoutAScope(t *testing.T) {
 	if shipped {
 		t.Error("shipped a profile with no scan scope; profiling must fail closed")
 	}
+}
+
+// staticFilter is the pre-ADR-0059 shape: one filter for every container. Tests
+// that are not about which code is whose use it.
+func staticFilter(f *nodeprofile.SymbolFilter) func(string) *nodeprofile.SymbolFilter {
+	if f == nil {
+		f = nodeprofile.NewSymbolFilter(nil, nodeprofile.ThirdPartyDrop)
+	}
+	return func(string) *nodeprofile.SymbolFilter { return f }
 }

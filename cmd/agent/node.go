@@ -10,6 +10,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
+	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -86,6 +87,10 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	// degrades to scanner-only, never an escalation to privileged. ebpfMetrics
 	// is the in-process counter, surfaced in the node's own log.
 	ebpfMetrics := newEBPFGateMetrics()
+	// What the scanner learns about whose code each container runs, for the
+	// profiler beside it. Published on every pass and read per window; the two
+	// are different goroutines in this one process (ADR 0059 §1).
+	moduleIndex := &nodeprofile.ModuleIndex{}
 	if *enableEBPF {
 		logger.Info("ebpf profiling config",
 			"allowed_module_prefixes", len(profiling.AllowedModulePrefixes),
@@ -103,7 +108,8 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 			// executable the scanner is not allowed to open was an asymmetry,
 			// and stack traces are the more sensitive of the two (ADR 0025).
 			go runProfilingPipeline(ctx, logger, profiling, *procRoot, node,
-				targetsCl, newScopeClient(*scopeEndpoint, *tokenPath), profileSh, ebpfMetrics)
+				targetsCl, newScopeClient(*scopeEndpoint, *tokenPath), profileSh,
+				ebpfMetrics, moduleIndex)
 		}
 	}
 
@@ -150,6 +156,19 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 				"container_id", b.ContainerID,
 			)
 		}
+		// The pass's own answer to whose code each container runs, replacing the
+		// last one wholesale so a container no live process belongs to leaves
+		// with it (ADR 0059 §1).
+		byContainer := map[string][]string{}
+		for _, b := range res.Binaries {
+			if b.ContainerID == "" {
+				continue
+			}
+			byContainer[b.ContainerID] = append(byContainer[b.ContainerID],
+				nodescan.OwnModules(b.MainModule, b.Dependencies)...)
+		}
+		moduleIndex.Publish(byContainer)
+
 		// Aggregate-only line for everything not kept: no identities of
 		// filtered-out or unreadable binaries ever appear (CLAUDE.md
 		// invariant 6, docs/security.md §8).
@@ -160,6 +179,7 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 			"filtered_scope", res.Counters.FilteredScope,
 			"filtered_infra", res.Counters.FilteredInfra,
 			"unreadable", res.Counters.Unreadable,
+			"containers_with_known_modules", moduleIndex.Size(),
 		)
 
 		// Ship to the controller when configured. Best-effort: a delivery
