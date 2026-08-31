@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // BinaryInfo is what the scanner extracts about one kept Go process. It is the
@@ -61,6 +62,10 @@ type BinaryInfo struct {
 	CPUsAllowed  int   `json:"cpus_allowed,omitempty"`
 	// Footprint is what the process holds now, beside the mark above (ADR 0061).
 	Footprint Footprint `json:"footprint,omitzero"`
+	// Counters is what changed since this node's previous pass saw this same
+	// process, with the interval it covers. Absent on the first pass that sees
+	// a process, and whenever there is nothing to subtract from (ADR 0062).
+	Counters *CounterDelta `json:"counters,omitempty"`
 	// PodUID and ContainerID come from the process cgroup; either may be empty
 	// for a host process outside the kubepods hierarchy.
 	PodUID      string `json:"pod_uid,omitempty"`
@@ -145,12 +150,18 @@ type Scanner struct {
 	procRoot string
 	filter   *ModuleFilter
 	marks    *markCache
+	counters *counterCache
 }
 
 // NewScanner builds a scanner rooted at procRoot (normally "/proc"; a fixture
 // tree in tests) using filter to classify module paths.
 func NewScanner(procRoot string, filter *ModuleFilter) *Scanner {
-	return &Scanner{procRoot: procRoot, filter: filter, marks: newMarkCache()}
+	return &Scanner{
+		procRoot: procRoot,
+		filter:   filter,
+		marks:    newMarkCache(),
+		counters: newCounterCache(),
+	}
 }
 
 // Scan performs one full pass over the process tree, restricted to the pods
@@ -167,15 +178,20 @@ func (s *Scanner) Scan(scope Scope) (Result, error) {
 	}
 	var res Result
 	s.marks.startPass()
+	s.counters.startPass()
+	// One instant for the whole pass, so every delta in it is measured against
+	// the same clock rather than against when its process happened to be read.
+	now := time.Now()
 	for _, entry := range entries {
 		pid, ok := pidFromName(entry.Name())
 		if !ok {
 			continue
 		}
 		res.Counters.ProcessesScanned++
-		s.scanPID(pid, scope, &res)
+		s.scanPID(pid, scope, now, &res)
 	}
 	s.marks.endPass()
+	s.counters.endPass()
 	return res, nil
 }
 
@@ -186,7 +202,7 @@ func (s *Scanner) Scan(scope Scope) (Result, error) {
 // executable left unopened and its module path never extracted: nothing about it
 // is collected, rather than collected and dropped (CLAUDE.md invariant 4). Only
 // the aggregate count moves.
-func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
+func (s *Scanner) scanPID(pid int, scope Scope, now time.Time, res *Result) {
 	binding := s.binding(pid)
 	if !scope.Admits(binding.PodUID) {
 		res.Counters.FilteredScope++
@@ -222,6 +238,7 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 	status := ReadProcessStatus(s.procRoot, pid)
 	memory := ReadProcessMemory(s.procRoot, pid)
 	files := ReadProcessFiles(s.procRoot, pid)
+	counters := s.counters.delta(s.procRoot, pid, now, status)
 	hasPprof := s.marks.lookup(exePath)
 	ports := ReadListeningPorts(s.procRoot, pid)
 
@@ -247,6 +264,7 @@ func (s *Scanner) scanPID(pid int, scope Scope, res *Result) {
 			OpenFiles:         files.Open,
 			OpenFilesLimit:    files.Limit,
 		},
+		Counters:    counters,
 		PodUID:      binding.PodUID,
 		ContainerID: binding.ContainerID,
 	})

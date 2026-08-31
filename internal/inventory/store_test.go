@@ -892,3 +892,110 @@ func TestAnUnreadFootprintContributesNothing(t *testing.T) {
 		t.Errorf("processes = %d, want 1: the process that measured nothing stands behind nothing", p.Processes)
 	}
 }
+
+// withCounters attaches one process's delta to a binary.
+func withCounters(b nodescan.BinaryInfo, d nodescan.CounterDelta) nodescan.BinaryInfo {
+	b.Counters = &d
+	return b
+}
+
+// Deltas sum across processes and nodes, and the interval sums with them: what
+// leaves is a numerator and its denominator, never the division (ADR 0062 §3).
+func TestCountersSumWithTheIntervalTheyCover(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withCounters(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.CounterDelta{
+			ObservedNanos: 60e9, OnCPUNanos: 9e9, RunDelayNanos: 4e9,
+			CPUUserNanos: 7e9, CPUSystemNanos: 2e9, NonvoluntarySwitches: 3000, ReadBytes: 4096,
+		}),
+	}}, webResolver())
+	s.Ingest(nodescan.Report{Node: "node-2", Binaries: []nodescan.BinaryInfo{
+		withCounters(binary("pod-web-2", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.CounterDelta{
+			ObservedNanos: 30e9, OnCPUNanos: 1e9, RunDelayNanos: 500e6,
+			CPUUserNanos: 800e6, CPUSystemNanos: 200e6, NonvoluntarySwitches: 122, ReadBytes: 0,
+		}),
+	}}, webResolver())
+
+	recs := s.CounterSnapshot()
+	if len(recs) != 1 {
+		t.Fatalf("counters = %+v, want one record", recs)
+	}
+	r := recs[0]
+	if r.Processes != 2 || r.ObservedNanos != 90e9 {
+		t.Errorf("processes/observed = %d/%d, want 2 over 90s of process time", r.Processes, r.ObservedNanos)
+	}
+	if r.OnCPUNanos != 10e9 || r.RunDelayNanos != 4.5e9 {
+		t.Errorf("on cpu/run delay = %d/%d, want the sums", r.OnCPUNanos, r.RunDelayNanos)
+	}
+	if r.NonvoluntarySwitches != 3122 || r.ReadBytes != 4096 {
+		t.Errorf("switches/read = %d/%d", r.NonvoluntarySwitches, r.ReadBytes)
+	}
+	if r.ImageDigest != "sha256:web" {
+		t.Errorf("image digest = %q; an interval belongs to the build that spent it", r.ImageDigest)
+	}
+}
+
+// A binary with no delta — the first pass that saw its process — contributes
+// nothing and is not counted, so `processes` is the number the sums rest on
+// rather than the number that were running.
+func TestAProcessWithNoDeltaIsNotCounted(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withCounters(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.CounterDelta{
+			ObservedNanos: 60e9, OnCPUNanos: 9e9,
+		}),
+		binary("pod-web-2", "cid-web", "go1.26.1", "github.com/acme/web", false),
+	}}, webResolver())
+
+	r := s.CounterSnapshot()[0]
+	if r.Processes != 1 || r.ObservedNanos != 60e9 {
+		t.Errorf("processes/observed = %d/%d, want only the process that had a delta",
+			r.Processes, r.ObservedNanos)
+	}
+}
+
+// A node's next report describes a new interval. Adding it to the last would
+// turn a rate into a total over a window nobody chose, so the contribution is
+// replaced wholesale — the discipline the peaks beside it use.
+func TestANodesNextReportReplacesItsInterval(t *testing.T) {
+	s := NewStore(testSince)
+	for range 3 {
+		s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+			withCounters(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.CounterDelta{
+				ObservedNanos: 60e9, OnCPUNanos: 9e9,
+			}),
+		}}, webResolver())
+	}
+	r := s.CounterSnapshot()[0]
+	if r.ObservedNanos != 60e9 || r.OnCPUNanos != 9e9 {
+		t.Errorf("after three reports: observed = %d, on cpu = %d; the intervals accumulated",
+			r.ObservedNanos, r.OnCPUNanos)
+	}
+}
+
+// A departed node takes its interval with it, and so does an evicted workload.
+func TestCountersLeaveWithTheirNodeAndTheirWorkload(t *testing.T) {
+	s := NewStore(testSince)
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withCounters(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.CounterDelta{
+			ObservedNanos: 60e9, OnCPUNanos: 9e9,
+		}),
+	}}, webResolver())
+
+	s.RetainNodes([]string{"node-2"})
+	if recs := s.CounterSnapshot(); len(recs) != 0 {
+		t.Errorf("counters = %+v after the node left, want none", recs)
+	}
+
+	s.Ingest(nodescan.Report{Node: "node-1", Binaries: []nodescan.BinaryInfo{
+		withCounters(binary("pod-web-1", "cid-web", "go1.26.1", "github.com/acme/web", false), nodescan.CounterDelta{
+			ObservedNanos: 60e9, OnCPUNanos: 9e9,
+		}),
+	}}, webResolver())
+	if ev := s.Retain(nil); ev.Counters != 1 {
+		t.Errorf("evicted counters = %d, want 1", ev.Counters)
+	}
+	if recs := s.CounterSnapshot(); len(recs) != 0 {
+		t.Errorf("counters = %+v after the workload left, want none", recs)
+	}
+}

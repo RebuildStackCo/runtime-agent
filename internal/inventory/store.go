@@ -102,6 +102,56 @@ type nodePeaks struct {
 	filesLimitMin    int64
 }
 
+// CounterKey extends Key with the build, for the reason PeakKey and PortKey do:
+// what a process spent belongs to the code that spent it, and a rollout must not
+// inherit the previous build's interval.
+type CounterKey struct {
+	Key
+	ImageDigest string `json:"image_digest,omitempty"`
+}
+
+// CounterRecord is what the processes of one workload container, of one build,
+// did over the most recent interval each reporting node measured — summed over
+// every process and every node.
+//
+// It is not a wall-clock window. ObservedNanos is the sum of the intervals the
+// deltas cover, so it is process-time and grows with the number of processes:
+// it is the denominator for a rate, never a duration (ADR 0062 §3).
+type CounterRecord struct {
+	CounterKey
+	// Processes is how many processes contributed a delta. A process seen for
+	// the first time contributes none, so this is lower than the peaks record's
+	// count for one interval after a pod starts.
+	Processes int `json:"processes"`
+	// ObservedNanos is the summed wall-clock time those deltas cover.
+	ObservedNanos int64 `json:"observed_nanos"`
+	// OnCPUNanos against RunDelayNanos is CPU starvation stated as the two
+	// numbers it is made of, rather than as a ratio computed here: a payload
+	// that ships the division cannot be re-divided by a consumer asking a
+	// different question (ADR 0004's shape).
+	OnCPUNanos    int64 `json:"on_cpu_nanos"`
+	RunDelayNanos int64 `json:"run_delay_nanos"`
+	// The same running time split between the program and the kernel acting
+	// for it.
+	CPUUserNanos   int64 `json:"cpu_user_nanos"`
+	CPUSystemNanos int64 `json:"cpu_system_nanos"`
+	// MajorFaults reached storage; the two switch counts are the process
+	// yielding and the scheduler taking the CPU away.
+	MajorFaults          int64 `json:"major_faults"`
+	VoluntarySwitches    int64 `json:"voluntary_switches"`
+	NonvoluntarySwitches int64 `json:"nonvoluntary_switches"`
+	// Bytes that actually moved to and from block storage.
+	ReadBytes  int64 `json:"read_bytes"`
+	WriteBytes int64 `json:"write_bytes"`
+}
+
+// nodeCounters is one node's contribution to a CounterRecord: the sum of the
+// deltas its latest report carried for that container.
+type nodeCounters struct {
+	processes int
+	delta     nodescan.CounterDelta
+}
+
 // PortKey extends Key with the build, for the reason PeakKey does: a rollout
 // that moves an endpoint must not inherit the port the previous build served.
 type PortKey struct {
@@ -199,6 +249,13 @@ type Store struct {
 	// survives only while some node still serves it (ADR 0056 §3).
 	ports map[PortKey]map[string][]nodescan.ListeningPort
 
+	// counters holds, per (record key, build) and per reporting node, the
+	// deltas that node's latest report carried. Node-keyed and replaced
+	// wholesale for the reason peaks are: a node's next report describes a new
+	// interval, and adding it to the last would turn a rate into a total over
+	// a window nobody chose (ADR 0062 §3).
+	counters map[CounterKey]map[string]nodeCounters
+
 	// scans holds the latest scan counters each reporting node sent. Latest
 	// rather than summed: they describe one pass over a node's process table,
 	// and adding successive passes would count the same long-lived process once
@@ -242,6 +299,7 @@ func NewStore(since time.Time) *Store {
 		written:       make(map[string]struct{}),
 		peaks:         make(map[PeakKey]map[string]nodePeaks),
 		ports:         make(map[PortKey]map[string][]nodescan.ListeningPort),
+		counters:      make(map[CounterKey]map[string]nodeCounters),
 		nodesReported: make(map[string]struct{}),
 		scans:         make(map[string]nodescan.Counters),
 		profiling:     make(map[string]nodescan.ProfilingCoverage),
@@ -268,6 +326,7 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 	}
 	seenPeaks := make(map[PeakKey]bool, len(report.Binaries))
 	seenPorts := make(map[PortKey]bool, len(report.Binaries))
+	seenCounters := make(map[CounterKey]bool, len(report.Binaries))
 	for _, b := range report.Binaries {
 		s.factsReceived++
 		res, ok := resolver.LookupContainer(types.UID(b.PodUID), b.ContainerID)
@@ -292,9 +351,11 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 		s.ingestBuild(b, res.ImageDigest)
 		s.ingestPeaks(b, key, res.ImageDigest, report.Node, seenPeaks)
 		s.ingestPorts(b, key, res.ImageDigest, report.Node, seenPorts)
+		s.ingestCounters(b, key, res.ImageDigest, report.Node, seenCounters)
 	}
 	s.forgetUnreported(report.Node, seenPeaks)
 	s.forgetUnreportedPorts(report.Node, seenPorts)
+	s.forgetUnreportedCounters(report.Node, seenCounters)
 }
 
 // ingestPeaks folds one binary's measured facts into this node's contribution
@@ -387,6 +448,59 @@ func (s *Store) ingestPorts(b nodescan.BinaryInfo, key Key, digest, node string,
 	}
 	seen[pk] = true
 	byNode[node] = nodescan.MergeListeningPorts(acc, b.ListeningPorts)
+}
+
+// ingestCounters sums one binary's delta into this node's contribution for its
+// key, as ingestPeaks folds its measured facts. A binary carrying no delta —
+// the first pass that saw it, or a PID the node could not compare against —
+// contributes nothing, not a zero, and is not counted among the processes.
+//
+// Callers hold s.mu.
+func (s *Store) ingestCounters(b nodescan.BinaryInfo, key Key, digest, node string, seen map[CounterKey]bool) {
+	if b.Counters == nil {
+		return
+	}
+	ck := CounterKey{Key: key, ImageDigest: digest}
+	byNode, ok := s.counters[ck]
+	if !ok {
+		byNode = make(map[string]nodeCounters, 1)
+		s.counters[ck] = byNode
+	}
+	var n nodeCounters
+	if seen[ck] {
+		n = byNode[node]
+	}
+	seen[ck] = true
+	n.processes++
+	d := *b.Counters
+	n.delta.ObservedNanos += d.ObservedNanos
+	n.delta.OnCPUNanos += d.OnCPUNanos
+	n.delta.RunDelayNanos += d.RunDelayNanos
+	n.delta.CPUUserNanos += d.CPUUserNanos
+	n.delta.CPUSystemNanos += d.CPUSystemNanos
+	n.delta.MajorFaults += d.MajorFaults
+	n.delta.VoluntarySwitches += d.VoluntarySwitches
+	n.delta.NonvoluntarySwitches += d.NonvoluntarySwitches
+	n.delta.ReadBytes += d.ReadBytes
+	n.delta.WriteBytes += d.WriteBytes
+	byNode[node] = n
+}
+
+// forgetUnreportedCounters drops this node's contribution to every counter key
+// its latest report did not mention, and the key itself once no node
+// contributes. Without it a rate would outlive the pod that produced it.
+//
+// Callers hold s.mu.
+func (s *Store) forgetUnreportedCounters(node string, seen map[CounterKey]bool) {
+	for ck, byNode := range s.counters {
+		if seen[ck] {
+			continue
+		}
+		delete(byNode, node)
+		if len(byNode) == 0 {
+			delete(s.counters, ck)
+		}
+	}
 }
 
 // forgetUnreportedPorts drops this node's contribution to every port key its
@@ -486,6 +600,8 @@ type Evicted struct {
 	Peaks int
 	// Ports is port records whose workload container is gone.
 	Ports int
+	// Counters is counter records whose workload container is gone.
+	Counters int
 }
 
 // Retain drops every record whose key is absent from live, and then the build
@@ -521,6 +637,12 @@ func (s *Store) Retain(live []Key) Evicted {
 		if _, ok := set[pk.Key]; !ok {
 			delete(s.ports, pk)
 			ev.Ports++
+		}
+	}
+	for ck := range s.counters {
+		if _, ok := set[ck.Key]; !ok {
+			delete(s.counters, ck)
+			ev.Counters++
 		}
 	}
 
@@ -563,8 +685,8 @@ func (s *Store) RetainNodes(live []string) {
 			delete(s.profiling, n)
 		}
 	}
-	// A departed node's peaks and ports go with it. Its pods are gone, so what
-	// it contributed stands behind nothing (ADR 0052 §3).
+	// A departed node's peaks, ports and counters go with it. Its pods are
+	// gone, so what it contributed stands behind nothing (ADR 0052 §3).
 	for pk, byNode := range s.peaks {
 		for node := range byNode {
 			if _, ok := set[node]; !ok {
@@ -583,6 +705,16 @@ func (s *Store) RetainNodes(live []string) {
 		}
 		if len(byNode) == 0 {
 			delete(s.ports, pk)
+		}
+	}
+	for ck, byNode := range s.counters {
+		for node := range byNode {
+			if _, ok := set[node]; !ok {
+				delete(byNode, node)
+			}
+		}
+		if len(byNode) == 0 {
+			delete(s.counters, ck)
 		}
 	}
 }
@@ -637,6 +769,41 @@ func (s *Store) PeakSnapshot() []PeakRecord {
 			if l := n.filesLimitMin; l > 0 && (rec.OpenFilesLimitMin == 0 || l < rec.OpenFilesLimitMin) {
 				rec.OpenFilesLimitMin = l
 			}
+		}
+		if rec.Processes == 0 {
+			continue
+		}
+		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Key != out[j].Key {
+			return lessKey(out[i].Key, out[j].Key)
+		}
+		return out[i].ImageDigest < out[j].ImageDigest
+	})
+	return out
+}
+
+// CounterSnapshot returns one record per (workload container, build) that some
+// node still reports a delta for, sorted deterministically.
+func (s *Store) CounterSnapshot() []CounterRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]CounterRecord, 0, len(s.counters))
+	for ck, byNode := range s.counters {
+		rec := CounterRecord{CounterKey: ck}
+		for _, n := range byNode {
+			rec.Processes += n.processes
+			rec.ObservedNanos += n.delta.ObservedNanos
+			rec.OnCPUNanos += n.delta.OnCPUNanos
+			rec.RunDelayNanos += n.delta.RunDelayNanos
+			rec.CPUUserNanos += n.delta.CPUUserNanos
+			rec.CPUSystemNanos += n.delta.CPUSystemNanos
+			rec.MajorFaults += n.delta.MajorFaults
+			rec.VoluntarySwitches += n.delta.VoluntarySwitches
+			rec.NonvoluntarySwitches += n.delta.NonvoluntarySwitches
+			rec.ReadBytes += n.delta.ReadBytes
+			rec.WriteBytes += n.delta.WriteBytes
 		}
 		if rec.Processes == 0 {
 			continue

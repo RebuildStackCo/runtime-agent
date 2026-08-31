@@ -638,6 +638,50 @@ func fixedPeaks() []inventory.PeakRecord {
 	}
 }
 
+// The counters fixture is the finding in one payload: `web/app` spends nearly a
+// third of its runnable time waiting for a CPU while barely using the CPU it
+// gets, and `db` is doing real disk work. Both are stated as the numbers they
+// are made of, never as a ratio (ADR 0062 §3).
+func fixedCounters() []inventory.CounterRecord {
+	return []inventory.CounterRecord{
+		{
+			CounterKey: inventory.CounterKey{
+				Key: inventory.Key{
+					Namespace: "shop", WorkloadKind: "Deployment",
+					WorkloadName: "web", Container: "app",
+				},
+				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			},
+			Processes: 2, ObservedNanos: 120 * int64(time.Second),
+			OnCPUNanos: 9 * int64(time.Second), RunDelayNanos: 4 * int64(time.Second),
+			CPUUserNanos: 7 * int64(time.Second), CPUSystemNanos: 2 * int64(time.Second),
+			MajorFaults: 0, VoluntarySwitches: 48210, NonvoluntarySwitches: 3122,
+			ReadBytes: 0, WriteBytes: 4096,
+		},
+		{
+			CounterKey: inventory.CounterKey{
+				Key: inventory.Key{
+					Namespace: "shop", WorkloadKind: "StatefulSet",
+					WorkloadName: "db", Container: "db",
+				},
+			},
+			Processes: 1, ObservedNanos: 60 * int64(time.Second),
+			OnCPUNanos: 21 * int64(time.Second), RunDelayNanos: 90 * int64(time.Millisecond),
+			CPUUserNanos: 12 * int64(time.Second), CPUSystemNanos: 9 * int64(time.Second),
+			MajorFaults: 1841, VoluntarySwitches: 9004, NonvoluntarySwitches: 61,
+			ReadBytes: 268435456, WriteBytes: 134217728,
+		},
+	}
+}
+
+func TestGoldenProcessCountersPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteProcessCounters(capturedAt, fixedCounters()); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, filepath.Join(dir, "process-counters.json"), "process-counters.golden.json")
+}
+
 func TestGoldenProcessPeaksPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
 	if err := s.WriteProcessPeaks(capturedAt, fixedPeaks()); err != nil {

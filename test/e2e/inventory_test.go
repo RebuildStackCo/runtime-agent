@@ -44,6 +44,8 @@ const nodeMetadataSpoolPath = spoolDir + "/node-metadata.json"
 
 const processPeaksSpoolPath = spoolDir + "/process-peaks.json"
 
+const processCountersSpoolPath = spoolDir + "/process-counters.json"
+
 const listeningPortsSpoolPath = spoolDir + "/listening-ports.json"
 
 const coverageSpoolPath = spoolDir + "/collection-coverage.json"
@@ -165,6 +167,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			}
 			checkSampleBuild(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkSamplePeak(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
+			checkSampleCounters(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkSamplePorts(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkEndpointConfirmed(ctx, t, config, clientset, ns, controllerPod)
 			checkProfilePulled(ctx, t, config, clientset, ns, controllerPod)
@@ -478,6 +481,81 @@ func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs 
 			return
 		}
 		time.Sleep(5 * time.Second)
+	}
+}
+
+// checkSampleCounters asserts that the subtraction really happened on a node:
+// the first pass produces no delta at all, so a record here proves a second pass
+// compared against the first for the same process (ADR 0062).
+//
+// It polls for longer than its siblings for that reason — one scan interval must
+// elapse before the payload can carry anything.
+func checkSampleCounters(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, processCountersSpoolPath)
+		if ok {
+			var payload struct {
+				Kind    string `json:"kind"`
+				Source  string `json:"source"`
+				Records []struct {
+					WorkloadName  string `json:"workload_name"`
+					ImageDigest   string `json:"image_digest"`
+					Processes     int    `json:"processes"`
+					ObservedNanos int64  `json:"observed_nanos"`
+					OnCPUNanos    int64  `json:"on_cpu_nanos"`
+					RunDelayNanos int64  `json:"run_delay_nanos"`
+					CPUUserNanos  int64  `json:"cpu_user_nanos"`
+					CPUSysNanos   int64  `json:"cpu_system_nanos"`
+					VolSwitches   int64  `json:"voluntary_switches"`
+				} `json:"records"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("process counters payload not valid JSON: %v", err)
+			}
+			for _, r := range payload.Records {
+				if r.WorkloadName != "goworkload" {
+					continue
+				}
+				if payload.Kind != "process_counters" || payload.Source != "measured" {
+					t.Errorf("kind/source = %q/%q, want process_counters/measured", payload.Kind, payload.Source)
+				}
+				// The interval is what makes the rest a rate, so it must be
+				// real and it must be at least one scan interval.
+				if r.ObservedNanos < int64(20*time.Second) {
+					t.Errorf("observed_nanos = %d, want at least one scan interval", r.ObservedNanos)
+				}
+				if r.Processes < 1 {
+					t.Errorf("processes = %d, want the one that had a delta", r.Processes)
+				}
+				// The sample burns CPU, so it used some; and no process can be
+				// on CPU for longer than it was observed times its processes.
+				if r.CPUUserNanos+r.CPUSysNanos <= 0 {
+					t.Errorf("cpu delta = %d, want a workload that ran", r.CPUUserNanos+r.CPUSysNanos)
+				}
+				if r.OnCPUNanos > r.ObservedNanos*int64(r.Processes) {
+					t.Errorf("on_cpu %d exceeds the process-time observed %d; the interval is not this delta's",
+						r.OnCPUNanos, r.ObservedNanos*int64(r.Processes))
+				}
+				if r.RunDelayNanos < 0 || r.VolSwitches < 0 {
+					t.Errorf("a counter delta is negative: run_delay %d, switches %d", r.RunDelayNanos, r.VolSwitches)
+				}
+				if r.ImageDigest != digest {
+					t.Errorf("image_digest = %q, want %q — an interval belongs to the build that spent it", r.ImageDigest, digest)
+				}
+				t.Logf("counters for %s: %d process(es) over %v, %v on cpu (%v user, %v system), %v waiting",
+					r.WorkloadName, r.Processes, time.Duration(r.ObservedNanos),
+					time.Duration(r.OnCPUNanos), time.Duration(r.CPUUserNanos),
+					time.Duration(r.CPUSysNanos), time.Duration(r.RunDelayNanos))
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("process_counters payload never carried the sample workload")
+			return
+		}
+		time.Sleep(10 * time.Second)
 	}
 }
 
