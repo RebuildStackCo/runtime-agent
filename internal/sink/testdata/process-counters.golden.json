@@ -1,0 +1,42 @@
+{
+  "kind": "process_counters",
+  "source": "measured",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "records": [
+    {
+      "namespace": "shop",
+      "workload_kind": "Deployment",
+      "workload_name": "web",
+      "container": "app",
+      "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "processes": 2,
+      "observed_nanos": 120000000000,
+      "on_cpu_nanos": 9000000000,
+      "run_delay_nanos": 4000000000,
+      "cpu_user_nanos": 7000000000,
+      "cpu_system_nanos": 2000000000,
+      "major_faults": 0,
+      "voluntary_switches": 48210,
+      "nonvoluntary_switches": 3122,
+      "read_bytes": 0,
+      "write_bytes": 4096
+    },
+    {
+      "namespace": "shop",
+      "workload_kind": "StatefulSet",
+      "workload_name": "db",
+      "container": "db",
+      "processes": 1,
+      "observed_nanos": 60000000000,
+      "on_cpu_nanos": 21000000000,
+      "run_delay_nanos": 90000000,
+      "cpu_user_nanos": 12000000000,
+      "cpu_system_nanos": 9000000000,
+      "major_faults": 1841,
+      "voluntary_switches": 9004,
+      "nonvoluntary_switches": 61,
+      "read_bytes": 268435456,
+      "write_bytes": 134217728
+    }
+  ]
+}

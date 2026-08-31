@@ -249,6 +249,21 @@ type listeningPortsPayload struct {
 	Records    []inventory.PortRecord `json:"records"`
 }
 
+// processCountersPayload is what each collected workload container's processes
+// did over the most recent interval each node measured: a superseding batch
+// under a fixed key, like the peaks and ports beside it (ADR 0062).
+//
+// CapturedAt dates the assembly, and it is not the window. Each record carries
+// its own `observed_nanos`, which is the process-time the deltas cover — the
+// denominator of a rate, and the only thing that makes the sums comparable
+// between two flushes.
+type processCountersPayload struct {
+	Kind       string                    `json:"kind"`
+	Source     string                    `json:"source"`
+	CapturedAt time.Time                 `json:"captured_at"`
+	Records    []inventory.CounterRecord `json:"records"`
+}
+
 // ProfileDrops is how much of a pulled profile the allow-list removed. It is the
 // count and never the identity: which functions were redacted is the thing the
 // filter exists to keep inside the cluster (CLAUDE.md invariant 6).
@@ -733,6 +748,23 @@ func (s *Spool) WriteProcessPeaks(capturedAt time.Time, records []inventory.Peak
 		Records:    records,
 	}
 	return s.write("process-peaks.json", payload)
+}
+
+// WriteProcessCounters writes the current counter records as one superseding
+// batch. Records must arrive sorted (Store.CounterSnapshot sorts them) so the
+// payload bytes are stable — the golden contract.
+//
+// A cluster where no node has produced a second reading yet writes an empty
+// record list rather than nothing: "every process was seen for the first time"
+// is an answer, and it is the one that explains an empty first flush.
+func (s *Spool) WriteProcessCounters(capturedAt time.Time, records []inventory.CounterRecord) error {
+	payload := processCountersPayload{
+		Kind:       "process_counters",
+		Source:     SourceMeasured,
+		CapturedAt: capturedAt.UTC(),
+		Records:    records,
+	}
+	return s.write("process-counters.json", payload)
 }
 
 // WriteListeningPorts writes where every collected workload container accepts

@@ -4,6 +4,8 @@ Date: 2026-08-31
 
 Status: Accepted
 
+Amended by: 0062
+
 Amends: 0052
 
 Adds seven fields to `process_peaks`, read from three files under

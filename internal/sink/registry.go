@@ -150,6 +150,16 @@ var registry = []PayloadKind{
 		ADR:        "0052",
 	},
 	{
+		// Measured, and the one kind whose records are differences rather than
+		// readings: each is what changed since the node's previous pass, with
+		// the interval it covers (ADR 0062).
+		Kind:       "process_counters",
+		Source:     SourceMeasured,
+		NaturalKey: "the kind itself (one per cluster)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0062",
+	},
+	{
 		// Structural, not measured: a bound port is a fact about how the
 		// workload is configured, and reading it from the process rather than
 		// from the spec does not make it an instrument reading (ADR 0012 §2).

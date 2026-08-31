@@ -47,6 +47,11 @@ type ProcessStatus struct {
 	// blocking syscall it cannot park, so a number far above GOMAXPROCS is the
 	// signature of blocking or cgo work.
 	Threads int
+	// VoluntarySwitches and NonvoluntarySwitches are monotonic since the
+	// process started, unlike everything above them. They are read here because
+	// this file is already open; what happens to them is in ADR 0062.
+	VoluntarySwitches    int64
+	NonvoluntarySwitches int64
 }
 
 // ReadProcessStatus reads the allow-listed fields of one process's status file.
@@ -84,9 +89,22 @@ func parseProcessStatus(r io.Reader) ProcessStatus {
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
 				out.Threads = n
 			}
+		case "voluntary_ctxt_switches":
+			out.VoluntarySwitches = countOf(value)
+		case "nonvoluntary_ctxt_switches":
+			out.NonvoluntarySwitches = countOf(value)
 		}
 	}
 	return out
+}
+
+// countOf parses a plain count, dropping anything that is not one.
+func countOf(value string) int64 {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // peakBytes converts the kernel's "12345 kB" to bytes. A value in any other

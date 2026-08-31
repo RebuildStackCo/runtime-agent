@@ -420,6 +420,12 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if err := spool.WriteProcessPeaks(time.Now(), goStore.PeakSnapshot()); err != nil {
 			logger.Error("spooling process peaks", "error", err)
 		}
+		// What those processes did since each node's previous pass. Differences
+		// rather than readings, so this kind is the one whose records mean
+		// nothing without the interval they carry (ADR 0062).
+		if err := spool.WriteProcessCounters(time.Now(), goStore.CounterSnapshot()); err != nil {
+			logger.Error("spooling process counters", "error", err)
+		}
 		// Where those processes accept connections. Structural like the
 		// inventory, and separate from it because it changes without the build
 		// changing (ADR 0056 §3).

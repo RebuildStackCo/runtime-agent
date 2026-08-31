@@ -413,6 +413,20 @@ a record is absent, never zero, when none were read. The record is keyed by
 image digest as well as container: a peak belongs to the build that reached it,
 and MUST NOT be carried across a rollout.
 
+**`process_counters` records are differences, and `observed_nanos` is what they
+rest on** ([ADR 0062](adr/0062-the-counters-and-the-window-they-cover.md)). Each
+is the change since the reporting node's previous pass, summed over processes and
+nodes, so it MUST NOT be summed across flushes: a node's next report replaces its
+interval rather than extending it. `observed_nanos` sums with the deltas, so it
+is process-time and not a duration — two processes watched for a minute each
+contribute two minutes — and it is the denominator every rate MUST be formed
+against, never the flush interval or the wall clock. `on_cpu_nanos` beside
+`run_delay_nanos` is CPU starvation; the backend forms the ratio, because the
+agent ships numerators and denominators and never the division. A `processes`
+count lower than the same container's in `process_peaks` is expected for one
+interval after a pod starts: a process seen once has a footprint and no
+difference yet, and MUST NOT be read as processes having exited.
+
 **The footprint fields beside it are samples, and the field names say so**
 ([ADR 0061](adr/0061-what-the-process-holds-beside-its-peak.md)). `peak_rss_bytes`
 is a mark the kernel maintains between readings; every `*_max` beside it is the
