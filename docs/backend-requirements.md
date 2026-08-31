@@ -454,6 +454,15 @@ source path is present, so nothing here locates the binary or the request it ran
 under. `capture_start`/`capture_end` bound the capture and the payload
 accumulates per window like `ebpf_profile`.
 
+**A profile in which the runtime dominates is a finding, not a defect**
+([ADR 0063](adr/0063-a-profile-of-the-collector-is-still-a-profile.md)). Both
+profile kinds ship whenever one frame of the workload's own code appears
+anywhere in them, so a capture whose heaviest functions are all `runtime.gc*` is
+one the agent judged worth sending: it says the workload spends that share of its
+CPU collecting. The backend MUST NOT discard such a profile as unsymbolized or as
+noise, and MUST NOT read the runtime's share as agent overhead — the profiler
+samples the workload, not itself.
+
 **`collection_coverage.pprof_pull.refused` is a fact about the customer's setup,
 not a failure.** It counts attempts a process declined, which in Go means its own
 CPU profiler holds the single slot available. The backend MUST NOT present such

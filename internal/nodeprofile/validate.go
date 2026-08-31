@@ -3,7 +3,6 @@ package nodeprofile
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/google/pprof/profile"
@@ -13,15 +12,14 @@ import (
 // it and moves on — "not sent" beats "sent and wrong" (ADR 0011 §5).
 var ErrInvalidProfile = errors.New("nodeprofile: invalid profile")
 
-// topServiceFunctions bounds how many of the highest-value functions we require
-// a service function to appear among.
-const topServiceFunctions = 5
-
 // Validate reports whether gzipped pprof bytes are safe and useful to ship: they
-// parse, carry a cpu/nanoseconds sample type, and have a service function — not
-// runtime.*, not the [filtered] placeholder — among the top functions by
-// cumulative value. A profile that is only runtime/filtered activity is not worth
-// shipping and is rejected. Errors wrap ErrInvalidProfile.
+// parse, carry a cpu/nanoseconds sample type, and contain at least one service
+// frame — not runtime.*, not the [filtered] placeholder. A profile in which no
+// frame is the workload's own code describes no workload, and is rejected.
+//
+// Presence, not rank: a profile whose top is entirely the collector is what a GC
+// problem looks like, and refusing it turned the strongest evidence of one into
+// silence (ADR 0063). Errors wrap ErrInvalidProfile.
 func Validate(gzpprof []byte) error {
 	p, err := profile.ParseData(gzpprof)
 	if err != nil {
@@ -30,8 +28,8 @@ func Validate(gzpprof []byte) error {
 	if !hasCPUNanos(p) {
 		return fmt.Errorf("%w: sample type is not cpu/nanoseconds", ErrInvalidProfile)
 	}
-	if !hasTopServiceFunction(p) {
-		return fmt.Errorf("%w: no service function among the top (only runtime/filtered)", ErrInvalidProfile)
+	if !hasServiceFunction(p) {
+		return fmt.Errorf("%w: no service frame anywhere (only runtime/filtered)", ErrInvalidProfile)
 	}
 	return nil
 }
@@ -45,47 +43,17 @@ func hasCPUNanos(p *profile.Profile) bool {
 	return false
 }
 
-// hasTopServiceFunction ranks functions by cumulative sample value and checks
-// whether a service function is among the top few.
-func hasTopServiceFunction(p *profile.Profile) bool {
-	val := map[string]int64{}
+// hasServiceFunction reports whether any sampled frame is the workload's own
+// code. It walks the samples rather than the profile's function table, so the
+// answer does not depend on the table holding only what the samples reference.
+func hasServiceFunction(p *profile.Profile) bool {
 	for _, s := range p.Sample {
-		var v int64
-		if len(s.Value) > 0 {
-			v = s.Value[0]
-		}
-		seen := map[string]bool{}
 		for _, loc := range s.Location {
 			for _, ln := range loc.Line {
-				name := ln.Function.Name
-				if !seen[name] {
-					val[name] += v
-					seen[name] = true
+				if ln.Function != nil && isServiceFunc(ln.Function.Name) {
+					return true
 				}
 			}
-		}
-	}
-
-	type fv struct {
-		name string
-		v    int64
-	}
-	ranked := make([]fv, 0, len(val))
-	for n, v := range val {
-		ranked = append(ranked, fv{n, v})
-	}
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].v != ranked[j].v {
-			return ranked[i].v > ranked[j].v
-		}
-		return ranked[i].name < ranked[j].name
-	})
-	for i, f := range ranked {
-		if i >= topServiceFunctions {
-			break
-		}
-		if isServiceFunc(f.name) {
-			return true
 		}
 	}
 	return false
