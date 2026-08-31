@@ -18,6 +18,9 @@ VmPeak:	  2718392 kB
 VmSize:	  2652856 kB
 VmHWM:	   481280 kB
 VmRSS:	   402136 kB
+RssAnon:	   331904 kB
+RssFile:	    69120 kB
+RssShmem:	       0 kB
 Threads:	17
 Cpus_allowed:	ff
 Cpus_allowed_list:	0-7
@@ -32,6 +35,21 @@ func TestProcessStatusKeepsOnlyTheAllowedFields(t *testing.T) {
 	if got.CPUsAllowed != 8 {
 		t.Errorf("cpus allowed = %d, want 8", got.CPUsAllowed)
 	}
+	// The split that a memory limit does not make: what the program allocated
+	// against what the kernel mapped for it (ADR 0061 §1).
+	if want := int64(331904) * 1024; got.RSSAnonBytes != want {
+		t.Errorf("rss anon = %d, want %d", got.RSSAnonBytes, want)
+	}
+	if want := int64(69120) * 1024; got.RSSFileBytes != want {
+		t.Errorf("rss file = %d, want %d", got.RSSFileBytes, want)
+	}
+	if got.Threads != 17 {
+		t.Errorf("threads = %d, want 17", got.Threads)
+	}
+	// RssShmem sits between the two fields above and is not one of them.
+	if got.RSSAnonBytes+got.RSSFileBytes != (331904+69120)*1024 {
+		t.Error("a neighbouring key was folded into one of the two that are read")
+	}
 }
 
 // The process name is an identity, and it is the field this parser is most
@@ -40,8 +58,15 @@ func TestProcessStatusKeepsOnlyTheAllowedFields(t *testing.T) {
 // struct grows.
 func TestTheProcessNameHasNowhereToGo(t *testing.T) {
 	got := parseProcessStatus(strings.NewReader(realWorldStatus))
-	if want := (ProcessStatus{PeakRSSBytes: 481280 * 1024, CPUsAllowed: 8}); got != want {
-		t.Errorf("status = %+v, want exactly the two allow-listed fields %+v", got, want)
+	want := ProcessStatus{
+		PeakRSSBytes: 481280 * 1024,
+		CPUsAllowed:  8,
+		RSSAnonBytes: 331904 * 1024,
+		RSSFileBytes: 69120 * 1024,
+		Threads:      17,
+	}
+	if got != want {
+		t.Errorf("status = %+v, want exactly the allow-listed fields %+v", got, want)
 	}
 }
 

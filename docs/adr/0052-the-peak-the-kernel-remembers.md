@@ -4,6 +4,8 @@ Date: 2026-08-29
 
 Status: Accepted
 
+Amended by: 0061
+
 Amends: 0009, 0006 §5
 
 Adds the payload kind `process_peaks`. Widens the node scanner's reads from

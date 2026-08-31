@@ -408,6 +408,12 @@ func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs 
 					Processes      int    `json:"processes"`
 					CPUsAllowedMin int    `json:"cpus_allowed_min"`
 					CPUsAllowedMax int    `json:"cpus_allowed_max"`
+					RSSAnonMax     int64  `json:"rss_anon_bytes_max"`
+					RSSFileMax     int64  `json:"rss_file_bytes_max"`
+					PSSMax         int64  `json:"pss_bytes_max"`
+					ThreadsMax     int    `json:"threads_max"`
+					OpenFilesMax   int    `json:"open_files_max"`
+					OpenFilesLimit int64  `json:"open_files_limit_min"`
 				} `json:"records"`
 			}
 			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
@@ -438,8 +444,32 @@ func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs 
 				if r.ImageDigest != digest {
 					t.Errorf("image_digest = %q, want %q — the peak must key to the build", r.ImageDigest, digest)
 				}
+				// The footprint beside the mark (ADR 0061). Asserted against
+				// the kernel's own arithmetic rather than against a magic
+				// number: a running Go process has anonymous pages and at
+				// least the runtime's own threads, and its two halves of
+				// resident memory cannot exceed the peak the same kernel
+				// recorded.
+				if r.RSSAnonMax < 1<<18 {
+					t.Errorf("rss_anon_bytes_max = %d, want the program's own pages", r.RSSAnonMax)
+				}
+				if r.RSSAnonMax+r.RSSFileMax > r.PeakRSSBytes {
+					t.Errorf("anon %d + file %d exceeds the high-water mark %d; the split is not of this process",
+						r.RSSAnonMax, r.RSSFileMax, r.PeakRSSBytes)
+				}
+				if r.ThreadsMax < 2 {
+					t.Errorf("threads_max = %d, want at least the runtime's own", r.ThreadsMax)
+				}
+				// Descriptors: the sample serves two listeners, so it holds
+				// more than its standard streams and fewer than its ceiling.
+				if r.OpenFilesMax < 3 || (r.OpenFilesLimit > 0 && int64(r.OpenFilesMax) >= r.OpenFilesLimit) {
+					t.Errorf("open files = %d of %d, want a real count under a real ceiling",
+						r.OpenFilesMax, r.OpenFilesLimit)
+				}
 				t.Logf("peak for %s/%s: %d bytes over %d process(es), %d..%d CPUs allowed",
 					r.WorkloadName, r.Container, r.PeakRSSBytes, r.Processes, r.CPUsAllowedMin, r.CPUsAllowedMax)
+				t.Logf("footprint: anon %d, file %d, pss %d, %d threads, %d of %d descriptors",
+					r.RSSAnonMax, r.RSSFileMax, r.PSSMax, r.ThreadsMax, r.OpenFilesMax, r.OpenFilesLimit)
 				return
 			}
 		}

@@ -75,6 +75,21 @@ type PeakRecord struct {
 	// mean the replicas sit on different machines, or one of them is pinned.
 	CPUsAllowedMin int `json:"cpus_allowed_min,omitempty"`
 	CPUsAllowedMax int `json:"cpus_allowed_max,omitempty"`
+	// The largest sample the agent took of each footprint field, over every
+	// process of this build the fleet still runs. Named apart from
+	// PeakRSSBytes above because they are a different kind of claim: that one
+	// is a mark the kernel maintains between readings, these are the highest
+	// value the agent happened to see (ADR 0061 §4).
+	RSSAnonBytesMax      int64 `json:"rss_anon_bytes_max,omitempty"`
+	RSSFileBytesMax      int64 `json:"rss_file_bytes_max,omitempty"`
+	PSSBytesMax          int64 `json:"pss_bytes_max,omitempty"`
+	PrivateDirtyBytesMax int64 `json:"private_dirty_bytes_max,omitempty"`
+	ThreadsMax           int   `json:"threads_max,omitempty"`
+	// OpenFilesMax against OpenFilesLimitMin is the tightest headroom any
+	// replica of this build has: the most descriptors one held, against the
+	// lowest ceiling another was given.
+	OpenFilesMax      int   `json:"open_files_max,omitempty"`
+	OpenFilesLimitMin int64 `json:"open_files_limit_min,omitempty"`
 }
 
 // nodePeaks is one node's contribution to a PeakRecord: what its latest report
@@ -83,6 +98,8 @@ type nodePeaks struct {
 	peakRSSBytes     int64
 	processes        int
 	cpusMin, cpusMax int
+	footprint        nodescan.Footprint // each field the largest this node saw
+	filesLimitMin    int64
 }
 
 // PortKey extends Key with the build, for the reason PeakKey does: a rollout
@@ -289,7 +306,7 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 //
 // Callers hold s.mu.
 func (s *Store) ingestPeaks(b nodescan.BinaryInfo, key Key, digest, node string, seen map[PeakKey]bool) {
-	if b.PeakRSSBytes == 0 && b.CPUsAllowed == 0 {
+	if b.PeakRSSBytes == 0 && b.CPUsAllowed == 0 && b.Footprint == (nodescan.Footprint{}) {
 		return
 	}
 	pk := PeakKey{Key: key, ImageDigest: digest}
@@ -314,6 +331,18 @@ func (s *Store) ingestPeaks(b nodescan.BinaryInfo, key Key, digest, node string,
 			n.cpusMin = c
 		}
 		n.cpusMax = max(n.cpusMax, c)
+	}
+	f := b.Footprint
+	n.footprint.RSSAnonBytes = max(n.footprint.RSSAnonBytes, f.RSSAnonBytes)
+	n.footprint.RSSFileBytes = max(n.footprint.RSSFileBytes, f.RSSFileBytes)
+	n.footprint.PSSBytes = max(n.footprint.PSSBytes, f.PSSBytes)
+	n.footprint.PrivateDirtyBytes = max(n.footprint.PrivateDirtyBytes, f.PrivateDirtyBytes)
+	n.footprint.Threads = max(n.footprint.Threads, f.Threads)
+	n.footprint.OpenFiles = max(n.footprint.OpenFiles, f.OpenFiles)
+	// The lowest ceiling, not the highest: headroom is what the tightest
+	// replica has, and a limit of zero is one that was not read.
+	if l := f.OpenFilesLimit; l > 0 && (n.filesLimitMin == 0 || l < n.filesLimitMin) {
+		n.filesLimitMin = l
 	}
 	byNode[node] = n
 }
@@ -599,6 +628,15 @@ func (s *Store) PeakSnapshot() []PeakRecord {
 				rec.CPUsAllowedMin = n.cpusMin
 			}
 			rec.CPUsAllowedMax = max(rec.CPUsAllowedMax, n.cpusMax)
+			rec.RSSAnonBytesMax = max(rec.RSSAnonBytesMax, n.footprint.RSSAnonBytes)
+			rec.RSSFileBytesMax = max(rec.RSSFileBytesMax, n.footprint.RSSFileBytes)
+			rec.PSSBytesMax = max(rec.PSSBytesMax, n.footprint.PSSBytes)
+			rec.PrivateDirtyBytesMax = max(rec.PrivateDirtyBytesMax, n.footprint.PrivateDirtyBytes)
+			rec.ThreadsMax = max(rec.ThreadsMax, n.footprint.Threads)
+			rec.OpenFilesMax = max(rec.OpenFilesMax, n.footprint.OpenFiles)
+			if l := n.filesLimitMin; l > 0 && (rec.OpenFilesLimitMin == 0 || l < rec.OpenFilesLimitMin) {
+				rec.OpenFilesLimitMin = l
+			}
 		}
 		if rec.Processes == 0 {
 			continue

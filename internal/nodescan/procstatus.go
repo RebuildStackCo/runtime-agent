@@ -12,7 +12,7 @@ import (
 // The process-status reader (ADR 0052). It is the second thing the scanner
 // opens per process, and the first that is not about the build.
 //
-// `/proc/<pid>/status` is a mixed file: beside the two numbers below it holds
+// `/proc/<pid>/status` is a mixed file: beside the numbers below it holds
 // `Name`, the executable's own basename, which is an identity the agent does not
 // collect. So the keys are an allow-list, exactly as build settings are
 // (ADR 0019) — a deny-list would have to keep pace with a format the kernel
@@ -33,6 +33,20 @@ type ProcessStatus struct {
 	// limited to half a core is still allowed on every CPU unless something
 	// pinned it.
 	CPUsAllowed int
+	// RSSAnonBytes and RSSFileBytes split resident memory the way a memory
+	// limit does not: anonymous pages are the Go heap and goroutine stacks,
+	// file-backed pages are the mapped binary and page cache. Both count
+	// against the cgroup, only the first is the program's own (ADR 0061 §1).
+	//
+	// Unlike PeakRSSBytes above, these are samples at scan time, not a mark the
+	// kernel maintains.
+	RSSAnonBytes int64
+	RSSFileBytes int64
+	// Threads is how many OS threads the process runs. For a Go program this is
+	// not a configuration but a consequence: the runtime creates one per
+	// blocking syscall it cannot park, so a number far above GOMAXPROCS is the
+	// signature of blocking or cgo work.
+	Threads int
 }
 
 // ReadProcessStatus reads the allow-listed fields of one process's status file.
@@ -62,6 +76,14 @@ func parseProcessStatus(r io.Reader) ProcessStatus {
 			out.PeakRSSBytes = peakBytes(value)
 		case "Cpus_allowed_list":
 			out.CPUsAllowed = countCPUList(value)
+		case "RssAnon":
+			out.RSSAnonBytes = peakBytes(value)
+		case "RssFile":
+			out.RSSFileBytes = peakBytes(value)
+		case "Threads":
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				out.Threads = n
+			}
 		}
 	}
 	return out

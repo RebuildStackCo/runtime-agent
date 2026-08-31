@@ -601,6 +601,10 @@ func TestGoldenGoInventoryPayload(t *testing.T) {
 // The peaks fixture is the finding in one payload: `web/app` has run its build
 // to within a hair of a limit, across two replicas that see different CPU
 // counts, and `db` has not.
+//
+// Its footprint carries the second finding beside it: most of `web/app`'s
+// resident memory is its own heap, and it holds 61 000 descriptors against a
+// ceiling of 65 536 (ADR 0061).
 func fixedPeaks() []inventory.PeakRecord {
 	return []inventory.PeakRecord{
 		{
@@ -613,6 +617,9 @@ func fixedPeaks() []inventory.PeakRecord {
 			},
 			PeakRSSBytes: 481 << 20, Processes: 2,
 			CPUsAllowedMin: 4, CPUsAllowedMax: 8,
+			RSSAnonBytesMax: 402 << 20, RSSFileBytesMax: 61 << 20,
+			PSSBytesMax: 440 << 20, PrivateDirtyBytesMax: 398 << 20,
+			ThreadsMax: 42, OpenFilesMax: 61000, OpenFilesLimitMin: 65536,
 		},
 		{
 			PeakKey: inventory.PeakKey{
@@ -623,6 +630,10 @@ func fixedPeaks() []inventory.PeakRecord {
 			},
 			PeakRSSBytes: 96 << 20, Processes: 1,
 			CPUsAllowedMin: 8, CPUsAllowedMax: 8,
+			// A kernel without smaps_rollup: the two sharing numbers are absent
+			// rather than zero, and the payload leaves them out.
+			RSSAnonBytesMax: 71 << 20, RSSFileBytesMax: 25 << 20,
+			ThreadsMax: 11, OpenFilesMax: 34, OpenFilesLimitMin: 1024,
 		},
 	}
 }

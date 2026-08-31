@@ -413,6 +413,20 @@ a record is absent, never zero, when none were read. The record is keyed by
 image digest as well as container: a peak belongs to the build that reached it,
 and MUST NOT be carried across a rollout.
 
+**The footprint fields beside it are samples, and the field names say so**
+([ADR 0061](adr/0061-what-the-process-holds-beside-its-peak.md)). `peak_rss_bytes`
+is a mark the kernel maintains between readings; every `*_max` beside it is the
+highest value the agent happened to observe, so the two MUST NOT be averaged or
+charted as one series. `rss_anon_bytes_max` is the program's own pages and
+`rss_file_bytes_max` the file-backed ones; both count against a memory limit, and
+a recommendation to lower one MUST rest on the first rather than on their sum.
+`pss_bytes_max` charges shared pages to their sharers in equal parts, so it —
+never resident memory — is what may be summed across replicas of one image.
+`open_files_max` against `open_files_limit_min` is the most descriptors any
+replica held against the lowest ceiling any replica was given; an absent ceiling
+means unlimited and MUST NOT be read as zero. Any of these fields may be absent
+on a kernel that does not expose its source, and absent never means zero.
+
 **A `pprof_profile` is the workload's own runtime sampling itself, and `dropped`
 bounds what may be concluded from it**
 ([ADR 0058](adr/0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)).
