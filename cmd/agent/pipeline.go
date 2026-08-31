@@ -88,6 +88,16 @@ func runProfilingPipeline(ctx context.Context, logger *slog.Logger, p config.Nod
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// The tracer signals an unrecoverable error rather than failing
+			// quietly, and a node whose capture died would otherwise cut empty
+			// windows forever and read as idle. Say so and degrade to
+			// scanner-only, which is where a refused gate leaves it (ADR 0060 §5).
+			if session.Stopped() {
+				m.setState(string(ebpfgate.ReasonCaptureStopped))
+				logger.Error("ebpf capture stopped; continuing as scanner",
+					"reason", string(ebpfgate.ReasonCaptureStopped))
+				return
+			}
 			end := time.Now()
 			if targets != nil && (targetSet == nil || end.Sub(lastFetch) >= refresh) {
 				if ids, err := targets.fetch(ctx, node); err != nil {

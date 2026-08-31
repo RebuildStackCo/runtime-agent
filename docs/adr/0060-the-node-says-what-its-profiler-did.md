@@ -57,8 +57,9 @@ the report carrying the reason would never be sent. A third route was rejected
 for a struct that fits in the one already sent every pass.
 
 **2. What is counted, and what is a state rather than a count.** A node has one
-profiling state — `supported`, `disabled`, `program_load_failed`, or a gate
-refusal — evaluated at startup, so it is a field and not a tally of events. The
+profiling state — `supported`, `disabled`, `program_load_failed`,
+`capture_stopped`, or a gate refusal — so it is a field and not a tally of
+events. All but the last of those are settled at startup (see §5). The
 fleet view of it is a map from state to how many nodes are in it, which is what
 answers "why is this cluster not profiling" in one field.
 
@@ -92,6 +93,21 @@ which four. Node names are already in `node_metadata`, and joining a refusal to
 one is not a question anybody asks — but it is also not one this payload can be
 made to answer.
 
+**5. A capture that dies after loading changes the state.** The tracer signals
+an unrecoverable error — a corrupt perf record, a PID-event map it can no longer
+read — on a channel the capture loop already selected on and only logged. A node
+in that condition would otherwise cut empty windows forever and read as an idle
+one, so it reports `capture_stopped` and stops cutting windows, which is where a
+refused gate leaves it too. A cancelled context is not this: that is the agent
+shutting down, and it says nothing.
+
+What remains undetectable is a tracer that stays alive and silently captures
+nothing. The node's own answer to it is `windows_no_samples`, and it is a
+stronger signal than it looks: capture is system-wide, so a window with no
+samples at all is a node on which nothing — kubelet, runtime, kernel — ran on
+CPU. That is not an idle node, it is a broken profiler, and it takes a reader
+outside the cluster to say so with certainty.
+
 ## Consequences
 
 **Easier.** "This workload has no eBPF profile" is now legible as one of several
@@ -111,9 +127,9 @@ profiles rising, on a payload someone reads, rather than as a quiet absence.
 of two adjacent blocks has to know their bases differ. A node restart makes the
 fleet sum fall, which is not a decline in work and must not be read as one.
 
-A profiler that dies after a successful load has no state to change: it shows up
-as windows accumulating with no samples, which is the same shape as an idle node
-and is distinguished only by the cluster's usage records saying otherwise.
+A node reporting `capture_stopped` will not try again until it restarts. The
+tracer's error is unrecoverable by its own account, and a restart loop around an
+eBPF load is worse than a state that says what happened.
 
 **Not changed.** Nothing new is read on the node, no privilege is added, and
 every field here is a count or a low-cardinality reason. No identity of a

@@ -27,9 +27,9 @@ type Report struct {
 // node holding no state can say (ADR 0060 §3).
 type ProfilingCoverage struct {
 	// State is why this node is or is not profiling, one of: "supported",
-	// "disabled" (the master switch is off), "program_load_failed", or a gate
-	// refusal — "kernel_too_old", "btf_absent", "kernel_unknown". One node has
-	// one state; it is evaluated at startup and does not change.
+	// "disabled" (the master switch is off), "program_load_failed",
+	// "capture_stopped", or a gate refusal — "kernel_too_old", "btf_absent",
+	// "kernel_unknown". One node has one state (ADR 0060 §2, §5).
 	State string `json:"state"`
 	// Windows is every capture window this node cut. The three below are the
 	// windows that produced nothing and why: no scope from the controller (the

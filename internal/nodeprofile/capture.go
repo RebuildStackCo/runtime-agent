@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,9 +41,25 @@ func (c Config) withDefaults() Config {
 
 // Session is a running capture. The pipeline drains it once per window; the
 // profiler keeps accumulating in the background until ctx (passed to Start) is
-// cancelled.
+// cancelled — or until the tracer hits an unrecoverable error, which is what
+// Stopped reports (ADR 0060 §5).
 type Session struct {
-	buf *Buffer
+	buf     *Buffer
+	stopped atomic.Bool
+}
+
+// Stopped reports that the capture ended on its own: the tracer signalled an
+// unrecoverable error and nothing will be captured again. A cancelled context
+// is not this — that is the agent shutting down.
+func (s *Session) Stopped() bool { return s.stopped.Load() }
+
+// watch runs the capture loop and records how it ended. Split out so the
+// distinction it draws is testable on any platform.
+func (s *Session) watch(ctx context.Context, run func()) {
+	run()
+	if ctx.Err() == nil {
+		s.stopped.Store(true)
+	}
 }
 
 // Start loads and attaches the eBPF profiler and begins accumulating symbolized
@@ -58,8 +75,9 @@ func Start(ctx context.Context, logger *slog.Logger, cfg Config) (*Session, erro
 	if err != nil {
 		return nil, err
 	}
-	go run()
-	return &Session{buf: buf}, nil
+	s := &Session{buf: buf}
+	go s.watch(ctx, run)
+	return s, nil
 }
 
 // Drain cuts the current window: it returns the samples accumulated since the
