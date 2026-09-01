@@ -11,23 +11,95 @@
       "region": "eu-west-1",
       "kernel_version": "6.1.0-generic",
       "architecture": "amd64",
+      "created_at": "2026-08-03T10:00:00Z",
+      "kubelet_version": "v1.31.4",
+      "os_image": "Ubuntu 22.04.5 LTS",
+      "operating_system": "linux",
+      "container_runtime": "containerd://1.7.22",
       "allocatable_cpu_milli": 1930,
       "allocatable_memory_bytes": 7516192768,
       "capacity_cpu_milli": 2000,
-      "capacity_memory_bytes": 8589934592
+      "capacity_memory_bytes": 8589934592,
+      "allocatable_ephemeral_storage_bytes": 50465865728,
+      "capacity_ephemeral_storage_bytes": 53687091200,
+      "allocatable_pods": 110,
+      "capacity_pods": 110,
+      "conditions": [
+        {
+          "type": "DiskPressure",
+          "status": "False",
+          "reason": "KubeletHasNoDiskPressure",
+          "since": "2026-08-03T10:00:00Z"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False",
+          "reason": "KubeletHasSufficientMemory",
+          "since": "2026-08-03T10:00:00Z"
+        },
+        {
+          "type": "Ready",
+          "status": "True",
+          "reason": "KubeletReady",
+          "since": "2026-08-03T10:00:00Z"
+        }
+      ]
     },
     {
       "name": "node-2",
-      "instance_type": "m7g.large",
+      "instance_type": "g5.2xlarge",
       "capacity_type": "spot",
       "zone": "eu-west-1b",
       "region": "eu-west-1",
       "kernel_version": "6.1.0-generic",
       "architecture": "arm64",
+      "created_at": "2026-08-03T10:00:00Z",
+      "kubelet_version": "v1.30.8",
+      "os_image": "Amazon Linux 2",
+      "operating_system": "linux",
+      "container_runtime": "containerd://1.7.11",
       "allocatable_cpu_milli": 1930,
       "allocatable_memory_bytes": 7516192768,
       "capacity_cpu_milli": 2000,
-      "capacity_memory_bytes": 8589934592
+      "capacity_memory_bytes": 8589934592,
+      "allocatable_ephemeral_storage_bytes": 204010946560,
+      "capacity_ephemeral_storage_bytes": 214748364800,
+      "allocatable_pods": 58,
+      "capacity_pods": 58,
+      "devices": [
+        {
+          "name": "nvidia.com/gpu",
+          "capacity": 4,
+          "allocatable": 4
+        }
+      ],
+      "conditions": [
+        {
+          "type": "DiskPressure",
+          "status": "False",
+          "reason": "KubeletHasNoDiskPressure",
+          "since": "2026-08-03T10:00:00Z"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "True",
+          "reason": "KubeletHasInsufficientMemory",
+          "since": "2026-08-06T10:12:00Z"
+        },
+        {
+          "type": "Ready",
+          "status": "True",
+          "reason": "KubeletReady",
+          "since": "2026-08-03T10:00:00Z"
+        }
+      ],
+      "taints": [
+        {
+          "key": "nvidia.com/gpu",
+          "value": "present",
+          "effect": "NoSchedule"
+        }
+      ]
     }
   ]
 }

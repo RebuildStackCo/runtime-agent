@@ -37,6 +37,11 @@ var windowStart = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 // the golden bytes stable.
 var capturedAt = time.Date(2026, 8, 6, 10, 12, 0, 0, time.UTC)
 
+// nodeBorn is when the fleet's nodes were created, three days before the
+// snapshot. Node age and condition transitions are relative to it, so a golden
+// that showed both equal to capturedAt would hide the distinction.
+var nodeBorn = time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+
 // fixedCoverage is the completeness block of the Go-inventory payload: a fleet
 // where one node has not checked in and a handful of facts could not be
 // attributed — the state the block exists to make visible.
@@ -160,7 +165,9 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	// will otherwise mistake for a broken agent (ADR 0058 §3).
 	pull := pprofpull.Coverage{Shipped: 4, Refused: 1, Unreachable: 0, Invalid: 1}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
-		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1}, &inv, &scan, &ebpf, &probe, &pull); err != nil {
+		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1},
+		collector.NodeDrops{Conditions: 4, Devices: 1, Taints: 0, Values: 2},
+		&inv, &scan, &ebpf, &probe, &pull); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -1026,25 +1033,101 @@ func fixedWorkloadMetadata() []metadata.Record {
 	}
 }
 
-// fixedNodeMetadata is a mixed-architecture fleet on purpose: the architecture
-// field exists so a build's GOARCH has something to be compared against, and a
-// golden where every node is the same architecture would not show that.
+// fixedNodeMetadata is a mixed fleet on purpose. The architecture field exists
+// so a build's GOARCH has something to be compared against, and a golden where
+// every node is the same architecture would not show that; the second node is an
+// accelerator node under pressure, so the three reduced lists of ADR 0064 —
+// devices, conditions, taints — appear in the bytes rather than only in a unit
+// test.
 func fixedNodeMetadata() []collector.NodeInfo {
 	return []collector.NodeInfo{
 		{
 			Name: "node-1", InstanceType: "m6i.large", CapacityType: "on-demand",
 			Zone: "eu-west-1a", Region: "eu-west-1", KernelVersion: "6.1.0-generic",
-			Architecture:        "amd64",
+			Architecture: "amd64", CreatedAt: nodeBorn,
+			KubeletVersion: "v1.31.4", OSImage: "Ubuntu 22.04.5 LTS",
+			OperatingSystem: "linux", ContainerRuntime: "containerd://1.7.22",
 			AllocatableCPUMilli: 1930, AllocatableMemoryBytes: 7 << 30,
 			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
+			AllocatableEphemeralBytes: 47 << 30, CapacityEphemeralBytes: 50 << 30,
+			AllocatablePods: 110, CapacityPods: 110,
+			Conditions: []collector.NodeCondition{
+				{Type: "DiskPressure", Status: "False", Reason: "KubeletHasNoDiskPressure", Since: nodeBorn},
+				{Type: "MemoryPressure", Status: "False", Reason: "KubeletHasSufficientMemory", Since: nodeBorn},
+				{Type: "Ready", Status: "True", Reason: "KubeletReady", Since: nodeBorn},
+			},
 		},
 		{
-			Name: "node-2", InstanceType: "m7g.large", CapacityType: "spot",
+			Name: "node-2", InstanceType: "g5.2xlarge", CapacityType: "spot",
 			Zone: "eu-west-1b", Region: "eu-west-1", KernelVersion: "6.1.0-generic",
-			Architecture:        "arm64",
+			Architecture: "arm64", CreatedAt: nodeBorn,
+			KubeletVersion: "v1.30.8", OSImage: "Amazon Linux 2",
+			OperatingSystem: "linux", ContainerRuntime: "containerd://1.7.11",
 			AllocatableCPUMilli: 1930, AllocatableMemoryBytes: 7 << 30,
 			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
+			AllocatableEphemeralBytes: 190 << 30, CapacityEphemeralBytes: 200 << 30,
+			AllocatablePods: 58, CapacityPods: 58,
+			Devices: []collector.NodeDevice{{Name: "nvidia.com/gpu", Capacity: 4, Allocatable: 4}},
+			Conditions: []collector.NodeCondition{
+				{Type: "DiskPressure", Status: "False", Reason: "KubeletHasNoDiskPressure", Since: nodeBorn},
+				{Type: "MemoryPressure", Status: "True", Reason: "KubeletHasInsufficientMemory", Since: capturedAt},
+				{Type: "Ready", Status: "True", Reason: "KubeletReady", Since: nodeBorn},
+			},
+			Taints: []collector.NodeTaint{{Key: "nvidia.com/gpu", Value: "present", Effect: "NoSchedule"}},
 		},
+	}
+}
+
+// fixedNodeEvents is one arrival and one departure in the same window, which is
+// the pair the payload exists for: the node that left carries its own size and
+// accelerators because `node_metadata` no longer holds a row for it (ADR 0064
+// §3). The departure's instant is the agent's observation, and says so.
+func fixedNodeEvents() []journal.NodeEventRecord {
+	return []journal.NodeEventRecord{
+		{
+			Node: "node-3", Event: "joined", At: windowStart.Add(9 * time.Minute),
+			InstanceType: "m6i.large", CapacityType: "on-demand", Zone: "eu-west-1a",
+			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
+			WindowStart: windowStart, WindowSeconds: 3600,
+		},
+		{
+			Node: "node-4", Event: "left", At: windowStart.Add(41 * time.Minute), AtObserved: true,
+			InstanceType: "g5.2xlarge", CapacityType: "spot", Zone: "eu-west-1b",
+			CapacityCPUMilli: 8000, CapacityMemoryBytes: 32 << 30,
+			Devices:     []collector.NodeDevice{{Name: "nvidia.com/gpu", Capacity: 4, Allocatable: 4}},
+			WindowStart: windowStart, WindowSeconds: 3600,
+		},
+	}
+}
+
+func TestGoldenNodeLifecyclePayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteNodeLifecycle(fixedNodeEvents()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("node-lifecycle-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "node-lifecycle.golden.json")
+}
+
+// A fleet churning through spot capacity must not put the spool's file count
+// under its own control, the bound ADR 0021 set for disruptions.
+func TestNodeLifecycleOfOneWindowSharesAFile(t *testing.T) {
+	s, dir := newTestSpool(t)
+	records := fixedNodeEvents()
+	for i := range 8 {
+		extra := records[0]
+		extra.Node = fmt.Sprintf("node-churn-%d", i)
+		records = append(records, extra)
+	}
+	if err := s.WriteNodeLifecycle(records); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool holds %d files for ten events of one window, want 1", len(entries))
 	}
 }
 
@@ -1850,7 +1933,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]collector.SourceHealth{{Name: "services", Synced: true}},
 		collector.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		collector.PlacementDrops{}, nil, nil, nil, nil, nil)
+		collector.PlacementDrops{}, collector.NodeDrops{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

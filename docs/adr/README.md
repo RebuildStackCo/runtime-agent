@@ -121,3 +121,4 @@ line to paste.
 - [0061. What the process holds, beside the peak it once reached](0061-what-the-process-holds-beside-its-peak.md)
 - [0062. The counters are subtracted on the node, and never leave without their interval](0062-the-counters-and-the-window-they-cover.md)
 - [0063. A profile the collector dominates is still a profile](0063-a-profile-of-the-collector-is-still-a-profile.md)
+- [0064. The node is described, and its comings and goings recorded](0064-the-node-is-described-and-its-comings-recorded.md)

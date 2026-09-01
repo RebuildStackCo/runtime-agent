@@ -167,6 +167,11 @@ type collectionCoveragePayload struct {
 	// carry (ADR 0031). Not an exclusion — the workload is collected — but it is
 	// something the customer's manifests hold and the payload does not.
 	Placement collector.PlacementDrops `json:"placement"`
+	// Nodes counts what the node reductions refused to carry: a condition type
+	// or device vendor outside its allow-list, a taint whose strings did not
+	// fit (ADR 0064 §4). Same class as Placement above — the node is collected,
+	// but part of what it says is not.
+	Nodes collector.NodeDrops `json:"nodes"`
 	// Inventory and Scan are present only when the node role is deployed.
 	Inventory *inventory.Counters     `json:"inventory,omitempty"`
 	Scan      *inventory.ScanCoverage `json:"scan,omitempty"`
@@ -363,6 +368,17 @@ type podDisruptionsPayload struct {
 	WindowStart   time.Time                  `json:"window_start"`
 	WindowSeconds int64                      `json:"window_seconds"`
 	Records       []journal.DisruptionRecord `json:"records"`
+}
+
+// nodeLifecyclePayload is every node that joined or left the cluster within one
+// window (ADR 0064 §3). One file per window, a delivery boundary rather than an
+// aggregation, exactly like the disruption journal above.
+type nodeLifecyclePayload struct {
+	Kind          string                    `json:"kind"`
+	Source        string                    `json:"source"`
+	WindowStart   time.Time                 `json:"window_start"`
+	WindowSeconds int64                     `json:"window_seconds"`
+	Records       []journal.NodeEventRecord `json:"records"`
 }
 
 // jobRunsPayload is every finished Job run of one window: one file per window
@@ -585,7 +601,7 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs collect
 // WriteCollectionCoverage writes the coverage payload, superseding its
 // predecessor. It is written on every flush, including one that found nothing:
 // an empty report and a broken agent are the same bytes without it (ADR 0054).
-func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
+func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, nodes collector.NodeDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
 	payload := collectionCoveragePayload{
 		Kind:       "collection_coverage",
 		Source:     SourceAgent,
@@ -595,6 +611,7 @@ func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent Agent
 		Sources:    sources,
 		Filter:     filter,
 		Placement:  placement,
+		Nodes:      nodes,
 		Inventory:  inv,
 		Scan:       scan,
 		EBPF:       ebpf,
@@ -656,6 +673,35 @@ func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
 			Records:       group,
 		}
 		if err := s.write(fmt.Sprintf("disruptions-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteNodeLifecycle writes the node arrivals and departures of each window they
+// belong to, one file per window, atomically replacing that window's previous
+// file. records must already be in a deterministic order (the accumulator sorts
+// them) so the payload bytes are stable — the golden contract.
+//
+// A window in which the fleet did not change writes nothing, like the other
+// journals: a stable fleet has nothing to report, and `node_metadata` already
+// says what it currently is.
+func (s *Spool) WriteNodeLifecycle(records []journal.NodeEventRecord) error {
+	grouped := make(map[windowKey][]journal.NodeEventRecord)
+	for _, r := range records {
+		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
+		grouped[k] = append(grouped[k], r)
+	}
+	for k, group := range grouped {
+		payload := nodeLifecyclePayload{
+			Kind:          "node_lifecycle",
+			Source:        SourceJournal,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Records:       group,
+		}
+		if err := s.write(fmt.Sprintf("node-lifecycle-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
 			return err
 		}
 	}
