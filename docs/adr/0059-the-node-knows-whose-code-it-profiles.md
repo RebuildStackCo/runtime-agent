@@ -4,6 +4,8 @@ Date: 2026-08-30
 
 Status: Accepted
 
+Amended by: 0063
+
 Amends: 0011 §4, 0041
 
 Closes, for the eBPF capture path, the defect

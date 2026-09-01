@@ -139,3 +139,47 @@ func TestFilesOfTheSameNameInDifferentPackagesStayDistinct(t *testing.T) {
 		seen[fn.Name] = true
 	}
 }
+
+// gcHeavyProfile is a service spending most of its CPU in the collector: five
+// runtime frames outrank its own code, which is what a GC problem looks like in
+// a profile. Background marking runs on its own goroutines, so those samples
+// carry no service frame at all — the service function can only rank below them.
+func gcHeavyProfile(t *testing.T) []byte {
+	t.Helper()
+	gc := []Frame{
+		goFrame("runtime.gcBgMarkWorker"), goFrame("runtime.gcDrain"),
+		goFrame("runtime.scanobject"), goFrame("runtime.markroot"),
+		goFrame("runtime.systemstack"),
+	}
+	data, err := Serialize([]Sample{
+		{Value: 70, Frames: gc},
+		{Value: 20, Frames: []Frame{goFrame("main.serve"), goFrame("runtime.mallocgc")}},
+	}, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// The profile that proves a GC problem is the one the validator used to refuse:
+// ranking by cumulative value puts five runtime frames on top, and the service's
+// own function below them. Refusing it turned the strongest evidence of a
+// collector problem into silence (ADR 0063).
+func TestAProfileDominatedByTheCollectorStillShips(t *testing.T) {
+	if err := Validate(gcHeavyProfile(t)); err != nil {
+		t.Errorf("a GC-dominated profile was refused: %v", err)
+	}
+}
+
+// And the case the validator exists for still fails: a profile with no service
+// function anywhere is one whose service layer the filter ate, and it says
+// nothing about the workload.
+func TestAProfileWithNoServiceFunctionAtAllIsStillRefused(t *testing.T) {
+	noService, _ := Serialize([]Sample{
+		{Value: 70, Frames: []Frame{goFrame("runtime.gcBgMarkWorker"), goFrame("runtime.gcDrain")}},
+		{Value: 20, Frames: []Frame{{Function: RedactedFrame, Kind: "filtered"}, goFrame("runtime.mallocgc")}},
+	}, 20)
+	if err := Validate(noService); err == nil || !errors.Is(err, ErrInvalidProfile) {
+		t.Errorf("expected ErrInvalidProfile for a profile with no service frame, got %v", err)
+	}
+}

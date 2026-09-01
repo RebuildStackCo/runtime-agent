@@ -702,8 +702,11 @@ and nothing else; the underlying error stays in the agent's log.
   `server.go`, never a directory — cut where the profiler hands the frame over,
   so the path the compiler recorded never enters the agent (ADR 0041).
 - Profiles are **validated on the node before they are queued to leave**: shipped
-  only if the profile parses, carries a `cpu`/`nanoseconds` sample type, and has
-  a non-`runtime.*` function in its top. A failure is dropped and counted. What
+  only if the profile parses, carries a `cpu`/`nanoseconds` sample type, and
+  contains a frame of your own code — anywhere, not among the top, because a
+  profile the collector dominates is what a GC problem looks like
+  ([ADR 0063](adr/0063-a-profile-of-the-collector-is-still-a-profile.md)).
+  A failure is dropped and counted. What
   leaves is pprof bytes keyed by (namespace, workload, container, image digest,
   window), declaring `source: sampled` (ADR 0023).
 - These are **flame-graph profiles, not PGO profiles**: the output omits what
