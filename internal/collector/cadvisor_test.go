@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -115,7 +116,7 @@ func TestThrottlingDeltaRules(t *testing.T) {
 // own start, exactly as any first observation is.
 func TestThrottlingDoesNotCrossPodRecreation(t *testing.T) {
 	resolver := stubResolver{
-		"uid-old": {namespace: "shop", name: "web-abc", workload: WorkloadRef{Kind: "StatefulSet", Name: "web"}},
+		"uid-old": {namespace: "shop", name: "web-abc", workload: model.WorkloadRef{Kind: "StatefulSet", Name: "web"}},
 	}
 	p := testPoller(resolver)
 	first := usageTestStart.Add(30 * time.Second)
@@ -139,7 +140,7 @@ func TestThrottlingDoesNotCrossPodRecreation(t *testing.T) {
 	delete(resolver, "uid-old")
 	resolver["uid-new"] = podIndexEntry{
 		namespace: "shop", name: "web-abc",
-		workload: WorkloadRef{Kind: "StatefulSet", Name: "web"},
+		workload: model.WorkloadRef{Kind: "StatefulSet", Name: "web"},
 	}
 	ingest(3, 10, second, newPodStart, second)
 

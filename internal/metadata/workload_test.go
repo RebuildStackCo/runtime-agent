@@ -9,18 +9,18 @@ import (
 
 	"k8s.io/utils/ptr"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
-func pod(namespace, name, node, phase, digest string, res collector.Resources) collector.PodInfo {
-	return collector.PodInfo{
+func pod(namespace, name, node, phase, digest string, res model.Resources) model.PodInfo {
+	return model.PodInfo{
 		Namespace: namespace,
 		Name:      name,
 		Node:      node,
 		Phase:     phase,
 		QOSClass:  "Burstable",
-		Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "api"},
-		Containers: []collector.Container{{
+		Workload:  model.WorkloadRef{Kind: "Deployment", Name: "api"},
+		Containers: []model.Container{{
 			Name:        "server",
 			Image:       "registry.example.com/api:v1",
 			ImageDigest: digest,
@@ -29,15 +29,15 @@ func pod(namespace, name, node, phase, digest string, res collector.Resources) c
 	}
 }
 
-func burstable() collector.Resources {
-	return collector.Resources{
+func burstable() model.Resources {
+	return model.Resources{
 		CPURequestMilli:    ptr.To[int64](250),
 		MemoryRequestBytes: ptr.To[int64](128 << 20),
 	}
 }
 
 func TestAggregateCountsReplicasPhasesAndNodes(t *testing.T) {
-	got := Aggregate([]collector.PodInfo{
+	got := Aggregate([]model.PodInfo{
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
 		pod("acme", "api-2", "node-a", "Running", "sha256:aaa", burstable()),
 		pod("acme", "api-3", "node-b", "Pending", "sha256:aaa", burstable()),
@@ -63,11 +63,11 @@ func TestAggregateCountsReplicasPhasesAndNodes(t *testing.T) {
 // overwrite the other.
 func TestAggregateSplitsBuildsDuringRollout(t *testing.T) {
 	old := burstable()
-	updated := collector.Resources{
+	updated := model.Resources{
 		CPURequestMilli:    ptr.To[int64](500),
 		MemoryRequestBytes: ptr.To[int64](256 << 20),
 	}
-	got := Aggregate([]collector.PodInfo{
+	got := Aggregate([]model.PodInfo{
 		pod("acme", "api-old", "node-a", "Running", "sha256:aaa", old),
 		pod("acme", "api-new", "node-b", "Running", "sha256:bbb", updated),
 	}, nil)
@@ -87,8 +87,8 @@ func TestAggregateSplitsBuildsDuringRollout(t *testing.T) {
 // An unset request is not a zero request; the distinction survives into JSON,
 // where nil is omitted and zero is present.
 func TestAggregatePreservesUnsetVersusZero(t *testing.T) {
-	got := Aggregate([]collector.PodInfo{
-		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", collector.Resources{
+	got := Aggregate([]model.PodInfo{
+		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", model.Resources{
 			CPURequestMilli: ptr.To[int64](0),
 		}),
 	}, nil)
@@ -119,8 +119,8 @@ func TestAggregatePreservesUnsetVersusZero(t *testing.T) {
 // A pod that has not been scheduled has no node, so Nodes sums to fewer than
 // Replicas. That shortfall is the pending-scheduling signal, not a gap.
 func TestAggregateUnscheduledPodCountsAsReplicaWithoutNode(t *testing.T) {
-	got := Aggregate([]collector.PodInfo{
-		pod("acme", "api-1", "", "Pending", "", collector.Resources{}),
+	got := Aggregate([]model.PodInfo{
+		pod("acme", "api-1", "", "Pending", "", model.Resources{}),
 	}, nil)
 
 	rec := got[0]
@@ -139,13 +139,13 @@ func TestAggregateUnscheduledPodCountsAsReplicaWithoutNode(t *testing.T) {
 // and an unschedulable one are both "no node", and only the reason separates a
 // deliberate hold from a capacity problem (ADR 0021).
 func TestAggregateCountsUnscheduledPodsByReason(t *testing.T) {
-	unschedulable := pod("acme", "api-1", "", "Pending", "", collector.Resources{})
+	unschedulable := pod("acme", "api-1", "", "Pending", "", model.Resources{})
 	unschedulable.Unscheduled = "Unschedulable"
-	gated := pod("acme", "api-2", "", "Pending", "", collector.Resources{})
+	gated := pod("acme", "api-2", "", "Pending", "", model.Resources{})
 	gated.Unscheduled = "SchedulingGated"
-	running := pod("acme", "api-3", "node-1", "Running", "", collector.Resources{})
+	running := pod("acme", "api-3", "node-1", "Running", "", model.Resources{})
 
-	got := Aggregate([]collector.PodInfo{unschedulable, gated, running}, nil)
+	got := Aggregate([]model.PodInfo{unschedulable, gated, running}, nil)
 
 	rec := got[0]
 	if rec.Pod.Replicas != 3 {
@@ -164,12 +164,12 @@ func TestAggregateCountsUnscheduledPodsByReason(t *testing.T) {
 // The payload bytes are the schema contract, so aggregation must not depend on
 // the order pods arrive in from the index (a Go map iteration).
 func TestAggregateIsOrderIndependent(t *testing.T) {
-	pods := []collector.PodInfo{
+	pods := []model.PodInfo{
 		pod("zeta", "api-1", "node-b", "Running", "sha256:bbb", burstable()),
 		pod("acme", "api-2", "node-a", "Running", "sha256:aaa", burstable()),
 		pod("acme", "api-1", "node-c", "Running", "sha256:aaa", burstable()),
 	}
-	reversed := []collector.PodInfo{pods[2], pods[1], pods[0]}
+	reversed := []model.PodInfo{pods[2], pods[1], pods[0]}
 
 	first, err := json.Marshal(Aggregate(pods, nil))
 	if err != nil {
@@ -190,14 +190,14 @@ func TestAggregateIsOrderIndependent(t *testing.T) {
 // that legible: pod.replicas on three records is obviously one pod fact seen
 // three times, where a flat replicas field invites a sum.
 func TestAggregatePodFactsRepeatPerContainerWithoutMultiplying(t *testing.T) {
-	withSidecar := func(name, node string) collector.PodInfo {
+	withSidecar := func(name, node string) model.PodInfo {
 		p := pod("acme", name, node, "Running", "sha256:aaa", burstable())
-		p.Containers = append(p.Containers, collector.Container{
+		p.Containers = append(p.Containers, model.Container{
 			Name: "istio-proxy", Image: "istio/proxyv2:1.24.0", ImageDigest: "sha256:ccc",
 		})
 		return p
 	}
-	got := Aggregate([]collector.PodInfo{
+	got := Aggregate([]model.PodInfo{
 		withSidecar("api-1", "node-a"),
 		withSidecar("api-2", "node-b"),
 	}, nil)
@@ -222,7 +222,7 @@ func TestAggregatePodFactsRepeatPerContainerWithoutMultiplying(t *testing.T) {
 // the agent deciding which phases count; reporting them in the breakdown lets
 // the backend decide while keeping the raw replica count readable.
 func TestAggregateReportsTerminatedPodsInTheBreakdown(t *testing.T) {
-	got := Aggregate([]collector.PodInfo{
+	got := Aggregate([]model.PodInfo{
 		pod("acme", "job-1", "node-a", "Succeeded", "sha256:aaa", burstable()),
 		pod("acme", "job-2", "node-a", "Failed", "sha256:aaa", burstable()),
 		pod("acme", "job-3", "node-a", "Running", "sha256:aaa", burstable()),
@@ -243,12 +243,12 @@ func TestAggregateReportsTerminatedPodsInTheBreakdown(t *testing.T) {
 // reach the payload and must not collapse two containers into one record.
 func TestAggregateKeepsInitContainersDistinct(t *testing.T) {
 	p := pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable())
-	p.Containers = append(p.Containers, collector.Container{
+	p.Containers = append(p.Containers, model.Container{
 		Name: "migrate", Image: "registry.example.com/migrate:v1",
 		ImageDigest: "sha256:ccc", Init: true,
 	})
 
-	got := Aggregate([]collector.PodInfo{p}, nil)
+	got := Aggregate([]model.PodInfo{p}, nil)
 	if len(got) != 2 {
 		t.Fatalf("records = %d, want 2 (init and regular container)", len(got))
 	}
@@ -268,14 +268,14 @@ func TestAggregateKeepsInitContainersDistinct(t *testing.T) {
 // pod, not derived here.
 func TestAggregateCarriesPlacementIntoThePodBlock(t *testing.T) {
 	p := pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable())
-	p.Placement = collector.Placement{
-		PodAntiAffinity: []collector.TopologyTerm{
+	p.Placement = model.Placement{
+		PodAntiAffinity: []model.TopologyTerm{
 			{TopologyKey: "kubernetes.io/hostname", Required: true},
 		},
 		PriorityClass: "high",
 	}
 
-	got := Aggregate([]collector.PodInfo{p}, nil)
+	got := Aggregate([]model.PodInfo{p}, nil)
 	if len(got) != 1 {
 		t.Fatalf("records = %d, want 1", len(got))
 	}
@@ -292,18 +292,18 @@ func TestAggregateCarriesPlacementIntoThePodBlock(t *testing.T) {
 // builds are separate records and each keeps what it declared.
 func TestAggregateKeepsEachBuildsPlacementDuringRollout(t *testing.T) {
 	old := pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable())
-	old.Placement = collector.Placement{PriorityClass: "normal"}
+	old.Placement = model.Placement{PriorityClass: "normal"}
 	fresh := pod("acme", "api-2", "node-b", "Running", "sha256:bbb", burstable())
-	fresh.Placement = collector.Placement{
+	fresh.Placement = model.Placement{
 		PriorityClass: "high",
 		NodeSelector:  map[string]string{"pool": "reserved"},
 	}
 
-	got := Aggregate([]collector.PodInfo{old, fresh}, nil)
+	got := Aggregate([]model.PodInfo{old, fresh}, nil)
 	if len(got) != 2 {
 		t.Fatalf("records = %d, want one per build", len(got))
 	}
-	byDigest := map[string]collector.Placement{}
+	byDigest := map[string]model.Placement{}
 	for _, r := range got {
 		byDigest[r.ImageDigest] = r.Pod.Placement
 	}
@@ -318,7 +318,7 @@ func TestAggregateKeepsEachBuildsPlacementDuringRollout(t *testing.T) {
 // A workload with no constraints contributes no placement bytes at all: the
 // block is omitted rather than written empty on every record.
 func TestAggregateOmitsPlacementForAnUnconstrainedWorkload(t *testing.T) {
-	got := Aggregate([]collector.PodInfo{
+	got := Aggregate([]model.PodInfo{
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
 	}, nil)
 	encoded, err := json.Marshal(got[0])
@@ -334,9 +334,9 @@ func TestAggregateOmitsPlacementForAnUnconstrainedWorkload(t *testing.T) {
 // at all. A block of zeros would read as a strategy that replaces every replica
 // at once, which is not what the agent observed (ADR 0048 §2).
 func TestARecordWithNoStrategyCarriesNoWorkloadObject(t *testing.T) {
-	withStrategy := Aggregate([]collector.PodInfo{
+	withStrategy := Aggregate([]model.PodInfo{
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
-	}, map[collector.WorkloadKey]collector.UpdateStrategy{
+	}, map[model.WorkloadKey]model.UpdateStrategy{
 		{Namespace: "acme", Kind: "Deployment", Name: "api"}: {Type: "RollingUpdate"},
 	})
 	encoded, err := json.Marshal(withStrategy)
@@ -347,7 +347,7 @@ func TestARecordWithNoStrategyCarriesNoWorkloadObject(t *testing.T) {
 		t.Fatalf("a strategy the agent read must ship nested under workload: %s", encoded)
 	}
 
-	without := Aggregate([]collector.PodInfo{
+	without := Aggregate([]model.PodInfo{
 		pod("acme", "api-1", "node-a", "Running", "sha256:aaa", burstable()),
 	}, nil)
 	encoded, err = json.Marshal(without)

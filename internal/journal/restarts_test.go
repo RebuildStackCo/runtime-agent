@@ -6,17 +6,17 @@ import (
 
 	"k8s.io/utils/ptr"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 var windowStart = time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
 
-func restart(at time.Time, count int64, reason string) collector.ContainerRestart {
-	return collector.ContainerRestart{
+func restart(at time.Time, count int64, reason string) model.ContainerRestart {
+	return model.ContainerRestart{
 		Namespace:  "shop",
 		Pod:        "web-1",
 		Container:  "app",
-		Workload:   collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+		Workload:   model.WorkloadRef{Kind: "Deployment", Name: "web"},
 		ObservedAt: at,
 		Restarts:   count,
 		Reason:     reason,
@@ -47,7 +47,7 @@ func TestObserveAccumulatesWithinOneWindow(t *testing.T) {
 	if !rec.WindowStart.Equal(windowStart) || rec.WindowSeconds != 3600 {
 		t.Errorf("window = %s/%ds, want %s/3600", rec.WindowStart, rec.WindowSeconds, windowStart)
 	}
-	if rec.Workload != (collector.WorkloadRef{Kind: "Deployment", Name: "web"}) {
+	if rec.Workload != (model.WorkloadRef{Kind: "Deployment", Name: "web"}) {
 		t.Errorf("workload = %+v, want Deployment/web", rec.Workload)
 	}
 }

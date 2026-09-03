@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,15 +49,15 @@ func finishedJob(name string, condType batchv1.JobConditionType, reason string, 
 	return job
 }
 
-func collectRuns(t *testing.T, filter *Filter, objects ...runtime.Object) map[string]JobRun {
+func collectRuns(t *testing.T, filter *Filter, objects ...runtime.Object) map[string]model.JobRun {
 	t.Helper()
 	clientset := fake.NewClientset(objects...)
 
 	var mu sync.Mutex
-	runs := map[string]JobRun{}
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	runs := map[string]model.JobRun{}
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	watcher.SetFilter(filter)
-	watcher.OnJobFinished(func(r JobRun) {
+	watcher.OnJobFinished(func(r model.JobRun) {
 		mu.Lock()
 		runs[r.Name] = r
 		mu.Unlock()
@@ -85,7 +86,7 @@ func collectRuns(t *testing.T, filter *Filter, objects ...runtime.Object) map[st
 
 	mu.Lock()
 	defer mu.Unlock()
-	out := make(map[string]JobRun, len(runs))
+	out := make(map[string]model.JobRun, len(runs))
 	for k, v := range runs {
 		out[k] = v
 	}
@@ -108,8 +109,8 @@ func TestFinishedJobIsReportedWithItsOwnInstants(t *testing.T) {
 	if !found {
 		t.Fatalf("the succeeded run was not reported; got %v", keysOf(runs))
 	}
-	if ok.Result != JobSucceeded || ok.FailReason != "" {
-		t.Errorf("run = (%q, %q), want (%q, \"\")", ok.Result, ok.FailReason, JobSucceeded)
+	if ok.Result != model.JobSucceeded || ok.FailReason != "" {
+		t.Errorf("run = (%q, %q), want (%q, \"\")", ok.Result, ok.FailReason, model.JobSucceeded)
 	}
 	if !ok.FinishedAt.Equal(jobFinished) {
 		t.Errorf("finished_at = %s, want %s (the cluster's instant, not the observation's)",
@@ -127,9 +128,9 @@ func TestFinishedJobIsReportedWithItsOwnInstants(t *testing.T) {
 	if !found {
 		t.Fatalf("the failed run was not reported; got %v", keysOf(runs))
 	}
-	if failed.Result != JobFailed || failed.FailReason != "BackoffLimitExceeded" {
+	if failed.Result != model.JobFailed || failed.FailReason != "BackoffLimitExceeded" {
 		t.Errorf("failed run = (%q, %q), want (%q, %q)",
-			failed.Result, failed.FailReason, JobFailed, "BackoffLimitExceeded")
+			failed.Result, failed.FailReason, model.JobFailed, "BackoffLimitExceeded")
 	}
 }
 
@@ -181,7 +182,7 @@ func TestCronJobOptOutExcludesItsRuns(t *testing.T) {
 	}
 }
 
-func keysOf(runs map[string]JobRun) []string {
+func keysOf(runs map[string]model.JobRun) []string {
 	out := make([]string, 0, len(runs))
 	for k := range runs {
 		out = append(out, k)

@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 func TestPodFilterAgainstRealCluster(t *testing.T) {
@@ -64,8 +65,8 @@ func TestPodFilterAgainstRealCluster(t *testing.T) {
 	makePod(nsOptedOut, "hidden-by-annotation", nil)
 
 	var mu sync.Mutex
-	seen := make(map[string]collector.PodInfo)
-	watcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
+	seen := make(map[string]model.PodInfo)
+	watcher := collector.NewPodWatcher(clientset, func(p model.PodInfo) {
 		observed, _ := json.Marshal(p)
 		t.Logf("pod observed: %s", observed)
 		if p.Namespace != nsCollected && p.Namespace != nsDenied && p.Namespace != nsOptedOut {

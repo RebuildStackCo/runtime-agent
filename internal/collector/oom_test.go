@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -23,13 +24,13 @@ func terminated(reason string, exitCode int32, finishedAt time.Time) corev1.Cont
 
 // oomWatcher starts a PodWatcher over the given pod and returns the OOM
 // events channel plus the started clientset for follow-up updates.
-func oomWatcher(t *testing.T, initial *corev1.Pod) (*fake.Clientset, chan OOMKill) {
+func oomWatcher(t *testing.T, initial *corev1.Pod) (*fake.Clientset, chan model.OOMKill) {
 	t.Helper()
 	clientset := fake.NewClientset(initial)
 
-	events := make(chan OOMKill, 16)
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
-	watcher.OnOOMKill(func(o OOMKill) { events <- o })
+	events := make(chan model.OOMKill, 16)
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
+	watcher.OnOOMKill(func(o model.OOMKill) { events <- o })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -43,14 +44,14 @@ func oomWatcher(t *testing.T, initial *corev1.Pod) (*fake.Clientset, chan OOMKil
 	return clientset, events
 }
 
-func waitOOM(t *testing.T, events chan OOMKill) OOMKill {
+func waitOOM(t *testing.T, events chan model.OOMKill) model.OOMKill {
 	t.Helper()
 	select {
 	case o := <-events:
 		return o
 	case <-time.After(5 * time.Second):
 		t.Fatal("no OOM kill reported before timeout")
-		return OOMKill{}
+		return model.OOMKill{}
 	}
 }
 
@@ -78,7 +79,7 @@ func TestReportsOOMKillOnceAcrossStatusUpdates(t *testing.T) {
 	if got.ExitCode != 137 || got.RestartCount != 1 || !got.FinishedAt.Equal(firstKill) {
 		t.Errorf("event = %+v, want exit 137, restarts 1, finished at %s", got, firstKill)
 	}
-	if got.Workload != (WorkloadRef{Kind: "StatefulSet", Name: "checkout"}) {
+	if got.Workload != (model.WorkloadRef{Kind: "StatefulSet", Name: "checkout"}) {
 		t.Errorf("workload = %+v, want StatefulSet/checkout", got.Workload)
 	}
 	// The app container declares a 1Gi limit (see pod() in pods_test.go).

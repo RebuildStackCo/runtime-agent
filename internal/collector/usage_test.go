@@ -17,6 +17,7 @@ import (
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/utils/ptr"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -24,7 +25,7 @@ import (
 // unknown-or-excluded, exactly like PodWatcher.LookupPod.
 type stubResolver map[types.UID]podIndexEntry
 
-func (r stubResolver) LookupPod(uid types.UID) (string, WorkloadRef, bool) {
+func (r stubResolver) LookupPod(uid types.UID) (string, model.WorkloadRef, bool) {
 	entry, ok := r[uid]
 	return entry.namespace, entry.workload, ok
 }
@@ -36,13 +37,13 @@ func (r stubResolver) HostNetwork(uid types.UID) bool {
 	return ok && entry.info.Placement.HostNetwork
 }
 
-func (r stubResolver) LookupPodByName(namespace, name string) (types.UID, WorkloadRef, bool) {
+func (r stubResolver) LookupPodByName(namespace, name string) (types.UID, model.WorkloadRef, bool) {
 	for uid, entry := range r {
 		if entry.namespace == namespace && entry.name == name {
 			return uid, entry.workload, true
 		}
 	}
-	return "", WorkloadRef{}, false
+	return "", model.WorkloadRef{}, false
 }
 
 var usageTestStart = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
@@ -88,7 +89,7 @@ func onlyRecord(t *testing.T, p *UsagePoller) *rollup.Record {
 
 func webResolver() stubResolver {
 	return stubResolver{
-		"uid-1": {namespace: "shop", name: "web-abc", workload: WorkloadRef{Kind: "Deployment", Name: "web"}},
+		"uid-1": {namespace: "shop", name: "web-abc", workload: model.WorkloadRef{Kind: "Deployment", Name: "web"}},
 	}
 }
 
@@ -260,7 +261,7 @@ func TestUsageUnknownPodDeferredLosslessly(t *testing.T) {
 
 	// Once the pod resolves, the first observation covers the full interval
 	// since container start — nothing was lost to the deferral.
-	resolver["uid-1"] = podIndexEntry{namespace: "shop", workload: WorkloadRef{Kind: "Deployment", Name: "web"}}
+	resolver["uid-1"] = podIndexEntry{namespace: "shop", workload: model.WorkloadRef{Kind: "Deployment", Name: "web"}}
 	second := first.Add(30 * time.Second)
 	p.ingest(summaryWith(cpuMemStats(usageTestStart, second, 21e9, 96<<20)), second)
 
@@ -526,8 +527,8 @@ func TestHostNetworkIsFlagged(t *testing.T) {
 	resolver := stubResolver{
 		"uid-1": {
 			namespace: "shop", name: "web-abc",
-			workload: WorkloadRef{Kind: "DaemonSet", Name: "web"},
-			info:     PodInfo{Placement: Placement{HostNetwork: true}},
+			workload: model.WorkloadRef{Kind: "DaemonSet", Name: "web"},
+			info:     model.PodInfo{Placement: model.Placement{HostNetwork: true}},
 		},
 	}
 	p := testPoller(resolver)

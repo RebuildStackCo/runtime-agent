@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,113 +30,6 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// WorkloadRef identifies the controller that ultimately manages a pod:
-// Deployment, StatefulSet, DaemonSet, CronJob, a bare Job, an Argo Rollout,
-// or any other CRD that owns pods through the standard owner-reference chain.
-// Kind is "none" for pods with no controller.
-type WorkloadRef struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-}
-
-// Resources is the declared resource envelope of one container, normalized
-// to resource units: CPU in millicores, memory in bytes. A nil field means
-// the corresponding request or limit is not set — a meaningful fact in
-// itself, distinct from zero.
-type Resources struct {
-	CPURequestMilli    *int64 `json:"cpu_request_milli,omitempty"`
-	CPULimitMilli      *int64 `json:"cpu_limit_milli,omitempty"`
-	MemoryRequestBytes *int64 `json:"memory_request_bytes,omitempty"`
-	MemoryLimitBytes   *int64 `json:"memory_limit_bytes,omitempty"`
-}
-
-// ContainerPort is a declared port from the pod spec — the fact that a
-// container announces it, and nothing about whether it is ever used. Declared
-// ports are how the controller locates pprof endpoints without blind scans
-// (docs/security.md §4). Name and Protocol are omitted when unset.
-type ContainerPort struct {
-	Name     string `json:"name,omitempty"`
-	Port     int32  `json:"port"`
-	Protocol string `json:"protocol,omitempty"`
-}
-
-// Probe is one of a container's probes, reduced to its schedule and the kind of
-// check it makes. What it checks — the command, the HTTP path, the headers — is
-// removed before the object is cached, so it is not here to be read
-// (ADR 0048 §1).
-//
-// The numbers are the API server's defaulted ones, which are the numbers the
-// kubelet will use: an unset `periodSeconds` arrives as 10, not as zero.
-type Probe struct {
-	// Kind is exec, httpGet, tcpSocket or grpc. Empty means the probe declares
-	// no handler, which the API server rejects — so it is a shape, not a state.
-	Kind                string `json:"kind,omitempty"`
-	InitialDelaySeconds int32  `json:"initial_delay_seconds,omitempty"`
-	PeriodSeconds       int32  `json:"period_seconds,omitempty"`
-	TimeoutSeconds      int32  `json:"timeout_seconds,omitempty"`
-	FailureThreshold    int32  `json:"failure_threshold,omitempty"`
-	SuccessThreshold    int32  `json:"success_threshold,omitempty"`
-}
-
-// Probes are a container's three probes. Each is absent when the container
-// declares none, which is the state most probe findings are about.
-type Probes struct {
-	Liveness  *Probe `json:"liveness,omitempty"`
-	Readiness *Probe `json:"readiness,omitempty"`
-	Startup   *Probe `json:"startup,omitempty"`
-}
-
-// Container is the collected view of a container: name, image, the image
-// digest once the container has started, declared resources, declared ports,
-// probe schedules, and the runtime knobs named in ADR 0047. Args and command
-// are never read, and neither is any other environment variable (filter early).
-type Container struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
-	// ImageDigest is the content digest (e.g. "sha256:…") the kubelet reports
-	// for the running image. It is empty until the container starts, because
-	// the runtime only knows it after pulling the image — see describe.
-	ImageDigest string          `json:"image_digest,omitempty"`
-	Init        bool            `json:"init,omitempty"`
-	Resources   Resources       `json:"resources"`
-	Ports       []ContainerPort `json:"ports,omitempty"`
-	// Probes are the container's probe schedules. A liveness probe is the one
-	// piece of a spec that can restart a healthy container on a timer, and
-	// nothing else the agent collects says it exists (ADR 0048 §1).
-	Probes Probes `json:"probes,omitzero"`
-	// RuntimeEnv holds the Go runtime knobs from the container's environment,
-	// and only those: the names are a closed list, and a variable whose value
-	// comes from a Secret or ConfigMap is not read (ADR 0047). A knob set from
-	// the container's own limits carries the field path it derives from rather
-	// than a value, because the value does not exist until the kubelet resolves
-	// it.
-	RuntimeEnv map[string]string `json:"runtime_env,omitempty"`
-}
-
-// PodInfo is the collected view of one pod.
-type PodInfo struct {
-	Namespace string
-	Name      string
-	Node      string
-	Phase     string
-	// Unscheduled is why the pod is not on a node yet, "" once it is scheduled.
-	// It is the reason behind the shortfall the replica breakdown already shows
-	// (ADR 0012 §5): the count was always visible, the cause was not.
-	Unscheduled string
-	QOSClass    string
-	Workload    WorkloadRef
-	// Placement is what the spec says about where this pod may run. It is a
-	// pod fact, not a container one, and it is what workload metadata and node
-	// metadata together cannot answer: why a workload cannot be moved.
-	Placement Placement
-	// Claims are the PersistentVolumeClaim names this pod mounts, and the only
-	// part of `spec.volumes` the agent reads (ADR 0032, amending ADR 0031). A
-	// bound claim on a zonal volume pins the pod to that zone, which no field
-	// of the placement block above states.
-	Claims     []string
-	Containers []Container
-}
-
 // PodWatcher lists all pods in all namespaces and then keeps watching for
 // new ones. Every observed pod is reported through the OnPod callback,
 // resolved to the workload that manages it.
@@ -144,11 +38,11 @@ type PodWatcher struct {
 	// factory owns every informer. It is created in the constructor so the
 	// listers below are set before any goroutine can read them.
 	factory       informers.SharedInformerFactory
-	onPod         func(PodInfo)
-	onOOM         func(OOMKill)
-	onRestart     func(ContainerRestart)
-	onDisruption  func(PodDisruption)
-	onJobFinished func(JobRun)
+	onPod         func(model.PodInfo)
+	onOOM         func(model.OOMKill)
+	onRestart     func(model.ContainerRestart)
+	onDisruption  func(model.PodDisruption)
+	onJobFinished func(model.JobRun)
 	filter        *Filter
 
 	// Listers for the owner chain. The ReplicaSet and Job listers resolve a
@@ -239,16 +133,9 @@ type PodWatcher struct {
 	placementTermsDropped  atomic.Int64
 }
 
-// PlacementDrops is what the placement reduction refused to carry, for the
-// coverage report.
-type PlacementDrops struct {
-	Values int64 `json:"values_dropped"`
-	Terms  int64 `json:"terms_dropped"`
-}
-
 // PlacementDrops returns the running totals.
-func (w *PodWatcher) PlacementDrops() PlacementDrops {
-	return PlacementDrops{
+func (w *PodWatcher) PlacementDrops() model.PlacementDrops {
+	return model.PlacementDrops{
 		Values: w.placementValuesDropped.Load(),
 		Terms:  w.placementTermsDropped.Load(),
 	}
@@ -258,7 +145,7 @@ type podIndexEntry struct {
 	namespace string
 	name      string
 	node      string
-	workload  WorkloadRef
+	workload  model.WorkloadRef
 	// containers maps each started container's runtime ID (normalized: no
 	// runtime prefix, lowercase) to its name and image digest. It is what the
 	// node role's build-info facts join against — the node reports a pod UID
@@ -268,7 +155,7 @@ type podIndexEntry struct {
 	// info is the pod's full collected view, kept so the workload-metadata
 	// snapshot is built from the same index that gates every other pod-derived
 	// signal: one admission decision, one lifetime, no second source of truth.
-	info PodInfo
+	info model.PodInfo
 }
 
 // containerIdentity is what a container ID resolves to within its pod.
@@ -280,7 +167,7 @@ type containerIdentity struct {
 // NewPodWatcher returns a watcher that calls onPod for every pod present at
 // start and for every pod created afterwards. onPod is called from the
 // informer goroutine and must not block.
-func NewPodWatcher(clientset kubernetes.Interface, onPod func(PodInfo)) *PodWatcher {
+func NewPodWatcher(clientset kubernetes.Interface, onPod func(model.PodInfo)) *PodWatcher {
 	// The factory and every lister are built here rather than in Run, and that
 	// is a correctness requirement, not a style choice: the metadata flush runs
 	// on its own goroutine and calls ReplicaSets, WorkloadPolicies and
@@ -394,34 +281,19 @@ func (w *PodWatcher) clock() time.Time {
 	return w.now()
 }
 
-// SourceHealth is one watched source as the agent actually found it: the
-// agent's effective read access, measured rather than declared. A grant the
-// ClusterRole holds but a webhook defeats reads as granted in any review of the
-// rules, and as failing here (ADR 0054 §3).
-type SourceHealth struct {
-	// Name is the resource class, not a customer object: "services",
-	// "endpoint_slices", and so on.
-	Name string `json:"name"`
-	// Synced is whether the cache ever filled.
-	Synced bool `json:"synced"`
-	// Failing is whether its watch has been erroring recently enough to treat
-	// the cache as no longer fed (ADR 0035).
-	Failing bool `json:"failing,omitempty"`
-}
-
 // SourceHealths reports every non-gating source the agent watches, sorted by
 // name. The gating caches — pods, namespaces, nodes and the owner chain — are
 // absent on purpose: their failure stops the agent, so a payload arriving at all
 // is the evidence about them (ADR 0035).
-func (w *PodWatcher) SourceHealths() []SourceHealth {
+func (w *PodWatcher) SourceHealths() []model.SourceHealth {
 	now := w.clock()
 	window := w.limits.unavailableFor
 	if window == 0 {
 		window = watchUnavailableFor
 	}
-	out := make([]SourceHealth, 0, len(w.policySources))
+	out := make([]model.SourceHealth, 0, len(w.policySources))
 	for _, source := range w.policySources {
-		out = append(out, SourceHealth{
+		out = append(out, model.SourceHealth{
 			Name:    source.name,
 			Synced:  source.synced != nil && source.synced(),
 			Failing: source.health != nil && source.health.failedWithin(now, window),
@@ -629,7 +501,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 // already-described collected view, which the index also keeps: it is the
 // source of the workload-metadata snapshot, so the snapshot covers exactly the
 // pods that passed the filter and drops a pod the moment the index does.
-func (w *PodWatcher) indexPod(pod *corev1.Pod, info PodInfo) {
+func (w *PodWatcher) indexPod(pod *corev1.Pod, info model.PodInfo) {
 	entry := podIndexEntry{
 		namespace:  info.Namespace,
 		name:       info.Name,
@@ -649,12 +521,12 @@ func (w *PodWatcher) indexPod(pod *corev1.Pod, info PodInfo) {
 // golden contract, docs/development.md). Excluded and deleted pods are absent —
 // the snapshot is the current truth, never an append-only history. Container
 // slices are copied, so callers may retain and reorder the result.
-func (w *PodWatcher) Pods() []PodInfo {
+func (w *PodWatcher) Pods() []model.PodInfo {
 	w.indexMu.RLock()
-	out := make([]PodInfo, 0, len(w.index))
+	out := make([]model.PodInfo, 0, len(w.index))
 	for _, entry := range w.index {
 		info := entry.info
-		info.Containers = append([]Container(nil), entry.info.Containers...)
+		info.Containers = append([]model.Container(nil), entry.info.Containers...)
 		out = append(out, info)
 	}
 	w.indexMu.RUnlock()
@@ -721,7 +593,7 @@ func (w *PodWatcher) dropPod(uid types.UID) {
 // poller consults it before accumulating any kubelet sample, so an excluded
 // pod's usage is dropped at the source, and an unknown pod's sample is
 // deferred — cumulative counters make the retry lossless.
-func (w *PodWatcher) LookupPod(uid types.UID) (namespace string, workload WorkloadRef, ok bool) {
+func (w *PodWatcher) LookupPod(uid types.UID) (namespace string, workload model.WorkloadRef, ok bool) {
 	w.indexMu.RLock()
 	entry, ok := w.index[uid]
 	w.indexMu.RUnlock()
@@ -746,7 +618,7 @@ func (w *PodWatcher) HostNetwork(uid types.UID) bool {
 // parameter rather than a fact: it is not indexed, not reported and not carried
 // in any payload (ADR 0057 §3). Any replica will do — the question the caller
 // asks is about the build, and every replica of a build answers it the same.
-func (w *PodWatcher) PodAddress(namespace string, workload WorkloadRef, container, imageDigest string) (string, bool) {
+func (w *PodWatcher) PodAddress(namespace string, workload model.WorkloadRef, container, imageDigest string) (string, bool) {
 	w.indexMu.RLock()
 	var names []string
 	for _, entry := range w.index {
@@ -793,16 +665,16 @@ func runsBuild(entry podIndexEntry, container, imageDigest string) bool {
 // per-container counter baselines must key them on something that changes when
 // the container does. Callers that key on the name alone silently attribute the
 // new pod's counters to the dead pod's baseline.
-func (w *PodWatcher) LookupPodByName(namespace, name string) (uid types.UID, workload WorkloadRef, ok bool) {
+func (w *PodWatcher) LookupPodByName(namespace, name string) (uid types.UID, workload model.WorkloadRef, ok bool) {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
 	uid, ok = w.nameIndex[namespace+"/"+name]
 	if !ok {
-		return "", WorkloadRef{}, false
+		return "", model.WorkloadRef{}, false
 	}
 	entry, ok := w.index[uid]
 	if !ok {
-		return "", WorkloadRef{}, false
+		return "", model.WorkloadRef{}, false
 	}
 	return uid, entry.workload, true
 }
@@ -815,19 +687,19 @@ func (w *PodWatcher) LookupPodByName(namespace, name string) (uid types.UID, wor
 //
 // node is what keeps a report attributable (ADR 0040): a UID/ID pair is
 // internally consistent whoever sends it. It comes from the token, not the body.
-func (w *PodWatcher) LookupContainerOnNode(podUID types.UID, containerID, node string) (namespace string, workload WorkloadRef, container, imageDigest string, ok bool) {
+func (w *PodWatcher) LookupContainerOnNode(podUID types.UID, containerID, node string) (namespace string, workload model.WorkloadRef, container, imageDigest string, ok bool) {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
 	entry, ok := w.index[podUID]
 	if !ok {
-		return "", WorkloadRef{}, "", "", false
+		return "", model.WorkloadRef{}, "", "", false
 	}
 	if node == "" || entry.node != node {
-		return "", WorkloadRef{}, "", "", false
+		return "", model.WorkloadRef{}, "", "", false
 	}
 	ci, ok := entry.containers[normalizeContainerID(containerID)]
 	if !ok {
-		return "", WorkloadRef{}, "", "", false
+		return "", model.WorkloadRef{}, "", "", false
 	}
 	return entry.namespace, entry.workload, ci.name, ci.imageDigest, true
 }
@@ -838,7 +710,7 @@ func (w *PodWatcher) LookupContainerOnNode(podUID types.UID, containerID, node s
 // node cannot resolve a container to a workload itself (no API access, ADR 0009).
 type ContainerOnNode struct {
 	Namespace   string
-	Workload    WorkloadRef
+	Workload    model.WorkloadRef
 	ContainerID string
 }
 
@@ -976,8 +848,8 @@ func (w *PodWatcher) workloadAnnotations(pod *corev1.Pod) WorkloadLookup {
 }
 
 // describe reduces a pod to the collected view.
-func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
-	info := PodInfo{
+func (w *PodWatcher) describe(pod *corev1.Pod) model.PodInfo {
+	info := model.PodInfo{
 		Namespace:   pod.Namespace,
 		Name:        pod.Name,
 		Node:        pod.Spec.NodeName,
@@ -995,14 +867,14 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 	}
 	digests := containerDigests(pod)
 	for _, c := range pod.Spec.InitContainers {
-		info.Containers = append(info.Containers, Container{
+		info.Containers = append(info.Containers, model.Container{
 			Name: c.Name, Image: c.Image, Init: true,
 			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
 			Probes: probesOf(&c), RuntimeEnv: runtimeEnvOf(&c),
 		})
 	}
 	for _, c := range pod.Spec.Containers {
-		info.Containers = append(info.Containers, Container{
+		info.Containers = append(info.Containers, model.Container{
 			Name: c.Name, Image: c.Image,
 			ImageDigest: digests[c.Name], Resources: resourcesOf(&c), Ports: portsOf(&c),
 			Probes: probesOf(&c), RuntimeEnv: runtimeEnvOf(&c),
@@ -1019,7 +891,7 @@ func (w *PodWatcher) describe(pod *corev1.Pod) PodInfo {
 // never reach a consumer. Deduplicating on the digest signature keeps the many
 // unrelated status updates (readiness, conditions) from re-reporting an
 // otherwise unchanged pod.
-func (w *PodWatcher) reportPodIfChanged(uid types.UID, info PodInfo) {
+func (w *PodWatcher) reportPodIfChanged(uid types.UID, info model.PodInfo) {
 	sig := digestSignature(info.Containers)
 	w.mu.Lock()
 	prev, seen := w.reportedSig[uid]
@@ -1036,7 +908,7 @@ func (w *PodWatcher) reportPodIfChanged(uid types.UID, info PodInfo) {
 // digestSignature is a compact fingerprint of the containers' image digests,
 // used to decide whether a status update is worth re-reporting. Container
 // names cannot contain the separators, so the encoding is unambiguous.
-func digestSignature(containers []Container) string {
+func digestSignature(containers []model.Container) string {
 	var b strings.Builder
 	for _, c := range containers {
 		b.WriteString(c.Name)
@@ -1089,13 +961,13 @@ func parseImageDigest(imageID string) string {
 
 // portsOf reduces a container's declared ports to the collected view: the
 // spec fact only, with no interpretation of use.
-func portsOf(c *corev1.Container) []ContainerPort {
+func portsOf(c *corev1.Container) []model.ContainerPort {
 	if len(c.Ports) == 0 {
 		return nil
 	}
-	ports := make([]ContainerPort, 0, len(c.Ports))
+	ports := make([]model.ContainerPort, 0, len(c.Ports))
 	for _, p := range c.Ports {
-		ports = append(ports, ContainerPort{
+		ports = append(ports, model.ContainerPort{
 			Name:     p.Name,
 			Port:     p.ContainerPort,
 			Protocol: string(p.Protocol),
@@ -1107,19 +979,19 @@ func portsOf(c *corev1.Container) []ContainerPort {
 // probesOf reduces a container's probes to their schedules. The handlers were
 // emptied when the object entered the cache, so only the kind survives to be
 // read here (ADR 0048 §1).
-func probesOf(c *corev1.Container) Probes {
-	return Probes{
+func probesOf(c *corev1.Container) model.Probes {
+	return model.Probes{
 		Liveness:  describeProbe(c.LivenessProbe),
 		Readiness: describeProbe(c.ReadinessProbe),
 		Startup:   describeProbe(c.StartupProbe),
 	}
 }
 
-func describeProbe(p *corev1.Probe) *Probe {
+func describeProbe(p *corev1.Probe) *model.Probe {
 	if p == nil {
 		return nil
 	}
-	return &Probe{
+	return &model.Probe{
 		Kind:                probeKind(p),
 		InitialDelaySeconds: p.InitialDelaySeconds,
 		PeriodSeconds:       p.PeriodSeconds,
@@ -1172,8 +1044,8 @@ func runtimeEnvOf(c *corev1.Container) map[string]string {
 
 // resourcesOf normalizes a container's declared requests and limits:
 // CPU quantities to millicores, memory to bytes. Absent entries stay nil.
-func resourcesOf(c *corev1.Container) Resources {
-	var r Resources
+func resourcesOf(c *corev1.Container) model.Resources {
+	var r model.Resources
 	if q, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
 		r.CPURequestMilli = ptr.To(q.MilliValue())
 	}
@@ -1194,24 +1066,24 @@ func resourcesOf(c *corev1.Container) Resources {
 // Direct controllers (StatefulSet, DaemonSet, custom CRDs) are reported
 // as-is; if an intermediate object is missing from the cache, the
 // intermediate itself is reported rather than nothing.
-func (w *PodWatcher) resolveWorkload(pod *corev1.Pod) WorkloadRef {
+func (w *PodWatcher) resolveWorkload(pod *corev1.Pod) model.WorkloadRef {
 	owner := metav1.GetControllerOf(pod)
 	if owner == nil {
-		return WorkloadRef{Kind: "none"}
+		return model.WorkloadRef{Kind: "none"}
 	}
 	switch owner.Kind {
 	case "ReplicaSet":
 		if rs, err := w.rsLister.ReplicaSets(pod.Namespace).Get(owner.Name); err == nil {
 			if parent := metav1.GetControllerOf(rs); parent != nil {
-				return WorkloadRef{Kind: parent.Kind, Name: parent.Name}
+				return model.WorkloadRef{Kind: parent.Kind, Name: parent.Name}
 			}
 		}
 	case "Job":
 		if job, err := w.jobLister.Jobs(pod.Namespace).Get(owner.Name); err == nil {
 			if parent := metav1.GetControllerOf(job); parent != nil {
-				return WorkloadRef{Kind: parent.Kind, Name: parent.Name}
+				return model.WorkloadRef{Kind: parent.Kind, Name: parent.Name}
 			}
 		}
 	}
-	return WorkloadRef{Kind: owner.Kind, Name: owner.Name}
+	return model.WorkloadRef{Kind: owner.Kind, Name: owner.Name}
 }

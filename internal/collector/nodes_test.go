@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,14 +34,14 @@ func node(name string, labels map[string]string) *corev1.Node {
 
 // collectNodes runs a NodeWatcher over the given objects and returns
 // everything reported until at least want nodes are seen or the timeout hits.
-func collectNodes(t *testing.T, want int, objects ...runtime.Object) map[string]NodeInfo {
+func collectNodes(t *testing.T, want int, objects ...runtime.Object) map[string]model.NodeInfo {
 	t.Helper()
 	clientset := fake.NewClientset(objects...)
 
 	var mu sync.Mutex
-	seen := make(map[string]NodeInfo)
+	seen := make(map[string]model.NodeInfo)
 	got := make(chan struct{}, 64)
-	watcher := NewNodeWatcher(clientset, func(n NodeInfo) {
+	watcher := NewNodeWatcher(clientset, func(n model.NodeInfo) {
 		mu.Lock()
 		seen[n.Name] = n
 		mu.Unlock()
@@ -74,7 +75,7 @@ func TestCollectsNodeSizes(t *testing.T) {
 	seen := collectNodes(t, 1, node("node-1", nil))
 
 	info := seen["node-1"]
-	want := NodeInfo{
+	want := model.NodeInfo{
 		Name:                   "node-1",
 		KernelVersion:          "6.1.0-generic",
 		Architecture:           "amd64",
@@ -83,7 +84,7 @@ func TestCollectsNodeSizes(t *testing.T) {
 		CapacityCPUMilli:       4000,
 		CapacityMemoryBytes:    16 << 30,
 	}
-	if !info.sameAs(want) {
+	if !info.SameAs(want) {
 		t.Errorf("node = %+v, want %+v", info, want)
 	}
 }
@@ -256,8 +257,8 @@ func TestNodeTopologyLabels(t *testing.T) {
 func TestNodesSnapshotTracksLiveNodesOnly(t *testing.T) {
 	clientset := fake.NewClientset(node("node-c", nil), node("node-a", nil), node("node-b", nil))
 
-	events := make(chan NodeInfo, 16)
-	watcher := NewNodeWatcher(clientset, func(n NodeInfo) { events <- n })
+	events := make(chan model.NodeInfo, 16)
+	watcher := NewNodeWatcher(clientset, func(n model.NodeInfo) { events <- n })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -314,8 +315,8 @@ func TestNodeReportedOnlyWhenViewChanges(t *testing.T) {
 	first.Status.Conditions = ready(time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC))
 	clientset := fake.NewClientset(first)
 
-	events := make(chan NodeInfo, 16)
-	watcher := NewNodeWatcher(clientset, func(n NodeInfo) { events <- n })
+	events := make(chan model.NodeInfo, 16)
+	watcher := NewNodeWatcher(clientset, func(n model.NodeInfo) { events <- n })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -366,8 +367,8 @@ func TestNodeReportedOnlyWhenViewChanges(t *testing.T) {
 func TestReportsNodesAddedAfterStart(t *testing.T) {
 	clientset := fake.NewClientset(node("existing", nil))
 
-	events := make(chan NodeInfo, 16)
-	watcher := NewNodeWatcher(clientset, func(n NodeInfo) { events <- n })
+	events := make(chan model.NodeInfo, 16)
+	watcher := NewNodeWatcher(clientset, func(n model.NodeInfo) { events <- n })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -411,9 +412,9 @@ func TestOnlyAProvableArrivalIsAJoin(t *testing.T) {
 	old.CreationTimestamp = metav1.NewTime(time.Now().Add(-72 * time.Hour))
 	clientset := fake.NewClientset(old)
 
-	events := make(chan NodeLifecycle, 8)
-	watcher := NewNodeWatcher(clientset, func(NodeInfo) {})
-	watcher.OnNodeLifecycle(func(e NodeLifecycle) { events <- e })
+	events := make(chan model.NodeLifecycle, 8)
+	watcher := NewNodeWatcher(clientset, func(model.NodeInfo) {})
+	watcher.OnNodeLifecycle(func(e model.NodeLifecycle) { events <- e })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -462,9 +463,9 @@ func TestADepartureCarriesTheSizeAndSaysTheTimeIsObserved(t *testing.T) {
 	leaving.Status.Capacity["nvidia.com/gpu"] = resource.MustParse("4")
 	clientset := fake.NewClientset(leaving)
 
-	events := make(chan NodeLifecycle, 8)
-	watcher := NewNodeWatcher(clientset, func(NodeInfo) {})
-	watcher.OnNodeLifecycle(func(e NodeLifecycle) { events <- e })
+	events := make(chan model.NodeLifecycle, 8)
+	watcher := NewNodeWatcher(clientset, func(model.NodeInfo) {})
+	watcher.OnNodeLifecycle(func(e model.NodeLifecycle) { events <- e })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

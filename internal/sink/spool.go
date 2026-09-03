@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofprobe"
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofpull"
@@ -120,12 +120,12 @@ func NewSpool(dir string, maxAge time.Duration) (*Spool, error) {
 // nothing because every scrape of its node failed produce identical records,
 // and only the agent can tell them apart (ADR 0012).
 type usagePayload struct {
-	Kind          string                `json:"kind"`
-	Source        string                `json:"source"`
-	WindowStart   time.Time             `json:"window_start"`
-	WindowSeconds int64                 `json:"window_seconds"`
-	Observation   collector.Observation `json:"observation"`
-	Records       []*rollup.Record      `json:"records"`
+	Kind          string            `json:"kind"`
+	Source        string            `json:"source"`
+	WindowStart   time.Time         `json:"window_start"`
+	WindowSeconds int64             `json:"window_seconds"`
+	Observation   model.Observation `json:"observation"`
+	Records       []*rollup.Record  `json:"records"`
 }
 
 // networkPayload is one closed window of every collected workload's network
@@ -140,7 +140,7 @@ type networkPayload struct {
 	Source        string                  `json:"source"`
 	WindowStart   time.Time               `json:"window_start"`
 	WindowSeconds int64                   `json:"window_seconds"`
-	Observation   collector.Observation   `json:"observation"`
+	Observation   model.Observation       `json:"observation"`
 	Records       []*rollup.NetworkRecord `json:"records"`
 }
 
@@ -159,19 +159,19 @@ type collectionCoveragePayload struct {
 	// Since is the base of every cumulative counter below: the moment this
 	// process started counting. It travels in the bytes so a restart reads as a
 	// new base rather than as counters that fell.
-	Since   time.Time                `json:"since"`
-	Agent   AgentInfo                `json:"agent"`
-	Sources []collector.SourceHealth `json:"sources"`
-	Filter  collector.Coverage       `json:"filter"`
+	Since   time.Time            `json:"since"`
+	Agent   AgentInfo            `json:"agent"`
+	Sources []model.SourceHealth `json:"sources"`
+	Filter  model.Coverage       `json:"filter"`
 	// Placement counts the placement terms and values the reduction refused to
 	// carry (ADR 0031). Not an exclusion — the workload is collected — but it is
 	// something the customer's manifests hold and the payload does not.
-	Placement collector.PlacementDrops `json:"placement"`
+	Placement model.PlacementDrops `json:"placement"`
 	// Nodes counts what the node reductions refused to carry: a condition type
 	// or device vendor outside its allow-list, a taint whose strings did not
 	// fit (ADR 0064 §4). Same class as Placement above — the node is collected,
 	// but part of what it says is not.
-	Nodes collector.NodeDrops `json:"nodes"`
+	Nodes model.NodeDrops `json:"nodes"`
 	// Inventory and Scan are present only when the node role is deployed.
 	Inventory *inventory.Counters     `json:"inventory,omitempty"`
 	Scan      *inventory.ScanCoverage `json:"scan,omitempty"`
@@ -206,9 +206,9 @@ type AgentInfo struct {
 // oomPayload is one OOM kill event; events bypass windows and ship
 // immediately (ADR 0006).
 type oomPayload struct {
-	Kind   string            `json:"kind"`
-	Source string            `json:"source"`
-	Event  collector.OOMKill `json:"event"`
+	Kind   string        `json:"kind"`
+	Source string        `json:"source"`
+	Event  model.OOMKill `json:"event"`
 }
 
 // goInventoryPayload is the current Go inventory of the cluster — one record per
@@ -349,10 +349,10 @@ type containerRestartsPayload struct {
 // added — the windows are a subset of `restarts`. Superseding batch under a
 // fixed key: the newest reading replaces its predecessor.
 type restartCountersPayload struct {
-	Kind       string                     `json:"kind"`
-	Source     string                     `json:"source"`
-	CapturedAt time.Time                  `json:"captured_at"`
-	Records    []collector.RestartCounter `json:"records"`
+	Kind       string                 `json:"kind"`
+	Source     string                 `json:"source"`
+	CapturedAt time.Time              `json:"captured_at"`
+	Records    []model.RestartCounter `json:"records"`
 }
 
 // podDisruptionsPayload is every pod the cluster removed within one window:
@@ -416,10 +416,10 @@ type workloadMetadataPayload struct {
 // payload is what turns those node names into zones and instance types.
 // Superseding batch, same reasoning as workloadMetadataPayload.
 type nodeMetadataPayload struct {
-	Kind       string               `json:"kind"`
-	Source     string               `json:"source"`
-	CapturedAt time.Time            `json:"captured_at"`
-	Nodes      []collector.NodeInfo `json:"nodes"`
+	Kind       string           `json:"kind"`
+	Source     string           `json:"source"`
+	CapturedAt time.Time        `json:"captured_at"`
+	Nodes      []model.NodeInfo `json:"nodes"`
 }
 
 // workloadRevisionsPayload is the current revision history of every collected
@@ -453,8 +453,8 @@ type workloadPolicyPayload struct {
 	// "this workload has no budget" and "we were not allowed to look" are the
 	// same silence (ADR 0033). Empty is itself a statement — every source was
 	// read, so what is not here does not exist.
-	UnavailableSources []string                   `json:"unavailable_sources,omitempty"`
-	Records            []collector.WorkloadPolicy `json:"records"`
+	UnavailableSources []string               `json:"unavailable_sources,omitempty"`
+	Records            []model.WorkloadPolicy `json:"records"`
 }
 
 // clusterPolicyPayload is the policy configuration of the cluster: what each
@@ -471,8 +471,8 @@ type clusterPolicyPayload struct {
 	// UnavailableSources is this payload's own list, not a copy of the
 	// workload payload's: the two have distinct natural keys and are upserted
 	// independently, so each must be readable alone (ADR 0033).
-	UnavailableSources []string                `json:"unavailable_sources,omitempty"`
-	Policy             collector.ClusterPolicy `json:"policy"`
+	UnavailableSources []string            `json:"unavailable_sources,omitempty"`
+	Policy             model.ClusterPolicy `json:"policy"`
 }
 
 // profilePayload is one captured eBPF CPU profile: the allow-list-filtered,
@@ -534,7 +534,7 @@ func (w windowKey) name() string {
 // this function runs only when there are usage records — so on a cluster where
 // the kubelet cannot be polled the spool was never bounded at all. Sweep is now
 // the agent's own periodic call (ADR 0042).
-func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs collector.Observation) error {
+func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs model.Observation) error {
 	for k, group := range groupByWindow(records) {
 		payload := usagePayload{
 			Kind:          "usage_snapshot",
@@ -554,7 +554,7 @@ func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs collector.Obser
 // WriteClosedWindows writes final closed-window records, one file per
 // window, and removes the window's snapshot file — the closed record
 // supersedes every snapshot.
-func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs collector.Observation) error {
+func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs model.Observation) error {
 	for k, group := range groupByWindow(records) {
 		payload := usagePayload{
 			Kind:          "usage_window",
@@ -576,7 +576,7 @@ func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs collector.Obser
 
 // WriteNetworkWindows writes final closed-window network records, one file per
 // window. There is no snapshot to remove: this kind has none.
-func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs collector.Observation) error {
+func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs model.Observation) error {
 	grouped := make(map[windowKey][]*rollup.NetworkRecord)
 	for _, r := range records {
 		grouped[windowKey{start: r.WindowStart, seconds: r.WindowSeconds}] = append(
@@ -601,7 +601,7 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs collect
 // WriteCollectionCoverage writes the coverage payload, superseding its
 // predecessor. It is written on every flush, including one that found nothing:
 // an empty report and a broken agent are the same bytes without it (ADR 0054).
-func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []collector.SourceHealth, filter collector.Coverage, placement collector.PlacementDrops, nodes collector.NodeDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
+func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []model.SourceHealth, filter model.Coverage, placement model.PlacementDrops, nodes model.NodeDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
 	payload := collectionCoveragePayload{
 		Kind:       "collection_coverage",
 		Source:     SourceAgent,
@@ -711,7 +711,7 @@ func (s *Spool) WriteNodeLifecycle(records []journal.NodeEventRecord) error {
 // WriteOOMKill writes one OOM event immediately. The filename carries the
 // event's natural identity, so a re-observed event overwrites rather than
 // duplicates.
-func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
+func (s *Spool) WriteOOMKill(e model.OOMKill) error {
 	name := fmt.Sprintf("oom-%d-%s-%s-%s-%d.json",
 		e.FinishedAt.Unix(), fileToken(e.Namespace), fileToken(e.Pod), fileToken(e.Container), e.RestartCount)
 	return s.write(name, oomPayload{Kind: "oom_kill", Source: SourceJournal, Event: e})
@@ -724,9 +724,9 @@ func (s *Spool) WriteOOMKill(e collector.OOMKill) error {
 // A cluster where nothing has ever restarted writes an empty record list rather
 // than nothing, unlike the journals: for a snapshot, "no container has
 // restarted" is an answer worth stating.
-func (s *Spool) WriteRestartCounters(capturedAt time.Time, records []collector.RestartCounter) error {
+func (s *Spool) WriteRestartCounters(capturedAt time.Time, records []model.RestartCounter) error {
 	if records == nil {
-		records = []collector.RestartCounter{}
+		records = []model.RestartCounter{}
 	}
 	payload := restartCountersPayload{
 		Kind:       "restart_counters",
@@ -884,7 +884,7 @@ func (s *Spool) WriteWorkloadMetadata(capturedAt time.Time, records []metadata.R
 
 // WriteNodeMetadata writes the current node inventory as one superseding batch.
 // nodes must already be sorted by name (NodeWatcher.Nodes does it).
-func (s *Spool) WriteNodeMetadata(capturedAt time.Time, nodes []collector.NodeInfo) error {
+func (s *Spool) WriteNodeMetadata(capturedAt time.Time, nodes []model.NodeInfo) error {
 	payload := nodeMetadataPayload{
 		Kind:       "node_metadata",
 		Source:     SourceStructural,
@@ -910,7 +910,7 @@ func (s *Spool) WriteWorkloadRevisions(capturedAt time.Time, records []revisions
 
 // WriteWorkloadPolicy writes the workload-policy snapshot. It supersedes its
 // predecessor under a fixed name, like the other structural snapshots.
-func (s *Spool) WriteWorkloadPolicy(capturedAt time.Time, records []collector.WorkloadPolicy, unavailable []string) error {
+func (s *Spool) WriteWorkloadPolicy(capturedAt time.Time, records []model.WorkloadPolicy, unavailable []string) error {
 	payload := workloadPolicyPayload{
 		Kind:               "workload_policy",
 		Source:             SourceStructural,
@@ -922,7 +922,7 @@ func (s *Spool) WriteWorkloadPolicy(capturedAt time.Time, records []collector.Wo
 }
 
 // WriteClusterPolicy writes the cluster-policy snapshot.
-func (s *Spool) WriteClusterPolicy(capturedAt time.Time, policy collector.ClusterPolicy, unavailable []string) error {
+func (s *Spool) WriteClusterPolicy(capturedAt time.Time, policy model.ClusterPolicy, unavailable []string) error {
 	payload := clusterPolicyPayload{
 		Kind:               "cluster_policy",
 		Source:             SourceStructural,

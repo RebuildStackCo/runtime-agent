@@ -11,7 +11,7 @@ package metadata
 import (
 	"sort"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 // Key identifies one workload-metadata record: one container of one workload,
@@ -77,7 +77,7 @@ type PodScope struct {
 	// Taken from the first pod seen under the key, like Image and Resources
 	// above. The key carries the image digest, so a rollout that changes
 	// placement produces one record per build (ADR 0031).
-	Placement collector.Placement `json:"placement,omitzero"`
+	Placement model.Placement `json:"placement,omitzero"`
 }
 
 // WorkloadScope holds the facts of this record that belong to the workload
@@ -88,7 +88,7 @@ type WorkloadScope struct {
 	// UpdateStrategy is how the workload replaces its own replicas, for the
 	// kinds the agent reads. Absent for every other kind, and absence says only
 	// that the agent did not read one (ADR 0048 §2).
-	UpdateStrategy collector.UpdateStrategy `json:"update_strategy,omitzero"`
+	UpdateStrategy model.UpdateStrategy `json:"update_strategy,omitzero"`
 }
 
 // Record is the declared shape of one workload container plus the placement of
@@ -106,13 +106,13 @@ type Record struct {
 	// Resources preserves the distinction between an unset request or limit
 	// (nil) and one explicitly set to zero — the difference is the whole point
 	// of several findings, and JSON omits nil rather than flattening it.
-	Resources collector.Resources `json:"resources"`
+	Resources model.Resources `json:"resources"`
 	// Ports are the container's declared ports. Declaring a port is not using
 	// it; that inference belongs to the backend.
-	Ports []collector.ContainerPort `json:"ports,omitempty"`
+	Ports []model.ContainerPort `json:"ports,omitempty"`
 	// Probes are the container's probe schedules, without what any of them
 	// checks (ADR 0048 §1).
-	Probes collector.Probes `json:"probes,omitzero"`
+	Probes model.Probes `json:"probes,omitzero"`
 	// RuntimeEnv is the Go runtime knobs this container sets, from the closed
 	// list in ADR 0047. Absent means none of them is set, which is the state
 	// most findings about this field are about.
@@ -132,7 +132,7 @@ type Record struct {
 // strategies is read from the workload objects, not from the pods (ADR 0048 §2);
 // a workload absent from it carries none. Only pods the filter admitted reach
 // this function, so no excluded pod's identity appears (invariant 6).
-func Aggregate(pods []collector.PodInfo, strategies map[collector.WorkloadKey]collector.UpdateStrategy) []Record {
+func Aggregate(pods []model.PodInfo, strategies map[model.WorkloadKey]model.UpdateStrategy) []Record {
 	byKey := make(map[Key]*Record)
 	for _, pod := range pods {
 		for _, c := range pod.Containers {
@@ -153,7 +153,7 @@ func Aggregate(pods []collector.PodInfo, strategies map[collector.WorkloadKey]co
 					Ports:      c.Ports,
 					Probes:     c.Probes,
 					RuntimeEnv: c.RuntimeEnv,
-					Workload: WorkloadScope{UpdateStrategy: strategies[collector.WorkloadKey{
+					Workload: WorkloadScope{UpdateStrategy: strategies[model.WorkloadKey{
 						Namespace: pod.Namespace,
 						Kind:      pod.Workload.Kind,
 						Name:      pod.Workload.Name,

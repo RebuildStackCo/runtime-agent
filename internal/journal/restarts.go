@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 // UnknownReason is where a termination reason outside the known set is counted.
@@ -56,9 +56,9 @@ type Key struct {
 // reason breakdown quietly imply a smaller total (ADR 0013's principle).
 type RestartRecord struct {
 	Key
-	Workload      collector.WorkloadRef `json:"workload"`
-	WindowStart   time.Time             `json:"window_start"`
-	WindowSeconds int64                 `json:"window_seconds"`
+	Workload      model.WorkloadRef `json:"workload"`
+	WindowStart   time.Time         `json:"window_start"`
+	WindowSeconds int64             `json:"window_seconds"`
 	// Restarts is every restart of this container within the window, counted
 	// from the restart counter's advance.
 	Restarts int64 `json:"restarts"`
@@ -106,7 +106,7 @@ func NewRestarts(windowLength time.Duration) *Restarts {
 // because consumption accrues continuously; restarts are discrete events whose
 // individual times Kubernetes does not record, so pro-rating them would invent
 // a distribution rather than approximate one.
-func (r *Restarts) Observe(e collector.ContainerRestart) {
+func (r *Restarts) Observe(e model.ContainerRestart) {
 	if e.Restarts <= 0 {
 		return
 	}

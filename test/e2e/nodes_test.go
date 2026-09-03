@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 func TestNodeWatcherAgainstRealCluster(t *testing.T) {
@@ -18,8 +19,8 @@ func TestNodeWatcherAgainstRealCluster(t *testing.T) {
 	defer cancel()
 
 	var mu sync.Mutex
-	seen := make(map[string]collector.NodeInfo)
-	watcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
+	seen := make(map[string]model.NodeInfo)
+	watcher := collector.NewNodeWatcher(clientset, func(n model.NodeInfo) {
 		observed, _ := json.Marshal(n)
 		t.Logf("node observed: %s", observed)
 		mu.Lock()

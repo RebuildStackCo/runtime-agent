@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 const pauseImage = "registry.k8s.io/pause:3.10"
@@ -147,8 +148,8 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 	// Start the watcher only now: both workloads' pods may already exist,
 	// which is exactly the list-then-watch path we want to exercise.
 	var mu sync.Mutex
-	seen := make(map[string]collector.PodInfo)
-	watcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
+	seen := make(map[string]model.PodInfo)
+	watcher := collector.NewPodWatcher(clientset, func(p model.PodInfo) {
 		observed, _ := json.Marshal(p)
 		t.Logf("pod observed: %s", observed)
 		if p.Namespace != ns {
@@ -161,7 +162,7 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 	watcherDone := make(chan error, 1)
 	go func() { watcherDone <- watcher.Run(ctx) }()
 
-	waitForWorkload := func(key string) collector.PodInfo {
+	waitForWorkload := func(key string) model.PodInfo {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Minute)
 		for time.Now().Before(deadline) {
@@ -176,13 +177,13 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		t.Fatalf("no pod reported for workload %s; saw: %v", key, seen)
-		return collector.PodInfo{}
+		return model.PodInfo{}
 	}
 
 	// waitForCondition polls the reported view of a workload until pred holds,
 	// so assertions can wait for facts that appear on a later status update
 	// (the image digest) rather than on the first report.
-	waitForCondition := func(key string, pred func(collector.PodInfo) bool) collector.PodInfo {
+	waitForCondition := func(key string, pred func(model.PodInfo) bool) model.PodInfo {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Minute)
 		for time.Now().Before(deadline) {
@@ -197,7 +198,7 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		t.Fatalf("condition never held for workload %s; last saw: %v", key, seen[key])
-		return collector.PodInfo{}
+		return model.PodInfo{}
 	}
 
 	webPod := waitForWorkload("Deployment/web")
@@ -206,14 +207,14 @@ func TestPodWatcherAgainstRealCluster(t *testing.T) {
 	}
 
 	// Declared ports are collected verbatim from the spec.
-	wantPorts := []collector.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}}
+	wantPorts := []model.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}}
 	if got := webPod.Containers[0].Ports; !reflect.DeepEqual(got, wantPorts) {
 		t.Errorf("deployment pod ports = %+v, want %+v", got, wantPorts)
 	}
 
 	// The image digest is only known once the container has started, so it
 	// arrives on a later status update — wait for it, then check its shape.
-	started := waitForCondition("Deployment/web", func(p collector.PodInfo) bool {
+	started := waitForCondition("Deployment/web", func(p model.PodInfo) bool {
 		return len(p.Containers) == 1 && p.Containers[0].ImageDigest != ""
 	})
 	if d := started.Containers[0].ImageDigest; !strings.HasPrefix(d, "sha256:") {

@@ -3,6 +3,7 @@ package collector
 import (
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -48,32 +49,10 @@ var knownDisruptionReasons = map[string]struct{}{
 // still appears alongside it.
 const evictedPodReason = "Evicted"
 
-// PodDisruption is one pod removed by the cluster rather than by its own
-// workload: preempted to make room, evicted under node pressure, drained, or
-// deleted by the eviction API. It is a journal fact — the object's status
-// records that it happened (ADR 0021).
-type PodDisruption struct {
-	Namespace string
-	Pod       string
-	Workload  WorkloadRef
-	// Node is where the pod was running when it was disrupted. It is the join to
-	// node metadata, and for a node-pressure eviction it names the node that was
-	// under pressure — the fact that makes the event actionable.
-	Node string
-	// Reason is the DisruptionTarget condition's reason, or "Evicted" when only
-	// the older status.reason is present. Values come from Kubernetes.
-	Reason string
-	// DisruptedAt is the condition's transition time when Kubernetes recorded
-	// one, and the observation instant otherwise. Unlike a restart, a disruption
-	// *is* timestamped by the cluster, so an event already present when the
-	// agent starts lands in the window where it actually happened.
-	DisruptedAt time.Time
-}
-
 // OnPodDisruption registers fn to be called once per disrupted pod. Must be
 // called before Run. fn is called from the informer goroutine and must not
 // block.
-func (w *PodWatcher) OnPodDisruption(fn func(PodDisruption)) {
+func (w *PodWatcher) OnPodDisruption(fn func(model.PodDisruption)) {
 	w.onDisruption = fn
 }
 
@@ -101,7 +80,7 @@ func (w *PodWatcher) reportDisruptions(pod *corev1.Pod) {
 	if duplicate {
 		return
 	}
-	w.onDisruption(PodDisruption{
+	w.onDisruption(model.PodDisruption{
 		Namespace:   pod.Namespace,
 		Pod:         pod.Name,
 		Workload:    w.resolveWorkload(pod),

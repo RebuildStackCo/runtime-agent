@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 // Container is one container of a revision's pod template.
@@ -45,8 +45,8 @@ type Replicas struct {
 // nothing — the join is the backend's, against `workload_metadata` and the
 // usage windows under the same workload key.
 type Record struct {
-	Namespace string                `json:"namespace"`
-	Workload  collector.WorkloadRef `json:"workload"`
+	Namespace string            `json:"namespace"`
+	Workload  model.WorkloadRef `json:"workload"`
 	// Name is the ReplicaSet's own name, so a reader can find the object this
 	// record describes in their own cluster.
 	Name string `json:"name"`
@@ -72,7 +72,7 @@ type Record struct {
 // Only ReplicaSets of workloads with admitted pods reach this function; the
 // identity of an excluded workload never appears here, in keeping with
 // CLAUDE.md invariant 6.
-func Aggregate(sets []collector.ReplicaSetInfo) []Record {
+func Aggregate(sets []model.ReplicaSetInfo) []Record {
 	out := make([]Record, 0, len(sets))
 	for _, set := range sets {
 		rec := Record{

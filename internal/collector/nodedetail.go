@@ -3,8 +3,8 @@ package collector
 import (
 	"sort"
 	"strings"
-	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -20,43 +20,6 @@ import (
 // nodes carry a handful; past this the node is not describing itself the way
 // this reduction assumes.
 const maxNodeTerms = 32
-
-// NodeDevice is one extended resource the node advertises, with what the
-// scheduler may still hand out. It is the accelerator inventory: the resource
-// most likely to be the reason a node exists and the one CPU and memory say
-// nothing about.
-type NodeDevice struct {
-	Name        string `json:"name"`
-	Capacity    int64  `json:"capacity"`
-	Allocatable int64  `json:"allocatable"`
-}
-
-// NodeCondition is one condition of an allow-listed type. `message` is never
-// read: it is free text into which the kubelet and node-problem-detector write
-// paths, device names and command output (ADR 0064 §2).
-type NodeCondition struct {
-	Type   string `json:"type"`
-	Status string `json:"status"`
-	// Reason is the kubelet's own CamelCase token. It is safe to carry only
-	// because Type is allow-listed: a custom condition's reason is written by
-	// whoever installed the agent that sets it, and none of those types survive
-	// the allow-list.
-	Reason string `json:"reason,omitempty"`
-	// Since is the last transition, not the last heartbeat. The heartbeat moves
-	// every few seconds and would make every flush report a changed node; the
-	// transition is what says how long the node has been in this state.
-	Since time.Time `json:"since,omitzero"`
-}
-
-// NodeTaint is one taint, field for field — the mirror of Toleration, which is
-// already collected from the pod side (placement.go). A toleration without the
-// taint it answers is half a fact: it says what the pod would put up with, not
-// what the fleet actually fences off.
-type NodeTaint struct {
-	Key    string `json:"key"`
-	Value  string `json:"value,omitempty"`
-	Effect string `json:"effect"`
-}
 
 // nodeDrops counts what the reductions refused to carry. Aggregate: what was
 // dropped is counted, never named (CLAUDE.md invariant 6).
@@ -102,14 +65,14 @@ var deviceVendors = []string{
 
 // reduceConditions keeps the allow-listed conditions, sorted by type so the
 // payload bytes are deterministic (the golden contract).
-func reduceConditions(conditions []corev1.NodeCondition, drops *nodeDrops) []NodeCondition {
-	var out []NodeCondition
+func reduceConditions(conditions []corev1.NodeCondition, drops *nodeDrops) []model.NodeCondition {
+	var out []model.NodeCondition
 	for _, c := range conditions {
 		if !nodeConditionTypes[c.Type] {
 			drops.Conditions++
 			continue
 		}
-		kept := NodeCondition{Type: string(c.Type), Status: string(c.Status)}
+		kept := model.NodeCondition{Type: string(c.Type), Status: string(c.Status)}
 		if fits(c.Reason) {
 			kept.Reason = c.Reason
 		} else if c.Reason != "" {
@@ -128,14 +91,14 @@ func reduceConditions(conditions []corev1.NodeCondition, drops *nodeDrops) []Nod
 // tolerations, none is filtered as a cluster default: the two the node
 // controller adds — `not-ready` and `unreachable` — appear only on a node that
 // is actually broken, which is the signal rather than noise.
-func reduceTaints(taints []corev1.Taint, drops *nodeDrops) []NodeTaint {
-	var out []NodeTaint
+func reduceTaints(taints []corev1.Taint, drops *nodeDrops) []model.NodeTaint {
+	var out []model.NodeTaint
 	for _, t := range taints {
 		if !fits(t.Key) || !fits(t.Value) {
 			drops.Taints++
 			continue
 		}
-		out = append(out, NodeTaint{Key: t.Key, Value: t.Value, Effect: string(t.Effect)})
+		out = append(out, model.NodeTaint{Key: t.Key, Value: t.Value, Effect: string(t.Effect)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Key != out[j].Key {
@@ -150,8 +113,8 @@ func reduceTaints(taints []corev1.Taint, drops *nodeDrops) []NodeTaint {
 // capacity and allocatable maps. A resource present in capacity but absent from
 // allocatable reports zero allocatable, which is the true state: the hardware is
 // there and the scheduler will not hand it out.
-func reduceDevices(status corev1.NodeStatus, drops *nodeDrops) []NodeDevice {
-	var out []NodeDevice
+func reduceDevices(status corev1.NodeStatus, drops *nodeDrops) []model.NodeDevice {
+	var out []model.NodeDevice
 	for name, quantity := range status.Capacity {
 		if !isExtendedResource(string(name)) {
 			continue
@@ -160,7 +123,7 @@ func reduceDevices(status corev1.NodeStatus, drops *nodeDrops) []NodeDevice {
 			drops.Devices++
 			continue
 		}
-		device := NodeDevice{Name: string(name), Capacity: quantity.Value()}
+		device := model.NodeDevice{Name: string(name), Capacity: quantity.Value()}
 		if allocatable, ok := status.Allocatable[name]; ok {
 			device.Allocatable = allocatable.Value()
 		}

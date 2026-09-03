@@ -3,102 +3,25 @@ package collector
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
 
-// NodeInfo is the collected view of one node: how big it is, what kind of
-// machine it is, where it sits, what software runs it, what state it is in and
-// what it refuses to run. Nothing else is read from node objects
-// (security.md §4).
-//
-// Zone and region are join keys the cluster already publishes; the agent copies
-// them and draws no conclusion from them. The fields past Architecture arrived
-// together in ADR 0064.
-type NodeInfo struct {
-	Name          string `json:"name"`
-	InstanceType  string `json:"instance_type,omitempty"`
-	CapacityType  string `json:"capacity_type,omitempty"` // "spot", "on-demand", or "" when undeterminable
-	Zone          string `json:"zone,omitempty"`
-	Region        string `json:"region,omitempty"`
-	KernelVersion string `json:"kernel_version,omitempty"`
-	// Architecture is the node's CPU architecture as the kubelet reports it
-	// ("amd64", "arm64"). It is what makes a build's GOARCH and microarchitecture
-	// level answerable rather than merely recorded: a question about a binary's
-	// target needs the machine it landed on (ADR 0019).
-	Architecture string `json:"architecture,omitempty"`
-	// CreatedAt is the node object's own creation timestamp. A fleet's age
-	// distribution is what separates a cluster the autoscaler churns hourly from
-	// one whose machines have been up since the last upgrade.
-	CreatedAt time.Time `json:"created_at,omitzero"`
-	// The rest of `status.nodeInfo` the agent reads. Kernel version above
-	// already decides whether the eBPF profiler can run; these say what would
-	// have to be upgraded to change that, and which runtime's behavior a
-	// container is subject to.
-	KubeletVersion   string `json:"kubelet_version,omitempty"`
-	OSImage          string `json:"os_image,omitempty"`
-	OperatingSystem  string `json:"operating_system,omitempty"`
-	ContainerRuntime string `json:"container_runtime,omitempty"`
-
-	AllocatableCPUMilli    int64 `json:"allocatable_cpu_milli"`
-	AllocatableMemoryBytes int64 `json:"allocatable_memory_bytes"`
-	CapacityCPUMilli       int64 `json:"capacity_cpu_milli"`
-	CapacityMemoryBytes    int64 `json:"capacity_memory_bytes"`
-	// The two core resources that also bound scheduling and that CPU and memory
-	// do not imply: image and log space, and the kubelet's own pod ceiling. A
-	// node idle in both CPU and memory can still be full (ADR 0064 §1).
-	AllocatableEphemeralBytes int64 `json:"allocatable_ephemeral_storage_bytes,omitempty"`
-	CapacityEphemeralBytes    int64 `json:"capacity_ephemeral_storage_bytes,omitempty"`
-	AllocatablePods           int64 `json:"allocatable_pods,omitempty"`
-	CapacityPods              int64 `json:"capacity_pods,omitempty"`
-
-	// The three reduced lists (nodedetail.go). Each is absent when the node has
-	// none, which for Conditions cannot happen on a live node — a node reporting
-	// no allow-listed condition is one the kubelet has never contacted.
-	Devices    []NodeDevice    `json:"devices,omitempty"`
-	Conditions []NodeCondition `json:"conditions,omitempty"`
-	Taints     []NodeTaint     `json:"taints,omitempty"`
-}
-
-// sameAs reports whether two collected views are the same fact, replacing the
-// `==` this type carried while every field was scalar. Reflection rather than a
-// field list, so a field added above joins the test by existing; affordable
-// because node objects change on the order of minutes — the kubelet heartbeats
-// to a Lease, and the one sub-second field it does write, the condition
-// heartbeat, is deliberately not collected. The lists are built sorted, so
-// element-wise equality is exact rather than merely sufficient.
-func (n NodeInfo) sameAs(other NodeInfo) bool { return reflect.DeepEqual(n, other) }
-
-// NodeLifecycle is one node arriving in or leaving the cluster (ADR 0064 §3).
-// It carries the node's collected view because a departure is the last moment
-// that view exists: once the object is gone, `node_metadata` no longer holds the
-// row, and the size of what left would be unknowable.
-type NodeLifecycle struct {
-	Node NodeInfo
-	// Joined distinguishes the two events. A join is only reported when it can
-	// be proved — see reportJoin.
-	Joined bool
-	// At is the node object's creation timestamp for a join, and the instant the
-	// agent noticed for a departure. Observed says which.
-	At       time.Time
-	Observed bool
-}
-
 // NodeWatcher lists all nodes and keeps watching for new ones. Every observed
 // node is reported through the onNode callback, and the current view of every
 // live node is kept for the node-metadata snapshot.
 type NodeWatcher struct {
 	clientset   kubernetes.Interface
-	onNode      func(NodeInfo)
-	onLifecycle func(NodeLifecycle)
+	onNode      func(model.NodeInfo)
+	onLifecycle func(model.NodeLifecycle)
 
 	// since bounds what counts as a join: a node whose object predates it was
 	// already in the cluster when this process started watching, and reporting
@@ -115,7 +38,7 @@ type NodeWatcher struct {
 	afterSync afterSync
 
 	mu    sync.RWMutex
-	nodes map[string]NodeInfo
+	nodes map[string]model.NodeInfo
 
 	// The node list gates a signal rather than adding one: the usage poller
 	// takes its target list from it, so a frozen cache stops new nodes from ever
@@ -128,11 +51,11 @@ type NodeWatcher struct {
 // NewNodeWatcher returns a watcher that calls onNode for every node present
 // at start and for every node added afterwards. onNode is called from the
 // informer goroutine and must not block.
-func NewNodeWatcher(clientset kubernetes.Interface, onNode func(NodeInfo)) *NodeWatcher {
+func NewNodeWatcher(clientset kubernetes.Interface, onNode func(model.NodeInfo)) *NodeWatcher {
 	return &NodeWatcher{
 		clientset: clientset,
 		onNode:    onNode,
-		nodes:     make(map[string]NodeInfo),
+		nodes:     make(map[string]model.NodeInfo),
 		limits:    defaultWatchLimits(),
 		now:       time.Now,
 		since:     time.Now().UTC(),
@@ -142,23 +65,13 @@ func NewNodeWatcher(clientset kubernetes.Interface, onNode func(NodeInfo)) *Node
 // OnNodeLifecycle registers fn to be called once per node arrival or departure.
 // Must be called before Run. fn is called from the informer goroutine and must
 // not block.
-func (w *NodeWatcher) OnNodeLifecycle(fn func(NodeLifecycle)) {
+func (w *NodeWatcher) OnNodeLifecycle(fn func(model.NodeLifecycle)) {
 	w.onLifecycle = fn
 }
 
-// NodeDrops is what the node reductions refused to carry, cumulative since the
-// process started. It reaches the coverage report so a fleet whose nodes do not
-// fit these bounds is visible rather than quietly under-described.
-type NodeDrops struct {
-	Conditions int64 `json:"conditions_dropped"`
-	Devices    int64 `json:"devices_dropped"`
-	Taints     int64 `json:"taints_dropped"`
-	Values     int64 `json:"values_dropped"`
-}
-
 // Drops returns the running totals.
-func (w *NodeWatcher) Drops() NodeDrops {
-	return NodeDrops{
+func (w *NodeWatcher) Drops() model.NodeDrops {
+	return model.NodeDrops{
 		Conditions: w.conditionsDropped.Load(),
 		Devices:    w.devicesDropped.Load(),
 		Taints:     w.taintsDropped.Load(),
@@ -193,9 +106,9 @@ func (w *NodeWatcher) Names() []string {
 // so the payload bytes are deterministic (the golden contract,
 // docs/development.md). Deleted nodes are absent: the snapshot is the current
 // truth, rebuilt from the informer, never an append-only history.
-func (w *NodeWatcher) Nodes() []NodeInfo {
+func (w *NodeWatcher) Nodes() []model.NodeInfo {
 	w.mu.RLock()
-	out := make([]NodeInfo, 0, len(w.nodes))
+	out := make([]model.NodeInfo, 0, len(w.nodes))
 	for _, n := range w.nodes {
 		out = append(out, n)
 	}
@@ -295,7 +208,7 @@ func (w *NodeWatcher) upsert(node *corev1.Node) {
 	if !existed {
 		w.reportJoin(info)
 	}
-	if !existed || !prev.sameAs(info) {
+	if !existed || !prev.SameAs(info) {
 		w.onNode(info)
 	}
 }
@@ -306,11 +219,11 @@ func (w *NodeWatcher) upsert(node *corev1.Node) {
 // seen the node before: at cache sync the add handler fires for every node in
 // the cluster, and counting those would report the whole fleet as having
 // arrived at the moment the agent booted.
-func (w *NodeWatcher) reportJoin(info NodeInfo) {
+func (w *NodeWatcher) reportJoin(info model.NodeInfo) {
 	if w.onLifecycle == nil || info.CreatedAt.IsZero() || !info.CreatedAt.After(w.since) {
 		return
 	}
-	w.onLifecycle(NodeLifecycle{Node: info, Joined: true, At: info.CreatedAt})
+	w.onLifecycle(model.NodeLifecycle{Node: info, Joined: true, At: info.CreatedAt})
 }
 
 // reportDeparture reports a node that left. Unlike a join it needs no proof —
@@ -325,14 +238,14 @@ func (w *NodeWatcher) reportDeparture(name string) {
 	if !existed || w.onLifecycle == nil {
 		return
 	}
-	w.onLifecycle(NodeLifecycle{Node: info, At: w.clock().UTC(), Observed: true})
+	w.onLifecycle(model.NodeLifecycle{Node: info, At: w.clock().UTC(), Observed: true})
 }
 
 // describeNode reduces a node to the collected view, returning what the three
 // bounded reductions refused to carry alongside it.
-func describeNode(node *corev1.Node) (NodeInfo, nodeDrops) {
+func describeNode(node *corev1.Node) (model.NodeInfo, nodeDrops) {
 	var drops nodeDrops
-	info := NodeInfo{
+	info := model.NodeInfo{
 		Name:                   node.Name,
 		InstanceType:           instanceType(node.Labels),
 		CapacityType:           capacityType(node.Labels),

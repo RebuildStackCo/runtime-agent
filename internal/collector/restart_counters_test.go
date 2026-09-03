@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -26,7 +27,7 @@ func counterWatcher(t *testing.T, filter *Filter, initial ...*corev1.Pod) (*fake
 	}
 	clientset := fake.NewClientset(objects...)
 
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	if filter != nil {
 		watcher.SetFilter(filter)
 	}
@@ -45,10 +46,10 @@ func counterWatcher(t *testing.T, filter *Filter, initial ...*corev1.Pod) (*fake
 // awaitCounters polls until the reading satisfies want, which is how these
 // tests avoid racing the informer: the index and the counter baselines fill on
 // the informer goroutine, and a single read could catch either half-built.
-func awaitCounters(t *testing.T, w *PodWatcher, want func([]RestartCounter) bool, what string) []RestartCounter {
+func awaitCounters(t *testing.T, w *PodWatcher, want func([]model.RestartCounter) bool, what string) []model.RestartCounter {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	var last []RestartCounter
+	var last []model.RestartCounter
 	for time.Now().Before(deadline) {
 		last = w.RestartCounters()
 		if want(last) {
@@ -60,13 +61,13 @@ func awaitCounters(t *testing.T, w *PodWatcher, want func([]RestartCounter) bool
 	return nil
 }
 
-func counterFor(records []RestartCounter, pod, container string) (RestartCounter, bool) {
+func counterFor(records []model.RestartCounter, pod, container string) (model.RestartCounter, bool) {
 	for _, r := range records {
 		if r.Pod == pod && r.Container == container {
 			return r, true
 		}
 	}
-	return RestartCounter{}, false
+	return model.RestartCounter{}, false
 }
 
 // The point of the payload: a container whose counter already stood at 40 when
@@ -87,7 +88,7 @@ func TestCounterCarriesTheHistoryTheWindowsCannot(t *testing.T) {
 	}}
 	_, watcher := counterWatcher(t, nil, p)
 
-	records := awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	records := awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		_, ok := counterFor(rs, "checkout-1", "app")
 		return ok
 	}, "the first reading")
@@ -115,7 +116,7 @@ func TestCounterCarriesTheHistoryTheWindowsCannot(t *testing.T) {
 		t.Errorf("last_termination = %+v, want OOMKilled/137 at %s — the one restart Kubernetes dates",
 			got.LastTermination, crashedAt)
 	}
-	if got.Workload != (WorkloadRef{Kind: "StatefulSet", Name: "checkout"}) {
+	if got.Workload != (model.WorkloadRef{Kind: "StatefulSet", Name: "checkout"}) {
 		t.Errorf("workload = %+v, want StatefulSet/checkout", got.Workload)
 	}
 }
@@ -128,7 +129,7 @@ func TestObservedShareGrowsAndTheUnobservedPartDoesNot(t *testing.T) {
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 40}}
 	clientset, watcher := counterWatcher(t, nil, p)
 
-	awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		_, ok := counterFor(rs, "checkout-1", "app")
 		return ok
 	}, "the first reading")
@@ -139,7 +140,7 @@ func TestObservedShareGrowsAndTheUnobservedPartDoesNot(t *testing.T) {
 		t.Fatalf("updating pod: %v", err)
 	}
 
-	records := awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	records := awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		r, ok := counterFor(rs, "checkout-1", "app")
 		return ok && r.Restarts == 43
 	}, "the advanced reading")
@@ -160,7 +161,7 @@ func TestACounterThatWentBackwardsRebaselinesWhole(t *testing.T) {
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 40}}
 	clientset, watcher := counterWatcher(t, nil, p)
 
-	awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		r, ok := counterFor(rs, "checkout-1", "app")
 		return ok && r.RestartsBeforeObservation == 40
 	}, "the first reading")
@@ -172,7 +173,7 @@ func TestACounterThatWentBackwardsRebaselinesWhole(t *testing.T) {
 		t.Fatalf("updating pod: %v", err)
 	}
 
-	records := awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	records := awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		r, ok := counterFor(rs, "checkout-1", "app")
 		return ok && r.Restarts == 2
 	}, "the rebaselined reading")
@@ -195,7 +196,7 @@ func TestContainersThatNeverRestartedHaveNoRecord(t *testing.T) {
 	noisy.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 3}}
 	_, watcher := counterWatcher(t, nil, quiet, noisy)
 
-	records := awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	records := awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		_, ok := counterFor(rs, "noisy-1", "app")
 		return ok
 	}, "the noisy pod's reading")
@@ -212,7 +213,7 @@ func TestInitContainersAreCounted(t *testing.T) {
 	p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "init-db", RestartCount: 7}}
 	_, watcher := counterWatcher(t, nil, p)
 
-	records := awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	records := awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		_, ok := counterFor(rs, "checkout-1", "init-db")
 		return ok
 	}, "the init container's reading")
@@ -236,7 +237,7 @@ func TestExcludedPodsHaveNoReading(t *testing.T) {
 	// "shop" is denied; "other" is not.
 	_, watcher := counterWatcher(t, NewFilter(nil, []string{"shop"}), p, other)
 
-	records := awaitCounters(t, watcher, func(rs []RestartCounter) bool {
+	records := awaitCounters(t, watcher, func(rs []model.RestartCounter) bool {
 		_, ok := counterFor(rs, "visible-1", "app")
 		return ok
 	}, "the admitted pod's reading")
@@ -264,7 +265,7 @@ func (s stubPodLister) List(labels.Selector) ([]*corev1.Pod, error) { return s.p
 // it visible: store 2, baseline 40, and the subtraction ADR 0034 §2 prescribes
 // returns a negative number.
 func TestTheReadingNeverClaimsMoreHistoryThanItCounts(t *testing.T) {
-	w := NewPodWatcher(fake.NewClientset(), func(PodInfo) {})
+	w := NewPodWatcher(fake.NewClientset(), func(model.PodInfo) {})
 
 	p := pod("checkout-1", ptr.To(controllerRef("StatefulSet", "checkout")))
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 40}}
@@ -276,7 +277,7 @@ func TestTheReadingNeverClaimsMoreHistoryThanItCounts(t *testing.T) {
 	w.index[p.UID] = podIndexEntry{
 		namespace: p.Namespace,
 		name:      p.Name,
-		workload:  WorkloadRef{Kind: "StatefulSet", Name: "checkout"},
+		workload:  model.WorkloadRef{Kind: "StatefulSet", Name: "checkout"},
 	}
 
 	// The store now holds the replacement — same name, fresh counter — and the

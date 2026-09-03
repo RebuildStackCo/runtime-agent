@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -21,14 +22,14 @@ import (
 // initial List landed, while an update is delivered over the reflector's watch,
 // which is established afterwards. Without the barrier every update raced that
 // call and was silently dropped by the fake clientset, which has no replay.
-func restartWatcher(t *testing.T, initial *corev1.Pod) (*fake.Clientset, chan ContainerRestart) {
+func restartWatcher(t *testing.T, initial *corev1.Pod) (*fake.Clientset, chan model.ContainerRestart) {
 	t.Helper()
 	clientset := fake.NewClientset(initial)
 
-	events := make(chan ContainerRestart, 16)
+	events := make(chan model.ContainerRestart, 16)
 	observed := make(chan string, 16)
-	watcher := NewPodWatcher(clientset, func(p PodInfo) { observed <- p.Name })
-	watcher.OnContainerRestart(func(r ContainerRestart) { events <- r })
+	watcher := NewPodWatcher(clientset, func(p model.PodInfo) { observed <- p.Name })
+	watcher.OnContainerRestart(func(r model.ContainerRestart) { events <- r })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -80,14 +81,14 @@ func observedName(observed chan string, prefix string, timeout time.Duration) bo
 	}
 }
 
-func waitRestart(t *testing.T, events chan ContainerRestart) ContainerRestart {
+func waitRestart(t *testing.T, events chan model.ContainerRestart) model.ContainerRestart {
 	t.Helper()
 	select {
 	case r := <-events:
 		return r
 	case <-time.After(5 * time.Second):
 		t.Fatal("no container restart reported before timeout")
-		return ContainerRestart{}
+		return model.ContainerRestart{}
 	}
 }
 
@@ -123,7 +124,7 @@ func TestReportsRestartCounterAdvance(t *testing.T) {
 	if got.ExitCode == nil || *got.ExitCode != 1 {
 		t.Errorf("exit code = %v, want 1", got.ExitCode)
 	}
-	if got.Workload != (WorkloadRef{Kind: "StatefulSet", Name: "checkout"}) {
+	if got.Workload != (model.WorkloadRef{Kind: "StatefulSet", Name: "checkout"}) {
 		t.Errorf("workload = %+v, want StatefulSet/checkout", got.Workload)
 	}
 	if got.ObservedAt.IsZero() {

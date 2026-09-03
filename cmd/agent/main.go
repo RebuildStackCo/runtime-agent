@@ -33,6 +33,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
@@ -179,7 +180,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 
 	filter := collector.NewFilter(cfg.Filters.Namespaces.Allow, cfg.Filters.Namespaces.Deny)
 
-	podWatcher := collector.NewPodWatcher(clientset, func(p collector.PodInfo) {
+	podWatcher := collector.NewPodWatcher(clientset, func(p model.PodInfo) {
 		logger.Info("pod observed",
 			"namespace", p.Namespace,
 			"pod", p.Name,
@@ -191,7 +192,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"containers", p.Containers,
 		)
 	})
-	podWatcher.OnOOMKill(func(o collector.OOMKill) {
+	podWatcher.OnOOMKill(func(o model.OOMKill) {
 		logger.Warn("oom kill observed",
 			"namespace", o.Namespace,
 			"pod", o.Pod,
@@ -213,7 +214,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// emitting one payload per restart: a crash loop must not put the spool's
 	// file count under its own control (ADR 0020).
 	restartJournal := journal.NewRestarts(collector.UsageWindowLength)
-	podWatcher.OnContainerRestart(func(r collector.ContainerRestart) {
+	podWatcher.OnContainerRestart(func(r model.ContainerRestart) {
 		logger.Info("container restarted",
 			"namespace", r.Namespace,
 			"pod", r.Pod,
@@ -230,7 +231,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// preempted or evicted once, so the accumulator holds records rather than
 	// counters (ADR 0021).
 	disruptionJournal := journal.NewDisruptions(collector.UsageWindowLength)
-	podWatcher.OnPodDisruption(func(d collector.PodDisruption) {
+	podWatcher.OnPodDisruption(func(d model.PodDisruption) {
 		logger.Warn("pod disrupted",
 			"namespace", d.Namespace,
 			"pod", d.Pod,
@@ -248,7 +249,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// supply for a workload that ran for part of a window (ADR 0029).
 	jobJournal := journal.NewJobRuns(collector.UsageWindowLength)
 	nodeJournal := journal.NewNodeEvents(collector.UsageWindowLength)
-	podWatcher.OnJobFinished(func(r collector.JobRun) {
+	podWatcher.OnJobFinished(func(r model.JobRun) {
 		logger.Info("job run finished",
 			"namespace", r.Namespace,
 			"workload_kind", r.Workload.Kind,
@@ -264,7 +265,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		jobJournal.Observe(r)
 	})
 	podWatcher.SetFilter(filter)
-	nodeWatcher := collector.NewNodeWatcher(clientset, func(n collector.NodeInfo) {
+	nodeWatcher := collector.NewNodeWatcher(clientset, func(n model.NodeInfo) {
 		logger.Info("node observed",
 			"node", n.Name,
 			"instance_type", n.InstanceType,
@@ -281,7 +282,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"taints", len(n.Taints),
 		)
 	})
-	nodeWatcher.OnNodeLifecycle(func(e collector.NodeLifecycle) {
+	nodeWatcher.OnNodeLifecycle(func(e model.NodeLifecycle) {
 		event := "node left"
 		if e.Joined {
 			event = "node joined"
@@ -375,7 +376,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	if goStore != nil && cfg.Profiling.Pprof.Enabled {
 		prober = pprofprobe.New(func(c pprofprobe.Candidate) (string, bool) {
 			ip, ok := podWatcher.PodAddress(c.Namespace,
-				collector.WorkloadRef{Kind: c.WorkloadKind, Name: c.WorkloadName},
+				model.WorkloadRef{Kind: c.WorkloadKind, Name: c.WorkloadName},
 				c.Container, c.ImageDigest)
 			if !ok {
 				return "", false
@@ -390,7 +391,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	if prober != nil && cfg.Profiling.Pprof.Pull && spool != nil {
 		address := func(c pprofprobe.Candidate) (string, bool) {
 			ip, ok := podWatcher.PodAddress(c.Namespace,
-				collector.WorkloadRef{Kind: c.WorkloadKind, Name: c.WorkloadName},
+				model.WorkloadRef{Kind: c.WorkloadKind, Name: c.WorkloadName},
 				c.Container, c.ImageDigest)
 			if !ok {
 				return "", false

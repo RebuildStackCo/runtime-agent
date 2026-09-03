@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -65,14 +66,14 @@ func pod(name string, owner *metav1.OwnerReference) *corev1.Pod {
 
 // collectPods runs a PodWatcher over the given objects and returns everything
 // reported until at least want pods are seen or the timeout hits.
-func collectPods(t *testing.T, want int, objects ...runtime.Object) map[string]PodInfo {
+func collectPods(t *testing.T, want int, objects ...runtime.Object) map[string]model.PodInfo {
 	t.Helper()
 	clientset := fake.NewClientset(objects...)
 
 	var mu sync.Mutex
-	seen := make(map[string]PodInfo)
+	seen := make(map[string]model.PodInfo)
 	got := make(chan struct{}, 64)
-	watcher := NewPodWatcher(clientset, func(p PodInfo) {
+	watcher := NewPodWatcher(clientset, func(p model.PodInfo) {
 		mu.Lock()
 		seen[p.Namespace+"/"+p.Name] = p
 		mu.Unlock()
@@ -130,7 +131,7 @@ func TestResolvesWorkloadChains(t *testing.T) {
 		pod("debug-shell", nil),
 	)
 
-	want := map[string]WorkloadRef{
+	want := map[string]model.WorkloadRef{
 		"shop/checkout-7d9f-x1":  {Kind: "Deployment", Name: "checkout"},
 		"shop/payments-5c4b-x1":  {Kind: "Rollout", Name: "payments"},
 		"shop/report-29000-x1":   {Kind: "CronJob", Name: "report"},
@@ -155,17 +156,17 @@ func TestCollectsContainersAndImages(t *testing.T) {
 	seen := collectPods(t, 1, pod("checkout-1", nil))
 
 	info := seen["shop/checkout-1"]
-	want := []Container{
+	want := []model.Container{
 		{Name: "init-db", Image: "example.com/migrate:v3", Init: true,
-			Resources: Resources{CPURequestMilli: ptr.To(int64(100))}},
+			Resources: model.Resources{CPURequestMilli: ptr.To(int64(100))}},
 		{Name: "app", Image: "example.com/app:1.2.3",
-			Resources: Resources{
+			Resources: model.Resources{
 				CPURequestMilli:    ptr.To(int64(500)),
 				CPULimitMilli:      ptr.To(int64(2000)),
 				MemoryRequestBytes: ptr.To(int64(256 << 20)),
 				MemoryLimitBytes:   ptr.To(int64(1 << 30)),
 			},
-			Ports: []ContainerPort{
+			Ports: []model.ContainerPort{
 				{Name: "http", Port: 8080, Protocol: "TCP"},
 				{Port: 9090, Protocol: "TCP"},
 			}},
@@ -199,7 +200,7 @@ func TestCollectsContainersAndImages(t *testing.T) {
 
 // assertResources compares two Resources field by field; a nil on either
 // side must be nil on the other (absent means "not set", not zero).
-func assertResources(t *testing.T, container string, got, want Resources) {
+func assertResources(t *testing.T, container string, got, want model.Resources) {
 	t.Helper()
 	check := func(field string, g, w *int64) {
 		switch {
@@ -225,8 +226,8 @@ func format(v *int64) string {
 func TestReportsPodsCreatedAfterStart(t *testing.T) {
 	clientset := fake.NewClientset(pod("existing", nil))
 
-	events := make(chan PodInfo, 16)
-	watcher := NewPodWatcher(clientset, func(p PodInfo) { events <- p })
+	events := make(chan model.PodInfo, 16)
+	watcher := NewPodWatcher(clientset, func(p model.PodInfo) { events <- p })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -323,7 +324,7 @@ func TestLookupContainerJoinsNodeFact(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(rs, p)
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -333,7 +334,7 @@ func TestLookupContainerJoinsNodeFact(t *testing.T) {
 	// Wait until the container index has the started container (populated on the
 	// status update path).
 	var ns string
-	var workload WorkloadRef
+	var workload model.WorkloadRef
 	var container, digest string
 	deadline := time.After(5 * time.Second)
 	for {
@@ -395,15 +396,15 @@ func TestReportsImageDigestOnUpdate(t *testing.T) {
 	p := pod("checkout-1", nil)
 	clientset := fake.NewClientset(p)
 
-	events := make(chan PodInfo, 16)
-	watcher := NewPodWatcher(clientset, func(info PodInfo) { events <- info })
+	events := make(chan model.PodInfo, 16)
+	watcher := NewPodWatcher(clientset, func(info model.PodInfo) { events <- info })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- watcher.Run(ctx) }()
 
-	digestOf := func(info PodInfo, container string) (string, bool) {
+	digestOf := func(info model.PodInfo, container string) (string, bool) {
 		for _, c := range info.Containers {
 			if c.Name == container {
 				return c.ImageDigest, true
@@ -475,7 +476,7 @@ func TestPodsSnapshotCoversAdmittedPodsOnly(t *testing.T) {
 	optedOut.Annotations = map[string]string{CollectAnnotation: "false"}
 
 	clientset := fake.NewClientset(kept, optedOut)
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = watcher.Run(ctx) }()
@@ -531,7 +532,7 @@ func TestAdmittedPodsOnNodeExcludesFilteredPods(t *testing.T) {
 	elsewhere.Spec.NodeName = "node-2"
 
 	clientset := fake.NewClientset(kept, optedOut, elsewhere)
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = watcher.Run(ctx) }()
@@ -570,7 +571,7 @@ func TestContainersOnNode(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(rs, p)
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = watcher.Run(ctx) }()
@@ -613,18 +614,18 @@ func TestPodWatcherReportsProbeSchedulesWithoutWhatTheyCheck(t *testing.T) {
 	}
 
 	got := collectPods(t, 1, p)["shop/web-1"]
-	var app Container
+	var app model.Container
 	for _, c := range got.Containers {
 		if c.Name == "app" {
 			app = c
 		}
 	}
-	want := Probes{
-		Liveness: &Probe{
+	want := model.Probes{
+		Liveness: &model.Probe{
 			Kind: "httpGet", PeriodSeconds: 10, TimeoutSeconds: 1,
 			FailureThreshold: 3, SuccessThreshold: 1,
 		},
-		Readiness: &Probe{
+		Readiness: &model.Probe{
 			Kind: "exec", PeriodSeconds: 5, InitialDelaySeconds: 15,
 			FailureThreshold: 6, SuccessThreshold: 1,
 		},
