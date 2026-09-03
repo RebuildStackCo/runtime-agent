@@ -4,19 +4,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 var jobWindow = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 
-func run(name string, finishedAt time.Time) collector.JobRun {
-	return collector.JobRun{
+func run(name string, finishedAt time.Time) model.JobRun {
+	return model.JobRun{
 		Namespace:  "analytics",
-		Workload:   collector.WorkloadRef{Kind: "CronJob", Name: "rollup"},
+		Workload:   model.WorkloadRef{Kind: "CronJob", Name: "rollup"},
 		Name:       name,
 		StartedAt:  finishedAt.Add(-time.Minute),
 		FinishedAt: finishedAt,
-		Result:     collector.JobSucceeded,
+		Result:     model.JobSucceeded,
 		Succeeded:  1,
 	}
 }

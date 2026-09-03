@@ -13,6 +13,7 @@ import (
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/utils/ptr"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
 
@@ -43,12 +44,12 @@ const (
 // labels containers by pod name, not UID; it returns the UID too, so both
 // kubelet sources key their counter state on the same pod identity.
 type PodResolver interface {
-	LookupPod(uid types.UID) (namespace string, workload WorkloadRef, ok bool)
+	LookupPod(uid types.UID) (namespace string, workload model.WorkloadRef, ok bool)
 	// HostNetwork reports whether the pod shares its node's network namespace.
 	// The network counters mean something different when it does, and only the
 	// pod spec says which (ADR 0053 §2).
 	HostNetwork(uid types.UID) bool
-	LookupPodByName(namespace, name string) (uid types.UID, workload WorkloadRef, ok bool)
+	LookupPodByName(namespace, name string) (uid types.UID, workload model.WorkloadRef, ok bool)
 }
 
 // UsagePoller polls every node's kubelet through the API server proxy
@@ -87,21 +88,6 @@ type UsagePoller struct {
 	signals        map[string]bool
 	pollsAttempted int64
 	pollsFailed    int64
-}
-
-// Observation is what the agent knows about its own collection: the polling
-// cadence, how many kubelet requests it made and how many failed, and which
-// signals this cluster exposes. It ships with the usage payloads (ADR 0012)
-// because only the agent can know a scrape failed — from outside, a failed
-// scrape and a quiet container are indistinguishable.
-//
-// Counters are cumulative since agent start and cluster-wide; per-record
-// coverage lives in the record's own sample counts and CoveredNanoseconds.
-type Observation struct {
-	PollIntervalSeconds int64    `json:"poll_interval_seconds"`
-	PollsAttempted      int64    `json:"polls_attempted"`
-	PollsFailed         int64    `json:"polls_failed"`
-	Signals             []string `json:"signals"`
 }
 
 type trackerKey struct {
@@ -212,10 +198,10 @@ func (p *UsagePoller) signalsLocked() []string {
 
 // Observation returns the current collection state to ship alongside a usage
 // payload.
-func (p *UsagePoller) Observation() Observation {
+func (p *UsagePoller) Observation() model.Observation {
 	p.obsMu.Lock()
 	defer p.obsMu.Unlock()
-	return Observation{
+	return model.Observation{
 		PollIntervalSeconds: int64(usagePollInterval / time.Second),
 		PollsAttempted:      p.pollsAttempted,
 		PollsFailed:         p.pollsFailed,

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -120,10 +121,10 @@ func autoscaler(name, targetKind, targetName string, minReplicas, maxReplicas in
 // as soon as the informers sync, while anything derived from the pod index
 // arrives only once a pod has been admitted. A shared "something is non-empty"
 // condition would let a test read the catalogs and conclude the index was empty.
-func collectPolicy(t *testing.T, filter *Filter, ready func([]WorkloadPolicy, ClusterPolicy) bool, objects ...runtime.Object) ([]WorkloadPolicy, ClusterPolicy) {
+func collectPolicy(t *testing.T, filter *Filter, ready func([]model.WorkloadPolicy, model.ClusterPolicy) bool, objects ...runtime.Object) ([]model.WorkloadPolicy, model.ClusterPolicy) {
 	t.Helper()
 	clientset := fake.NewClientset(objects...)
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	watcher.SetFilter(filter)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -131,8 +132,8 @@ func collectPolicy(t *testing.T, filter *Filter, ready func([]WorkloadPolicy, Cl
 	done := make(chan error, 1)
 	go func() { done <- watcher.Run(ctx) }()
 
-	var policies []WorkloadPolicy
-	var cluster ClusterPolicy
+	var policies []model.WorkloadPolicy
+	var cluster model.ClusterPolicy
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		policies, _ = watcher.WorkloadPolicies()
@@ -150,7 +151,9 @@ func collectPolicy(t *testing.T, filter *Filter, ready func([]WorkloadPolicy, Cl
 }
 
 // hasRecords is the usual condition: the pod index has produced a policy record.
-func hasRecords(policies []WorkloadPolicy, _ ClusterPolicy) bool { return len(policies) > 0 }
+func hasRecords(policies []model.WorkloadPolicy, _ model.ClusterPolicy) bool {
+	return len(policies) > 0
+}
 
 // A budget names pods by label selector, not by workload, so the join runs
 // through the admitted pod index.
@@ -185,7 +188,7 @@ func TestBudgetOverExcludedPodsNamesNothing(t *testing.T) {
 	got, cluster := collectPolicy(t, filter,
 		// The pod is observed and rejected; waiting for a record would wait
 		// for something that must never arrive.
-		func([]WorkloadPolicy, ClusterPolicy) bool { return filter.Snapshot().PodsObserved > 0 },
+		func([]model.WorkloadPolicy, model.ClusterPolicy) bool { return filter.Snapshot().PodsObserved > 0 },
 		policyPod("web-1", "web"),
 		replicaSetOwnedBy("web-abc", "web"),
 		budget(),
@@ -265,7 +268,7 @@ func TestUnconstrainedWorkloadHasNoPolicyRecord(t *testing.T) {
 	got, _ := collectPolicy(t, NewFilter(nil, nil),
 		// Nothing constrains this workload, so no record will ever appear;
 		// wait on the catalog instead of on a condition that cannot arrive.
-		func(_ []WorkloadPolicy, c ClusterPolicy) bool { return len(c.PriorityClasses) > 0 },
+		func(_ []model.WorkloadPolicy, c model.ClusterPolicy) bool { return len(c.PriorityClasses) > 0 },
 		policyPod("web-1", "web"),
 		replicaSetOwnedBy("web-abc", "web"),
 		&schedulingv1.PriorityClass{
@@ -279,7 +282,7 @@ func TestUnconstrainedWorkloadHasNoPolicyRecord(t *testing.T) {
 
 func TestClusterPolicyCarriesNamespaceLimitsAndTheCatalogs(t *testing.T) {
 	_, cluster := collectPolicy(t, NewFilter(nil, nil),
-		func(_ []WorkloadPolicy, c ClusterPolicy) bool { return len(c.Namespaces) > 0 },
+		func(_ []model.WorkloadPolicy, c model.ClusterPolicy) bool { return len(c.Namespaces) > 0 },
 		policyPod("web-1", "web"),
 		replicaSetOwnedBy("web-abc", "web"),
 		&corev1.LimitRange{
@@ -367,8 +370,8 @@ func TestPolicyPayloadCarriesNoOperatorSecrets(t *testing.T) {
 	)
 
 	encoded, err := json.Marshal(struct {
-		Workloads []WorkloadPolicy `json:"workloads"`
-		Cluster   ClusterPolicy    `json:"cluster"`
+		Workloads []model.WorkloadPolicy `json:"workloads"`
+		Cluster   model.ClusterPolicy    `json:"cluster"`
 	}{policies, cluster})
 	if err != nil {
 		t.Fatal(err)
@@ -406,7 +409,7 @@ func TestDeniedPolicySourceDegradesInsteadOfStoppingTheAgent(t *testing.T) {
 			"", errors.New("no permission"))
 	})
 
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	watcher.SetFilter(NewFilter(nil, nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -416,7 +419,7 @@ func TestDeniedPolicySourceDegradesInsteadOfStoppingTheAgent(t *testing.T) {
 
 	// The agent must reach the point of collecting pods at all — that is the
 	// property the old code destroyed.
-	var pods []PodInfo
+	var pods []model.PodInfo
 	var unavailable []string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -443,19 +446,19 @@ func TestDeniedPolicySourceDegradesInsteadOfStoppingTheAgent(t *testing.T) {
 // budgets is not the same state as one that refused to show them. HasSynced
 // separates them because an empty list still syncs.
 func TestEmptyClusterReportsNoUnavailableSources(t *testing.T) {
-	_, unavailable := func() ([]WorkloadPolicy, []string) {
+	_, unavailable := func() ([]model.WorkloadPolicy, []string) {
 		clientset := fake.NewClientset(
 			policyPod("web-1", "web"),
 			replicaSetOwnedBy("web-abc", "web"),
 		)
-		watcher := NewPodWatcher(clientset, func(PodInfo) {})
+		watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 		watcher.SetFilter(NewFilter(nil, nil))
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		done := make(chan error, 1)
 		go func() { done <- watcher.Run(ctx) }()
 
-		var out []WorkloadPolicy
+		var out []model.WorkloadPolicy
 		var gaps []string
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
@@ -531,7 +534,7 @@ func TestServiceAttachesToTheWorkloadOfTheSelectedPods(t *testing.T) {
 		t.Fatalf("records = %+v, want one workload with one service", got)
 	}
 	svc := got[0].Services[0]
-	want := ServiceExposure{
+	want := model.ServiceExposure{
 		Name: "web", Type: "ClusterIP",
 		InternalTrafficPolicy: "Local", ExternalTrafficPolicy: "Local",
 	}
@@ -583,7 +586,7 @@ func TestSelectorlessServiceAttachesToNothing(t *testing.T) {
 func TestServiceOverExcludedPodsNamesNothing(t *testing.T) {
 	filter := NewFilter(nil, []string{"shop"})
 	got, _ := collectPolicy(t, filter,
-		func([]WorkloadPolicy, ClusterPolicy) bool { return filter.Snapshot().PodsObserved > 0 },
+		func([]model.WorkloadPolicy, model.ClusterPolicy) bool { return filter.Snapshot().PodsObserved > 0 },
 		policyPod("web-1", "web"),
 		replicaSetOwnedBy("web-abc", "web"),
 		service("web", "web", nil),
@@ -625,7 +628,7 @@ func endpointSlice(name string, family discoveryv1.AddressType, endpoints ...end
 	return slice
 }
 
-func onlyService(t *testing.T, got []WorkloadPolicy) ServiceExposure {
+func onlyService(t *testing.T, got []model.WorkloadPolicy) model.ServiceExposure {
 	t.Helper()
 	if len(got) != 1 || len(got[0].Services) != 1 {
 		t.Fatalf("records = %+v, want one workload with one service", got)
@@ -693,7 +696,7 @@ func TestDualStackIsCountedPerAddressFamily(t *testing.T) {
 			endpoint{zone: "eu-west-1a", ready: ptr.To(true)}),
 	)
 	svc := onlyService(t, got)
-	want := []EndpointZones{
+	want := []model.EndpointZones{
 		{AddressType: "IPv4", Ready: 1, Zones: map[string]int{"eu-west-1a": 1}},
 		{AddressType: "IPv6", Ready: 1, Zones: map[string]int{"eu-west-1a": 1}},
 	}

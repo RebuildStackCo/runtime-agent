@@ -4,22 +4,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 var nodeWindow = time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 
-func joined(name string, at time.Time) collector.NodeLifecycle {
-	return collector.NodeLifecycle{
-		Node:   collector.NodeInfo{Name: name, CapacityCPUMilli: 2000, InstanceType: "m6i.large"},
+func joined(name string, at time.Time) model.NodeLifecycle {
+	return model.NodeLifecycle{
+		Node:   model.NodeInfo{Name: name, CapacityCPUMilli: 2000, InstanceType: "m6i.large"},
 		Joined: true,
 		At:     at,
 	}
 }
 
-func left(at time.Time) collector.NodeLifecycle {
-	return collector.NodeLifecycle{
-		Node:     collector.NodeInfo{Name: "node-1", CapacityCPUMilli: 8000, InstanceType: "g5.2xlarge"},
+func left(at time.Time) model.NodeLifecycle {
+	return model.NodeLifecycle{
+		Node:     model.NodeInfo{Name: "node-1", CapacityCPUMilli: 8000, InstanceType: "g5.2xlarge"},
 		At:       at,
 		Observed: true,
 	}
@@ -92,8 +92,8 @@ func TestClosedWindowsAreReturnedOnceAndForgotten(t *testing.T) {
 // zero instant would truncate to the epoch's window and sit in the map forever.
 func TestAnUnplaceableEventIsNotRecorded(t *testing.T) {
 	e := NewNodeEvents(time.Hour)
-	e.Observe(collector.NodeLifecycle{Node: collector.NodeInfo{Name: "node-1"}})
-	e.Observe(collector.NodeLifecycle{At: nodeWindow, Joined: true})
+	e.Observe(model.NodeLifecycle{Node: model.NodeInfo{Name: "node-1"}})
+	e.Observe(model.NodeLifecycle{At: nodeWindow, Joined: true})
 
 	if records := e.Snapshots(); len(records) != 0 {
 		t.Errorf("kept %+v, want nothing", records)

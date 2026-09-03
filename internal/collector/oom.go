@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -11,24 +12,10 @@ import (
 // container state when the kernel OOM killer ended it.
 const oomKilledReason = "OOMKilled"
 
-// OOMKill is one observed out-of-memory kill of a container, paired with the
-// memory limit the container declared — the two facts that together make the
-// "limit too low" story. MemoryLimitBytes is nil when no limit was set.
-type OOMKill struct {
-	Namespace        string      `json:"namespace"`
-	Pod              string      `json:"pod"`
-	Container        string      `json:"container"`
-	Workload         WorkloadRef `json:"workload"`
-	FinishedAt       time.Time   `json:"finished_at"`
-	ExitCode         int32       `json:"exit_code"`
-	RestartCount     int32       `json:"restart_count"`
-	MemoryLimitBytes *int64      `json:"memory_limit_bytes,omitempty"`
-}
-
 // OnOOMKill registers fn to be called once per observed OOM kill. Must be
 // called before Run. fn is called from the informer goroutine and must not
 // block.
-func (w *PodWatcher) OnOOMKill(fn func(OOMKill)) {
+func (w *PodWatcher) OnOOMKill(fn func(model.OOMKill)) {
 	w.onOOM = fn
 }
 
@@ -62,7 +49,7 @@ func (w *PodWatcher) reportOOMKills(pod *corev1.Pod) {
 			if dup {
 				continue
 			}
-			w.onOOM(OOMKill{
+			w.onOOM(model.OOMKill{
 				Namespace:        pod.Namespace,
 				Pod:              pod.Name,
 				Container:        status.Name,

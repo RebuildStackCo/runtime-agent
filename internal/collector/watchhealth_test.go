@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -159,7 +160,7 @@ func TestTheWatchdogIgnoresAStreakThatEnded(t *testing.T) {
 // tracked — a handler registered on six of eight informers is a hole shaped
 // exactly like the one this change closes.
 func TestEveryGatingCacheIsTracked(t *testing.T) {
-	w := NewPodWatcher(fake.NewClientset(), func(PodInfo) {})
+	w := NewPodWatcher(fake.NewClientset(), func(model.PodInfo) {})
 	want := []string{
 		"cronjobs", "daemonsets", "deployments", "jobs",
 		"namespaces", "pods", "replicasets", "statefulsets",
@@ -194,7 +195,7 @@ func TestASustainedRefusalStopsTheAgentInsteadOfWaitingForever(t *testing.T) {
 	})
 	clientset.PrependWatchReactor("pods", forbidden)
 
-	w := NewPodWatcher(clientset, func(PodInfo) {})
+	w := NewPodWatcher(clientset, func(model.PodInfo) {})
 	w.SetFilter(NewFilter(nil, nil))
 	// Real clock, compressed limits: the reflector's own retries supply the
 	// streak, so what is under test is the wiring and not a stubbed record.
@@ -240,7 +241,7 @@ func TestAPolicySourceThatFilledAndThenWentDarkIsDeclaredUnavailable(t *testing.
 		return true, feed, nil
 	})
 
-	w := NewPodWatcher(clientset, func(PodInfo) {})
+	w := NewPodWatcher(clientset, func(model.PodInfo) {})
 	w.SetFilter(NewFilter(nil, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

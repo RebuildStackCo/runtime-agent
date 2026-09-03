@@ -4,37 +4,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 )
-
-// ContainerRestart is one observed advance of a container's restart counter,
-// paired with the termination that most recently caused one. It is the raw
-// journal fact; the windowed aggregate is assembled downstream (ADR 0020).
-//
-// Restarts and Reason are of deliberately different quality. Restarts is exact —
-// a counter delta counts every restart even if several happened between two
-// status updates. Reason is a sample: a status carries only its most recent
-// termination, so a burst with different reasons reports one of them.
-type ContainerRestart struct {
-	Namespace string
-	Pod       string
-	Container string
-	Workload  WorkloadRef
-	// ObservedAt is when the agent saw the counter advance, and is what places
-	// the restarts in a window. The restarts themselves are not timestamped by
-	// Kubernetes — only the most recent termination is — so this is the only
-	// honest placement available.
-	ObservedAt time.Time
-	// Restarts is how far the counter advanced since the previous observation.
-	Restarts int64
-	// Reason is the termination reason behind the most recent restart, "" when
-	// the status carried no terminated state. Values come from the kubelet and
-	// the container runtime ("OOMKilled", "Error", "Completed", …), never from
-	// user input.
-	Reason string
-	// ExitCode is that same termination's exit code, nil when unavailable.
-	ExitCode *int32
-}
 
 // restartBaseline is what the agent remembers about one container's restart
 // counter: the value each reported advance is measured against, and the value
@@ -53,7 +25,7 @@ type restartBaseline struct {
 // OnContainerRestart registers fn to be called for every observed advance of a
 // container's restart counter. Must be called before Run. fn is called from the
 // informer goroutine and must not block.
-func (w *PodWatcher) OnContainerRestart(fn func(ContainerRestart)) {
+func (w *PodWatcher) OnContainerRestart(fn func(model.ContainerRestart)) {
 	w.onRestart = fn
 }
 
@@ -95,7 +67,7 @@ func (w *PodWatcher) reportRestarts(pod *corev1.Pod) {
 			continue
 		}
 		reason, exitCode := lastTermination(status)
-		w.onRestart(ContainerRestart{
+		w.onRestart(model.ContainerRestart{
 			Namespace:  pod.Namespace,
 			Pod:        pod.Name,
 			Container:  status.Name,

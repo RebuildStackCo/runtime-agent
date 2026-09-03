@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 // NodeEventRecord is one node arriving in or leaving the cluster, in the window
@@ -37,7 +37,7 @@ type NodeEventRecord struct {
 	// Devices travel for the same reason as the size above, and matter more: an
 	// accelerator node is the expensive one, and its coming and going is the
 	// question a fleet with any accelerators at all will be asked first.
-	Devices []collector.NodeDevice `json:"devices,omitempty"`
+	Devices []model.NodeDevice `json:"devices,omitempty"`
 
 	WindowStart   time.Time `json:"window_start"`
 	WindowSeconds int64     `json:"window_seconds"`
@@ -78,7 +78,7 @@ func NewNodeEvents(windowLength time.Duration) *NodeEvents {
 }
 
 // Observe files one lifecycle event in the window holding its instant.
-func (e *NodeEvents) Observe(ev collector.NodeLifecycle) {
+func (e *NodeEvents) Observe(ev model.NodeLifecycle) {
 	if ev.At.IsZero() || ev.Node.Name == "" {
 		return
 	}

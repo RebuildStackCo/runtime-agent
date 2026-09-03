@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,10 +49,10 @@ func replicaSet(name, deployment, revision, image string, desired, ready int32) 
 	return set
 }
 
-func collectReplicaSets(t *testing.T, objects ...runtime.Object) []ReplicaSetInfo {
+func collectReplicaSets(t *testing.T, objects ...runtime.Object) []model.ReplicaSetInfo {
 	t.Helper()
 	clientset := fake.NewClientset(objects...)
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	watcher.SetFilter(NewFilter(nil, nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,7 +60,7 @@ func collectReplicaSets(t *testing.T, objects ...runtime.Object) []ReplicaSetInf
 	done := make(chan error, 1)
 	go func() { done <- watcher.Run(ctx) }()
 
-	var got []ReplicaSetInfo
+	var got []model.ReplicaSetInfo
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if got = watcher.ReplicaSets(); len(got) > 0 {
@@ -143,7 +144,7 @@ func TestOptedOutDeploymentHasNoRevisions(t *testing.T) {
 		replicaSet("web-old", "web", "46", "example.com/app:1.2.3", 3, 3),
 		pod("web-pod", &owner))
 
-	watcher := NewPodWatcher(clientset, func(PodInfo) {})
+	watcher := NewPodWatcher(clientset, func(model.PodInfo) {})
 	filter := NewFilter(nil, nil)
 	watcher.SetFilter(filter)
 
@@ -193,7 +194,7 @@ func TestUnannotatedReplicaSetHasNoRevision(t *testing.T) {
 // through fails here rather than in a customer's cluster (CLAUDE.md invariant 4).
 func TestRevisionViewNeverCarriesTemplateEnvOrCommand(t *testing.T) {
 	set := replicaSet("web-old", "web", "46", "example.com/app:1.2.3", 3, 3)
-	encoded, err := json.Marshal(describeReplicaSet(set, WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}))
+	encoded, err := json.Marshal(describeReplicaSet(set, model.WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}))
 	if err != nil {
 		t.Fatal(err)
 	}

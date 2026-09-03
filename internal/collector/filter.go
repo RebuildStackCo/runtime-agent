@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -203,36 +204,9 @@ func (f *Filter) countUnresolvedWorkload(reason UnresolvedWorkload) {
 	}
 }
 
-// Coverage is an aggregate snapshot of what the filter admitted and
-// excluded, counted once per pod appearance. It is the seed of the coverage
-// report (docs/security.md §11): full information about what is collected,
-// only counts about what is not.
-type Coverage struct {
-	PodsObserved                int64 `json:"pods_observed"`
-	ExcludedNamespaceFilter     int64 `json:"excluded_namespace_filter"`
-	ExcludedNamespaceAnnotation int64 `json:"excluded_namespace_annotation"`
-	ExcludedWorkloadAnnotation  int64 `json:"excluded_workload_annotation"`
-	ExcludedPodAnnotation       int64 `json:"excluded_pod_annotation"`
-	// WorkloadUnknownKind and WorkloadNotCached are the blind spot: pods
-	// admitted without their workload-level opt-out being checked. They are
-	// kept apart because they mean different things — the first is a standing
-	// property of a cluster running operators the agent does not read, the
-	// second should sit at zero.
-	WorkloadUnknownKind int64 `json:"workload_unknown_kind"`
-	WorkloadNotCached   int64 `json:"workload_not_cached"`
-
-	// Job counters, kept apart from the pod ones on purpose: one Job produces
-	// many pods, so a shared counter would answer neither question.
-	JobsObserved                    int64 `json:"jobs_observed"`
-	JobsExcludedNamespaceFilter     int64 `json:"jobs_excluded_namespace_filter"`
-	JobsExcludedNamespaceAnnotation int64 `json:"jobs_excluded_namespace_annotation"`
-	JobsExcludedWorkloadAnnotation  int64 `json:"jobs_excluded_workload_annotation"`
-	JobsExcludedAnnotation          int64 `json:"jobs_excluded_annotation"`
-}
-
 // Snapshot returns the current coverage counters.
-func (f *Filter) Snapshot() Coverage {
-	return Coverage{
+func (f *Filter) Snapshot() model.Coverage {
+	return model.Coverage{
 		PodsObserved:                f.podsObserved.Load(),
 		ExcludedNamespaceFilter:     f.excludedNamespaceFilter.Load(),
 		ExcludedNamespaceAnnotation: f.excludedNamespaceAnnotation.Load(),

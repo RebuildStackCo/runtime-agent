@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -16,17 +17,17 @@ import (
 // there for why a cache sync is not enough.
 type disruptionWatcher struct {
 	fake   *fake.Clientset
-	events chan PodDisruption
+	events chan model.PodDisruption
 }
 
 func newWatcherWithDisruptions(t *testing.T, initial *corev1.Pod) disruptionWatcher {
 	t.Helper()
 	clientset := fake.NewClientset(initial)
 
-	events := make(chan PodDisruption, 16)
+	events := make(chan model.PodDisruption, 16)
 	observed := make(chan string, 16)
-	watcher := NewPodWatcher(clientset, func(p PodInfo) { observed <- p.Name })
-	watcher.OnPodDisruption(func(d PodDisruption) { events <- d })
+	watcher := NewPodWatcher(clientset, func(p model.PodInfo) { observed <- p.Name })
+	watcher.OnPodDisruption(func(d model.PodDisruption) { events <- d })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -41,14 +42,14 @@ func newWatcherWithDisruptions(t *testing.T, initial *corev1.Pod) disruptionWatc
 	return disruptionWatcher{fake: clientset, events: events}
 }
 
-func waitDisruption(t *testing.T, events chan PodDisruption) PodDisruption {
+func waitDisruption(t *testing.T, events chan model.PodDisruption) model.PodDisruption {
 	t.Helper()
 	select {
 	case d := <-events:
 		return d
 	case <-time.After(5 * time.Second):
 		t.Fatal("no pod disruption reported before timeout")
-		return PodDisruption{}
+		return model.PodDisruption{}
 	}
 }
 
@@ -210,7 +211,7 @@ func TestReportsPodDisruptionOnce(t *testing.T) {
 	if got.Node != "node-1" {
 		t.Errorf("node = %q, want node-1 — the node under pressure is the point", got.Node)
 	}
-	if got.Workload != (WorkloadRef{Kind: "Deployment", Name: "checkout"}) {
+	if got.Workload != (model.WorkloadRef{Kind: "Deployment", Name: "checkout"}) {
 		t.Errorf("workload = %+v, want Deployment/checkout", got.Workload)
 	}
 

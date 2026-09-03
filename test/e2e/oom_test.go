@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 func TestOOMKillDetectionAgainstRealCluster(t *testing.T) {
@@ -60,9 +61,9 @@ func TestOOMKillDetectionAgainstRealCluster(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	var kills []collector.OOMKill
-	watcher := collector.NewPodWatcher(clientset, func(collector.PodInfo) {})
-	watcher.OnOOMKill(func(o collector.OOMKill) {
+	var kills []model.OOMKill
+	watcher := collector.NewPodWatcher(clientset, func(model.PodInfo) {})
+	watcher.OnOOMKill(func(o model.OOMKill) {
 		observed, _ := json.Marshal(o)
 		t.Logf("oom kill observed: %s", observed)
 		if o.Namespace != ns {
@@ -77,7 +78,7 @@ func TestOOMKillDetectionAgainstRealCluster(t *testing.T) {
 
 	// Image pull plus a few seconds of allocation; 3 minutes is generous.
 	deadline := time.Now().Add(3 * time.Minute)
-	var got collector.OOMKill
+	var got model.OOMKill
 	for {
 		mu.Lock()
 		if len(kills) > 0 {

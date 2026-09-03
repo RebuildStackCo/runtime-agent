@@ -5,16 +5,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 // DisruptionRecord is one pod the cluster removed, in the window where it
 // happened. Unlike a restart, a disruption is timestamped by Kubernetes, so the
 // record carries the moment itself rather than only the window it fell in.
 type DisruptionRecord struct {
-	Namespace string                `json:"namespace"`
-	Pod       string                `json:"pod"`
-	Workload  collector.WorkloadRef `json:"workload"`
+	Namespace string            `json:"namespace"`
+	Pod       string            `json:"pod"`
+	Workload  model.WorkloadRef `json:"workload"`
 	// Node is where the pod was running. For a node-pressure eviction it names
 	// the node that was under pressure; joined against node metadata it turns
 	// "a pod was evicted" into "this instance type ran out of memory".
@@ -61,7 +61,7 @@ func NewDisruptions(windowLength time.Duration) *Disruptions {
 // reported twice — after an agent restart, say — rewrites its own record rather
 // than appearing twice. That is what keeps the collector's in-memory dedup
 // loss-harmless.
-func (d *Disruptions) Observe(e collector.PodDisruption) {
+func (d *Disruptions) Observe(e model.PodDisruption) {
 	if e.DisruptedAt.IsZero() {
 		return
 	}

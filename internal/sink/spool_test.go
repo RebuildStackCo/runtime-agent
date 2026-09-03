@@ -13,11 +13,11 @@ import (
 
 	"k8s.io/utils/ptr"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofprobe"
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofpull"
@@ -127,11 +127,11 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		},
 		UsageSignals: []string{"cpu", "memory", "network", "throttling"},
 	}
-	sources := []collector.SourceHealth{
+	sources := []model.SourceHealth{
 		{Name: "endpoint_slices", Synced: false, Failing: true},
 		{Name: "services", Synced: true},
 	}
-	filter := collector.Coverage{
+	filter := model.Coverage{
 		PodsObserved:                412,
 		ExcludedNamespaceFilter:     37,
 		ExcludedWorkloadAnnotation:  2,
@@ -165,16 +165,16 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	// will otherwise mistake for a broken agent (ADR 0058 §3).
 	pull := pprofpull.Coverage{Shipped: 4, Refused: 1, Unreachable: 0, Invalid: 1}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
-		sources, filter, collector.PlacementDrops{Values: 3, Terms: 1},
-		collector.NodeDrops{Conditions: 4, Devices: 1, Taints: 0, Values: 2},
+		sources, filter, model.PlacementDrops{Values: 3, Terms: 1},
+		model.NodeDrops{Conditions: 4, Devices: 1, Taints: 0, Values: 2},
 		&inv, &scan, &ebpf, &probe, &pull); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
 }
 
-func fixedObservation() collector.Observation {
-	return collector.Observation{
+func fixedObservation() model.Observation {
+	return model.Observation{
 		PollIntervalSeconds: 30,
 		PollsAttempted:      240,
 		PollsFailed:         3,
@@ -245,11 +245,11 @@ func TestGoldenClosedWindowPayload(t *testing.T) {
 
 func TestGoldenOOMPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	event := collector.OOMKill{
+	event := model.OOMKill{
 		Namespace:        "shop",
 		Pod:              "web-7f8d9-abcde",
 		Container:        "app",
-		Workload:         collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+		Workload:         model.WorkloadRef{Kind: "Deployment", Name: "web"},
 		FinishedAt:       windowStart.Add(17 * time.Minute),
 		ExitCode:         137,
 		RestartCount:     3,
@@ -269,7 +269,7 @@ func fixedRestarts() []journal.RestartRecord {
 	return []journal.RestartRecord{
 		{
 			Key:           journal.Key{Namespace: "search", Pod: "index-0", Container: "app"},
-			Workload:      collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			Workload:      model.WorkloadRef{Kind: "StatefulSet", Name: "index"},
 			WindowStart:   windowStart,
 			WindowSeconds: 3600,
 			Restarts:      2,
@@ -278,7 +278,7 @@ func fixedRestarts() []journal.RestartRecord {
 		},
 		{
 			Key:               journal.Key{Namespace: "shop", Pod: "web-7f8d9-abcde", Container: "app"},
-			Workload:          collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Workload:          model.WorkloadRef{Kind: "Deployment", Name: "web"},
 			WindowStart:       windowStart,
 			WindowSeconds:     3600,
 			Restarts:          12,
@@ -305,20 +305,20 @@ func TestGoldenContainerRestartsPayload(t *testing.T) {
 // `web-7f8d9-abcde` is the ordinary one — the agent has watched every restart it
 // has, so the reading and the windows agree. Nothing but this payload can state
 // the difference.
-func fixedRestartCounters() []collector.RestartCounter {
+func fixedRestartCounters() []model.RestartCounter {
 	observedSince := capturedAt.Add(-30 * time.Minute)
-	return []collector.RestartCounter{
+	return []model.RestartCounter{
 		{
 			Namespace:                 "search",
 			Pod:                       "index-0",
 			Container:                 "app",
-			Workload:                  collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			Workload:                  model.WorkloadRef{Kind: "StatefulSet", Name: "index"},
 			Restarts:                  42,
 			RestartsBeforeObservation: 40,
 			ObservedSince:             observedSince,
 			PodCreatedAt:              windowStart.Add(-72 * time.Hour),
 			ContainerStartedAt:        ptr.To(capturedAt.Add(-3 * time.Minute)),
-			LastTermination: &collector.RestartTermination{
+			LastTermination: &model.RestartTermination{
 				Reason:     "OOMKilled",
 				ExitCode:   137,
 				FinishedAt: capturedAt.Add(-3*time.Minute - time.Second),
@@ -328,12 +328,12 @@ func fixedRestartCounters() []collector.RestartCounter {
 			Namespace:                 "shop",
 			Pod:                       "web-7f8d9-abcde",
 			Container:                 "app",
-			Workload:                  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Workload:                  model.WorkloadRef{Kind: "Deployment", Name: "web"},
 			Restarts:                  12,
 			RestartsBeforeObservation: 0,
 			ObservedSince:             observedSince,
 			PodCreatedAt:              observedSince.Add(-5 * time.Minute),
-			LastTermination: &collector.RestartTermination{
+			LastTermination: &model.RestartTermination{
 				Reason:     "Error",
 				ExitCode:   1,
 				FinishedAt: capturedAt.Add(-20 * time.Second),
@@ -365,7 +365,7 @@ func TestRestartCountersWriteEvenWhenNothingRestarted(t *testing.T) {
 		t.Fatalf("a cluster with no restarts must still write the reading: %v", err)
 	}
 	var payload struct {
-		Records []collector.RestartCounter `json:"records"`
+		Records []model.RestartCounter `json:"records"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
@@ -444,7 +444,7 @@ func fixedDisruptions() []journal.DisruptionRecord {
 		{
 			Namespace:     "search",
 			Pod:           "index-0",
-			Workload:      collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			Workload:      model.WorkloadRef{Kind: "StatefulSet", Name: "index"},
 			Node:          "node-2",
 			Reason:        "TerminationByKubelet",
 			DisruptedAt:   windowStart.Add(9 * time.Minute),
@@ -454,7 +454,7 @@ func fixedDisruptions() []journal.DisruptionRecord {
 		{
 			Namespace:     "shop",
 			Pod:           "web-7f8d9-abcde",
-			Workload:      collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Workload:      model.WorkloadRef{Kind: "Deployment", Name: "web"},
 			Node:          "node-1",
 			Reason:        "PreemptionByScheduler",
 			DisruptedAt:   windowStart.Add(22 * time.Minute),
@@ -473,7 +473,7 @@ func fixedJobRuns() []journal.JobRunRecord {
 	return []journal.JobRunRecord{
 		{
 			Namespace:     "analytics",
-			Workload:      collector.WorkloadRef{Kind: "CronJob", Name: "rollup"},
+			Workload:      model.WorkloadRef{Kind: "CronJob", Name: "rollup"},
 			Name:          "rollup-29123456",
 			StartedAt:     windowStart.Add(5 * time.Minute),
 			FinishedAt:    windowStart.Add(7 * time.Minute),
@@ -488,7 +488,7 @@ func fixedJobRuns() []journal.JobRunRecord {
 		},
 		{
 			Namespace:     "analytics",
-			Workload:      collector.WorkloadRef{Kind: "CronJob", Name: "rollup"},
+			Workload:      model.WorkloadRef{Kind: "CronJob", Name: "rollup"},
 			Name:          "rollup-29123457",
 			StartedAt:     windowStart.Add(35 * time.Minute),
 			FinishedAt:    windowStart.Add(41 * time.Minute),
@@ -503,7 +503,7 @@ func fixedJobRuns() []journal.JobRunRecord {
 		},
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "Job", Name: "migrate-v42"},
+			Workload:  model.WorkloadRef{Kind: "Job", Name: "migrate-v42"},
 			Name:      "migrate-v42",
 			// No StartedAt: the run failed before the controller recorded a
 			// start, which the payload omits rather than rendering as the epoch.
@@ -892,7 +892,7 @@ func TestGoBuildRejectsMissingDigest(t *testing.T) {
 func fixedWorkloadMetadata() []metadata.Record {
 	// A strategy that replaces a quarter of the fleet at a time and waits no
 	// time at all before calling a new replica available (ADR 0048 §2).
-	rolling := metadata.WorkloadScope{UpdateStrategy: collector.UpdateStrategy{
+	rolling := metadata.WorkloadScope{UpdateStrategy: model.UpdateStrategy{
 		Type:           "RollingUpdate",
 		MaxUnavailable: "25%",
 		MaxSurge:       "25%",
@@ -906,12 +906,12 @@ func fixedWorkloadMetadata() []metadata.Record {
 		// puts one replica per node whatever spare capacity exists elsewhere,
 		// and DoNotSchedule across zones keeps it paying for every zone it
 		// spans (ADR 0031).
-		Placement: collector.Placement{
+		Placement: model.Placement{
 			NodeSelector: map[string]string{"node.kubernetes.io/instance-type": "m6i.large"},
-			PodAntiAffinity: []collector.TopologyTerm{
+			PodAntiAffinity: []model.TopologyTerm{
 				{TopologyKey: "kubernetes.io/hostname", Required: true},
 			},
-			TopologySpread: []collector.SpreadTerm{
+			TopologySpread: []model.SpreadTerm{
 				{TopologyKey: "topology.kubernetes.io/zone", MaxSkew: 1, WhenUnsatisfiable: "DoNotSchedule"},
 			},
 			PriorityClass:           "high",
@@ -926,23 +926,23 @@ func fixedWorkloadMetadata() []metadata.Record {
 				ImageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			},
 			Image: "example.com/web:1.2.3",
-			Resources: collector.Resources{
+			Resources: model.Resources{
 				CPURequestMilli:    ptr.To[int64](500),
 				CPULimitMilli:      ptr.To[int64](2000),
 				MemoryRequestBytes: ptr.To[int64](256 << 20),
 				MemoryLimitBytes:   ptr.To[int64](1 << 30),
 			},
-			Ports: []collector.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}},
+			Ports: []model.ContainerPort{{Name: "http", Port: 8080, Protocol: "TCP"}},
 			// A liveness probe that gives up sooner than the readiness probe
 			// does — three failures at ten seconds against six at five — is a
 			// restart on a timer. The payload carries the two schedules and
 			// nothing about what either checks (ADR 0048 §1).
-			Probes: collector.Probes{
-				Liveness: &collector.Probe{
+			Probes: model.Probes{
+				Liveness: &model.Probe{
 					Kind: "httpGet", PeriodSeconds: 10, TimeoutSeconds: 1,
 					FailureThreshold: 3, SuccessThreshold: 1,
 				},
-				Readiness: &collector.Probe{
+				Readiness: &model.Probe{
 					Kind: "httpGet", InitialDelaySeconds: 5, PeriodSeconds: 5,
 					TimeoutSeconds: 1, FailureThreshold: 6, SuccessThreshold: 1,
 				},
@@ -959,7 +959,7 @@ func fixedWorkloadMetadata() []metadata.Record {
 			Image: "example.com/web:1.3.0",
 			// No limits declared: nil must stay absent from the payload, never
 			// flatten to zero.
-			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](1000)},
+			Resources: model.Resources{CPURequestMilli: ptr.To[int64](1000)},
 			// One knob written inline and one derived from the container's own
 			// limits, which is the form the downward API gives it: the spec
 			// holds no value, so the payload names the field it reads
@@ -982,14 +982,14 @@ func fixedWorkloadMetadata() []metadata.Record {
 				// digest, the two builds keep their own constraints instead of
 				// one overwriting the other — which is the whole reason a
 				// rollout's placement change is legible here at all.
-				Placement: collector.Placement{
-					NodeAffinity: []collector.NodeAffinityTerm{{
+				Placement: model.Placement{
+					NodeAffinity: []model.NodeAffinityTerm{{
 						Key:      "topology.kubernetes.io/zone",
 						Operator: "In",
 						Values:   []string{"eu-west-1a"},
 						Required: true,
 					}},
-					PodAntiAffinity: []collector.TopologyTerm{
+					PodAntiAffinity: []model.TopologyTerm{
 						{TopologyKey: "kubernetes.io/hostname", Required: true},
 					},
 					PriorityClass: "high",
@@ -1008,7 +1008,7 @@ func fixedWorkloadMetadata() []metadata.Record {
 				ImageDigest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
 			},
 			Image:     "docker.io/istio/proxyv2:1.24.0",
-			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](100)},
+			Resources: model.Resources{CPURequestMilli: ptr.To[int64](100)},
 			Pod:       running,
 			Workload:  rolling,
 		},
@@ -1022,7 +1022,7 @@ func fixedWorkloadMetadata() []metadata.Record {
 				ImageDigest: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
 			},
 			Image:     "example.com/payments:2.0.1",
-			Resources: collector.Resources{CPURequestMilli: ptr.To[int64](250)},
+			Resources: model.Resources{CPURequestMilli: ptr.To[int64](250)},
 			Pod: metadata.PodScope{
 				QOSClass: "Burstable",
 				Replicas: 1,
@@ -1039,8 +1039,8 @@ func fixedWorkloadMetadata() []metadata.Record {
 // accelerator node under pressure, so the three reduced lists of ADR 0064 —
 // devices, conditions, taints — appear in the bytes rather than only in a unit
 // test.
-func fixedNodeMetadata() []collector.NodeInfo {
-	return []collector.NodeInfo{
+func fixedNodeMetadata() []model.NodeInfo {
+	return []model.NodeInfo{
 		{
 			Name: "node-1", InstanceType: "m6i.large", CapacityType: "on-demand",
 			Zone: "eu-west-1a", Region: "eu-west-1", KernelVersion: "6.1.0-generic",
@@ -1051,7 +1051,7 @@ func fixedNodeMetadata() []collector.NodeInfo {
 			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
 			AllocatableEphemeralBytes: 47 << 30, CapacityEphemeralBytes: 50 << 30,
 			AllocatablePods: 110, CapacityPods: 110,
-			Conditions: []collector.NodeCondition{
+			Conditions: []model.NodeCondition{
 				{Type: "DiskPressure", Status: "False", Reason: "KubeletHasNoDiskPressure", Since: nodeBorn},
 				{Type: "MemoryPressure", Status: "False", Reason: "KubeletHasSufficientMemory", Since: nodeBorn},
 				{Type: "Ready", Status: "True", Reason: "KubeletReady", Since: nodeBorn},
@@ -1067,13 +1067,13 @@ func fixedNodeMetadata() []collector.NodeInfo {
 			CapacityCPUMilli: 2000, CapacityMemoryBytes: 8 << 30,
 			AllocatableEphemeralBytes: 190 << 30, CapacityEphemeralBytes: 200 << 30,
 			AllocatablePods: 58, CapacityPods: 58,
-			Devices: []collector.NodeDevice{{Name: "nvidia.com/gpu", Capacity: 4, Allocatable: 4}},
-			Conditions: []collector.NodeCondition{
+			Devices: []model.NodeDevice{{Name: "nvidia.com/gpu", Capacity: 4, Allocatable: 4}},
+			Conditions: []model.NodeCondition{
 				{Type: "DiskPressure", Status: "False", Reason: "KubeletHasNoDiskPressure", Since: nodeBorn},
 				{Type: "MemoryPressure", Status: "True", Reason: "KubeletHasInsufficientMemory", Since: capturedAt},
 				{Type: "Ready", Status: "True", Reason: "KubeletReady", Since: nodeBorn},
 			},
-			Taints: []collector.NodeTaint{{Key: "nvidia.com/gpu", Value: "present", Effect: "NoSchedule"}},
+			Taints: []model.NodeTaint{{Key: "nvidia.com/gpu", Value: "present", Effect: "NoSchedule"}},
 		},
 	}
 }
@@ -1094,7 +1094,7 @@ func fixedNodeEvents() []journal.NodeEventRecord {
 			Node: "node-4", Event: "left", At: windowStart.Add(41 * time.Minute), AtObserved: true,
 			InstanceType: "g5.2xlarge", CapacityType: "spot", Zone: "eu-west-1b",
 			CapacityCPUMilli: 8000, CapacityMemoryBytes: 32 << 30,
-			Devices:     []collector.NodeDevice{{Name: "nvidia.com/gpu", Capacity: 4, Allocatable: 4}},
+			Devices:     []model.NodeDevice{{Name: "nvidia.com/gpu", Capacity: 4, Allocatable: 4}},
 			WindowStart: windowStart, WindowSeconds: 3600,
 		},
 	}
@@ -1209,7 +1209,7 @@ func fixedRevisions() []revisions.Record {
 	return []revisions.Record{
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Workload:  model.WorkloadRef{Kind: "Deployment", Name: "web"},
 			Name:      "web-6d4cf56db",
 			Revision:  ptrTo(int64(46)),
 			CreatedAt: capturedAt.Add(-72 * time.Hour),
@@ -1220,7 +1220,7 @@ func fixedRevisions() []revisions.Record {
 		},
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Workload:  model.WorkloadRef{Kind: "Deployment", Name: "web"},
 			Name:      "web-7f8d9c5b4",
 			Revision:  ptrTo(int64(47)),
 			CreatedAt: capturedAt.Add(-2 * time.Hour),
@@ -1232,7 +1232,7 @@ func fixedRevisions() []revisions.Record {
 		},
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Workload:  model.WorkloadRef{Kind: "Deployment", Name: "web"},
 			Name:      "web-849fbc77d",
 			Revision:  ptrTo(int64(48)),
 			CreatedAt: capturedAt.Add(-3 * time.Minute),
@@ -1244,7 +1244,7 @@ func fixedRevisions() []revisions.Record {
 		},
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "Rollout", Name: "payments"},
+			Workload:  model.WorkloadRef{Kind: "Rollout", Name: "payments"},
 			Name:      "payments-7bd58f4db4",
 			CreatedAt: capturedAt.Add(-20 * time.Minute),
 			Replicas:  revisions.Replicas{Desired: 1, Current: 1, Ready: 1},
@@ -1470,7 +1470,7 @@ func TestSnapshotSupersedesOnDisk(t *testing.T) {
 		t.Fatalf("spool holds %d files after two snapshots of one window, want 1", len(entries))
 	}
 	var payload struct {
-		Observation collector.Observation `json:"observation"`
+		Observation model.Observation `json:"observation"`
 	}
 	raw, err := os.ReadFile(snapshotFile(dir)) // #nosec G304 -- test-controlled path
 	if err != nil {
@@ -1543,20 +1543,20 @@ func TestSweepDropsExpiredAndTempFiles(t *testing.T) {
 // budget that permits no disruption today, an autoscaler pinned at its ceiling,
 // a bound zonal claim, and a Service routing to it. Each alone changes what may
 // be concluded from the same usage numbers.
-func fixedWorkloadPolicy() []collector.WorkloadPolicy {
-	return []collector.WorkloadPolicy{
+func fixedWorkloadPolicy() []model.WorkloadPolicy {
+	return []model.WorkloadPolicy{
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
-			Budgets: []collector.DisruptionBudget{{
+			Workload:  model.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Budgets: []model.DisruptionBudget{{
 				Name: "web-pdb", MinAvailable: "100%",
 				DisruptionsAllowed: 0, CurrentHealthy: 3, DesiredHealthy: 3, ExpectedPods: 3,
 			}},
-			Autoscalers: []collector.Autoscaler{{
+			Autoscalers: []model.Autoscaler{{
 				Name:        "web-hpa",
 				MinReplicas: ptr.To[int32](3),
 				MaxReplicas: 8, CurrentReplicas: 8, DesiredReplicas: 8,
-				Metrics: []collector.AutoscalerMetric{{
+				Metrics: []model.AutoscalerMetric{{
 					Type: "Resource", Name: "cpu",
 					TargetType: "Utilization", TargetValue: "80",
 				}},
@@ -1564,10 +1564,10 @@ func fixedWorkloadPolicy() []collector.WorkloadPolicy {
 			}},
 			// Topology-aware routing asked for and not arranged: the mode is
 			// set, and not one endpoint carries a hint (ADR 0051).
-			Services: []collector.ServiceExposure{{
+			Services: []model.ServiceExposure{{
 				Name: "web", Type: "ClusterIP", InternalTrafficPolicy: "Cluster",
 				TrafficDistribution: "PreferClose",
-				Endpoints: []collector.EndpointZones{{
+				Endpoints: []model.EndpointZones{{
 					AddressType: "IPv4", Ready: 3,
 					Zones: map[string]int{"eu-west-1a": 2, "eu-west-1b": 1},
 				}},
@@ -1575,14 +1575,14 @@ func fixedWorkloadPolicy() []collector.WorkloadPolicy {
 		},
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "StatefulSet", Name: "db"},
-			Claims: []collector.VolumeClaim{{
+			Workload:  model.WorkloadRef{Kind: "StatefulSet", Name: "db"},
+			Claims: []model.VolumeClaim{{
 				Name: "data-db-0", StorageClass: "gp3-zonal",
 				AccessModes: []string{"ReadWriteOnce"}, RequestedBytes: 100 << 30, Phase: "Bound",
 			}},
 			// A headless Service: clients resolve the pods themselves, so a
 			// single replica is a single address with nothing in front of it.
-			Services: []collector.ServiceExposure{{
+			Services: []model.ServiceExposure{{
 				Name: "db", Type: "ClusterIP", Headless: true,
 			}},
 		},
@@ -1591,30 +1591,30 @@ func fixedWorkloadPolicy() []collector.WorkloadPolicy {
 
 // fixedClusterPolicy pairs a namespace that supplies defaults with the catalogs
 // the workload payloads point into by name.
-func fixedClusterPolicy() collector.ClusterPolicy {
-	return collector.ClusterPolicy{
-		Namespaces: []collector.NamespacePolicy{{
+func fixedClusterPolicy() model.ClusterPolicy {
+	return model.ClusterPolicy{
+		Namespaces: []model.NamespacePolicy{{
 			Namespace: "shop",
-			LimitRanges: []collector.LimitRangeInfo{{
+			LimitRanges: []model.LimitRangeInfo{{
 				Name: "defaults",
-				Items: []collector.LimitRangeItem{{
+				Items: []model.LimitRangeItem{{
 					Type:           "Container",
-					DefaultRequest: collector.ResourceAmounts{CPUMilli: ptr.To[int64](100)},
-					Default:        collector.ResourceAmounts{MemoryBytes: ptr.To[int64](512 << 20)},
-					Max:            collector.ResourceAmounts{CPUMilli: ptr.To[int64](4000)},
+					DefaultRequest: model.ResourceAmounts{CPUMilli: ptr.To[int64](100)},
+					Default:        model.ResourceAmounts{MemoryBytes: ptr.To[int64](512 << 20)},
+					Max:            model.ResourceAmounts{CPUMilli: ptr.To[int64](4000)},
 				}},
 			}},
-			Quotas: []collector.ResourceQuotaInfo{{
+			Quotas: []model.ResourceQuotaInfo{{
 				Name: "team",
 				Hard: map[string]string{"requests.cpu": "40", "requests.memory": "80Gi"},
 				Used: map[string]string{"requests.cpu": "31", "requests.memory": "62Gi"},
 			}},
 		}},
-		PriorityClasses: []collector.PriorityClassInfo{
+		PriorityClasses: []model.PriorityClassInfo{
 			{Name: "high", Value: 1000, PreemptionPolicy: "PreemptLowerPriority"},
 			{Name: "low", Value: 100, PreemptionPolicy: "Never"},
 		},
-		StorageClasses: []collector.StorageClassInfo{{
+		StorageClasses: []model.StorageClassInfo{{
 			Name: "gp3-zonal", Provisioner: "ebs.csi.aws.com",
 			ReclaimPolicy: "Delete", VolumeBindingMode: "WaitForFirstConsumer",
 			AllowVolumeExpansion: true,
@@ -1883,7 +1883,7 @@ func TestTheSpoolIsBoundedOnAClusterThatWritesNoUsage(t *testing.T) {
 
 	// A day of OOM kills from a crash-looping pod, and not one usage record.
 	for i := range 50 {
-		e := collector.OOMKill{
+		e := model.OOMKill{
 			Namespace: "acme", Pod: "worker-0", Container: "app",
 			RestartCount: int32(i),
 			FinishedAt:   time.Now().Add(-48 * time.Hour),
@@ -1931,9 +1931,9 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	s, dir := newTestSpool(t)
 	agent := AgentInfo{Version: "1.4.2", Config: cfg.Describe("", capturedAt)}
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
-		[]collector.SourceHealth{{Name: "services", Synced: true}},
-		collector.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		collector.PlacementDrops{}, collector.NodeDrops{}, nil, nil, nil, nil, nil)
+		[]model.SourceHealth{{Name: "services", Synced: true}},
+		model.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
+		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1954,7 +1954,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 		Agent struct {
 			Config config.Shape `json:"config"`
 		} `json:"agent"`
-		Filter collector.Coverage `json:"filter"`
+		Filter model.Coverage `json:"filter"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -225,7 +226,7 @@ func TestTheStrippedObjectIsWhatTheListersServe(t *testing.T) {
 	p.Spec.Containers[0].Args = []string{"--token=t0ps3cret"}
 	p.Annotations = map[string]string{lastAppliedAnnotation: secretish}
 
-	watcher := NewPodWatcher(fake.NewClientset(p), func(PodInfo) {})
+	watcher := NewPodWatcher(fake.NewClientset(p), func(model.PodInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = watcher.Run(ctx) }()

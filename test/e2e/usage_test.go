@@ -20,6 +20,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
@@ -220,8 +221,8 @@ func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.
 		t.Fatal(err)
 	}
 
-	podWatcher := collector.NewPodWatcher(clientset, func(collector.PodInfo) {})
-	nodeWatcher := collector.NewNodeWatcher(clientset, func(collector.NodeInfo) {})
+	podWatcher := collector.NewPodWatcher(clientset, func(model.PodInfo) {})
+	nodeWatcher := collector.NewNodeWatcher(clientset, func(model.NodeInfo) {})
 	// Declared before construction so the callbacks can read the poller's own
 	// observation state, exactly as the agent wires it.
 	var poller *collector.UsagePoller

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
 // JobRunRecord is one finished Job run, in the window where it finished.
@@ -16,8 +16,8 @@ import (
 // the payload: it is the denominator a usage rollup cannot supply for a
 // workload that ran for ninety seconds of an hour-long window.
 type JobRunRecord struct {
-	Namespace string                `json:"namespace"`
-	Workload  collector.WorkloadRef `json:"workload"`
+	Namespace string            `json:"namespace"`
+	Workload  model.WorkloadRef `json:"workload"`
 	// Name is the run's own object name, which for a CronJob is generated per
 	// run and is what tells two runs of one schedule apart.
 	Name string `json:"name"`
@@ -82,7 +82,7 @@ func NewJobRuns(windowLength time.Duration) *JobRuns {
 // reported twice — after an agent restart, while the object still exists —
 // rewrites its own record rather than appearing twice. That is what keeps the
 // collector's in-memory dedup loss-harmless.
-func (j *JobRuns) Observe(run collector.JobRun) {
+func (j *JobRuns) Observe(run model.JobRun) {
 	if run.FinishedAt.IsZero() {
 		return
 	}

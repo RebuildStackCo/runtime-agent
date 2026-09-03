@@ -3,48 +3,15 @@ package collector
 import (
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// JobRun is one finished execution of a Job: when it ran, how it ended, and the
-// shape it was declared with. It is a journal fact — the object's status records
-// that it happened (ADR 0029).
-//
-// It exists because usage rollups systematically misrepresent short-lived
-// workloads: a Job running ninety seconds inside an hour-long window reports a
-// tiny average, and `covered_nanoseconds` says coverage was low without saying
-// why. This is the denominator.
-type JobRun struct {
-	Namespace string
-	// Workload is the CronJob that scheduled this run, or the Job itself when
-	// it has no controller. Many runs of one schedule therefore aggregate under
-	// one workload, exactly as replicas of a Deployment do.
-	Workload WorkloadRef
-	// Name is this run's own object name. For a CronJob it is the generated
-	// per-run name, which is what distinguishes two runs of one schedule.
-	Name         string
-	StartedAt    time.Time
-	FinishedAt   time.Time
-	Result       string
-	FailReason   string
-	Succeeded    int32
-	Failed       int32
-	Parallelism  *int32
-	Completions  *int32
-	BackoffLimit *int32
-}
-
-// Job outcomes. The vocabulary is Kubernetes' own condition types, not ours.
-const (
-	JobSucceeded = "succeeded"
-	JobFailed    = "failed"
-)
-
 // OnJobFinished registers fn to be called once per finished Job. Must be called
 // before Run. fn is called from the informer goroutine and must not block.
-func (w *PodWatcher) OnJobFinished(fn func(JobRun)) {
+func (w *PodWatcher) OnJobFinished(fn func(model.JobRun)) {
 	w.onJobFinished = fn
 }
 
@@ -76,7 +43,7 @@ func (w *PodWatcher) reportJobRun(job *batchv1.Job) {
 		return
 	}
 
-	run := JobRun{
+	run := model.JobRun{
 		Namespace:    job.Namespace,
 		Workload:     w.resolveJobWorkload(job),
 		Name:         job.Name,
@@ -108,11 +75,11 @@ func (w *PodWatcher) forgetJobRun(job *batchv1.Job) {
 // resolveJobWorkload is the Job's controller when it has one, and the Job
 // itself when it does not. It stops at one hop: a CronJob is the top of this
 // chain by construction.
-func (w *PodWatcher) resolveJobWorkload(job *batchv1.Job) WorkloadRef {
+func (w *PodWatcher) resolveJobWorkload(job *batchv1.Job) model.WorkloadRef {
 	if owner := metav1.GetControllerOf(job); owner != nil {
-		return WorkloadRef{Kind: owner.Kind, Name: owner.Name}
+		return model.WorkloadRef{Kind: owner.Kind, Name: owner.Name}
 	}
-	return WorkloadRef{Kind: "Job", Name: job.Name}
+	return model.WorkloadRef{Kind: "Job", Name: job.Name}
 }
 
 // admitJob runs a Job through the filter: the workload step is its owning
@@ -177,11 +144,11 @@ func jobOutcomeOf(job *batchv1.Job) (result, reason string, finishedAt time.Time
 		case batchv1.JobComplete:
 			at := job.Status.CompletionTime
 			if at != nil && !at.IsZero() {
-				return JobSucceeded, "", at.UTC(), true
+				return model.JobSucceeded, "", at.UTC(), true
 			}
-			return JobSucceeded, "", conditionTime(cond), true
+			return model.JobSucceeded, "", conditionTime(cond), true
 		case batchv1.JobFailed:
-			return JobFailed, cond.Reason, conditionTime(cond), true
+			return model.JobFailed, cond.Reason, conditionTime(cond), true
 		}
 	}
 	return "", "", time.Time{}, false

@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -38,100 +39,6 @@ const defaultSchedulerName = "default-scheduler"
 // cluster. See tolerationIsClusterDefault.
 const defaultTolerationSeconds int64 = 300
 
-// Placement is what a pod's spec says about where it may run and how much it
-// costs to move it — the missing third of the consolidation question, after what
-// a workload asks for and what machine it got.
-//
-// Every field is a reduction of its pod-spec field, not a copy (reducePlacement),
-// and nothing here is judged: whether a hostname anti-affinity is deliberate or
-// forgotten is a backend rendering (ADR 0004). All fields are omitempty, so a
-// pod with no constraints contributes no bytes.
-type Placement struct {
-	// NodeSelector is spec.nodeSelector verbatim — it is already the flat
-	// key/value form the other fields are reduced to.
-	NodeSelector map[string]string `json:"node_selector,omitempty"`
-	// NodeAffinity flattens spec.affinity.nodeAffinity. Both the required and
-	// the preferred terms land here, distinguished by Required, and match
-	// expressions and match fields land in the same list because their shape is
-	// identical — a match field with key `metadata.name` is a pin to one node.
-	NodeAffinity []NodeAffinityTerm `json:"node_affinity,omitempty"`
-	// PodAffinity and PodAntiAffinity keep the topology key and nothing else of
-	// the term. A required anti-affinity on `kubernetes.io/hostname` is the
-	// single strongest statement in a pod spec about packing: it means one
-	// replica per node and no amount of spare capacity elsewhere changes that.
-	PodAffinity     []TopologyTerm `json:"pod_affinity,omitempty"`
-	PodAntiAffinity []TopologyTerm `json:"pod_anti_affinity,omitempty"`
-	// TopologySpread is spec.topologySpreadConstraints minus its selector.
-	// `DoNotSchedule` across zones forces the workload to keep paying for every
-	// zone it spans, whether or not the capacity is needed there.
-	TopologySpread []SpreadTerm `json:"topology_spread,omitempty"`
-	// Tolerations are what let the pod sit on tainted nodes — which is usually
-	// how a cluster fences off its expensive hardware. The two tolerations the
-	// cluster adds to every pod are not kept; see tolerationIsClusterDefault.
-	Tolerations []Toleration `json:"tolerations,omitempty"`
-	// PriorityClass is the name only. The class object holds the numeric value
-	// and the preemption policy, and reading it needs RBAC this agent does not
-	// have. The name still explains preemptions already reported in
-	// `pod_disruptions`.
-	PriorityClass string `json:"priority_class,omitempty"`
-	// TerminationGraceSeconds is present only when it deviates from the cluster
-	// default. Draining a node for consolidation waits this long per pod.
-	TerminationGraceSeconds *int64 `json:"termination_grace_seconds,omitempty"`
-	// HostNetwork means the pod holds ports on its node, which bounds how many
-	// of its kind fit on one machine regardless of CPU and memory.
-	HostNetwork bool `json:"host_network,omitempty"`
-	// SchedulerName is present only when it is not the default one. A custom
-	// scheduler means the placement facts above may not be the whole rule.
-	SchedulerName string `json:"scheduler_name,omitempty"`
-}
-
-// NodeAffinityTerm is one requirement on node labels. Required separates a hard
-// constraint from a weighted preference; the two are not the same fact, because
-// only the first can leave a pod unschedulable.
-type NodeAffinityTerm struct {
-	Key      string `json:"key"`
-	Operator string `json:"operator"`
-	// Values is absent when the operator takes none (`Exists`, `DoesNotExist`)
-	// and also when there were more than maxPlacementValues of them, in which
-	// case the drop is counted. The operator tells the two apart.
-	Values   []string `json:"values,omitempty"`
-	Required bool     `json:"required,omitempty"`
-	// Weight is the preferred term's weight, absent on required ones.
-	Weight int32 `json:"weight,omitempty"`
-}
-
-// TopologyTerm is one pod affinity or anti-affinity term reduced to its topology
-// key. The label selector inside it says which pods the rule is relative to,
-// which is a smaller fact than the rule's existence and its granularity, and
-// carrying it would mean copying an arbitrarily nested selector into the
-// payload.
-type TopologyTerm struct {
-	TopologyKey string `json:"topology_key"`
-	Required    bool   `json:"required,omitempty"`
-	Weight      int32  `json:"weight,omitempty"`
-}
-
-// SpreadTerm is one topology spread constraint minus its selector.
-type SpreadTerm struct {
-	TopologyKey       string `json:"topology_key"`
-	MaxSkew           int32  `json:"max_skew"`
-	WhenUnsatisfiable string `json:"when_unsatisfiable"`
-	// MinDomains forces the spread to span at least this many domains even when
-	// fewer would satisfy the skew, so it can hold capacity open in a zone that
-	// does not need it.
-	MinDomains *int32 `json:"min_domains,omitempty"`
-}
-
-// Toleration is one toleration, field for field. It is short and bounded, so
-// unlike the affinity structures there is nothing to reduce.
-type Toleration struct {
-	Key      string `json:"key,omitempty"`
-	Operator string `json:"operator,omitempty"`
-	Value    string `json:"value,omitempty"`
-	Effect   string `json:"effect,omitempty"`
-	Seconds  *int64 `json:"toleration_seconds,omitempty"`
-}
-
 // placementDrops counts what the reduction refused to carry. It is aggregate:
 // what was dropped is counted, never named (CLAUDE.md invariant 6), and it
 // reaches the coverage report so a cluster whose manifests do not fit these
@@ -154,8 +61,8 @@ func (d *placementDrops) empty() bool { return d.Values == 0 && d.Terms == 0 }
 // pinned on, and how hard"; replaying the scheduler's decision is not offered.
 // `env`, `args`, `command` and `volumes` sit in the same PodSpec and are never
 // read (CLAUDE.md invariant 4).
-func reducePlacement(spec *corev1.PodSpec) (Placement, placementDrops) {
-	var p Placement
+func reducePlacement(spec *corev1.PodSpec) (model.Placement, placementDrops) {
+	var p model.Placement
 	var drops placementDrops
 
 	if len(spec.NodeSelector) > 0 {
@@ -205,11 +112,11 @@ func reducePlacement(spec *corev1.PodSpec) (Placement, placementDrops) {
 	return p, drops
 }
 
-func reduceNodeAffinity(na *corev1.NodeAffinity, drops *placementDrops) []NodeAffinityTerm {
+func reduceNodeAffinity(na *corev1.NodeAffinity, drops *placementDrops) []model.NodeAffinityTerm {
 	if na == nil {
 		return nil
 	}
-	var out []NodeAffinityTerm
+	var out []model.NodeAffinityTerm
 	if req := na.RequiredDuringSchedulingIgnoredDuringExecution; req != nil {
 		for _, term := range req.NodeSelectorTerms {
 			out = appendSelectorTerm(out, term, true, 0, drops)
@@ -225,14 +132,14 @@ func reduceNodeAffinity(na *corev1.NodeAffinity, drops *placementDrops) []NodeAf
 // fields share a shape and are folded into one list; a match field's key is
 // `metadata.name`, which is a pin to a single node and belongs beside the label
 // constraints rather than in a category of its own.
-func appendSelectorTerm(out []NodeAffinityTerm, term corev1.NodeSelectorTerm, required bool, weight int32, drops *placementDrops) []NodeAffinityTerm {
+func appendSelectorTerm(out []model.NodeAffinityTerm, term corev1.NodeSelectorTerm, required bool, weight int32, drops *placementDrops) []model.NodeAffinityTerm {
 	add := func(exprs []corev1.NodeSelectorRequirement) {
 		for _, e := range exprs {
 			if !fits(e.Key) {
 				drops.Values++
 				continue
 			}
-			t := NodeAffinityTerm{
+			t := model.NodeAffinityTerm{
 				Key:      e.Key,
 				Operator: string(e.Operator),
 				Required: required,
@@ -247,44 +154,44 @@ func appendSelectorTerm(out []NodeAffinityTerm, term corev1.NodeSelectorTerm, re
 	return out
 }
 
-func reducePodAffinity(pa *corev1.PodAffinity, drops *placementDrops) []TopologyTerm {
+func reducePodAffinity(pa *corev1.PodAffinity, drops *placementDrops) []model.TopologyTerm {
 	if pa == nil {
 		return nil
 	}
-	var out []TopologyTerm
+	var out []model.TopologyTerm
 	out = appendTopologyTerms(out, pa.RequiredDuringSchedulingIgnoredDuringExecution, drops)
 	out = appendWeightedTopologyTerms(out, pa.PreferredDuringSchedulingIgnoredDuringExecution, drops)
 	return capTerms(out, drops)
 }
 
-func reducePodAntiAffinity(pa *corev1.PodAntiAffinity, drops *placementDrops) []TopologyTerm {
+func reducePodAntiAffinity(pa *corev1.PodAntiAffinity, drops *placementDrops) []model.TopologyTerm {
 	if pa == nil {
 		return nil
 	}
-	var out []TopologyTerm
+	var out []model.TopologyTerm
 	out = appendTopologyTerms(out, pa.RequiredDuringSchedulingIgnoredDuringExecution, drops)
 	out = appendWeightedTopologyTerms(out, pa.PreferredDuringSchedulingIgnoredDuringExecution, drops)
 	return capTerms(out, drops)
 }
 
-func appendTopologyTerms(out []TopologyTerm, terms []corev1.PodAffinityTerm, drops *placementDrops) []TopologyTerm {
+func appendTopologyTerms(out []model.TopologyTerm, terms []corev1.PodAffinityTerm, drops *placementDrops) []model.TopologyTerm {
 	for _, t := range terms {
 		if !fits(t.TopologyKey) {
 			drops.Values++
 			continue
 		}
-		out = append(out, TopologyTerm{TopologyKey: t.TopologyKey, Required: true})
+		out = append(out, model.TopologyTerm{TopologyKey: t.TopologyKey, Required: true})
 	}
 	return out
 }
 
-func appendWeightedTopologyTerms(out []TopologyTerm, terms []corev1.WeightedPodAffinityTerm, drops *placementDrops) []TopologyTerm {
+func appendWeightedTopologyTerms(out []model.TopologyTerm, terms []corev1.WeightedPodAffinityTerm, drops *placementDrops) []model.TopologyTerm {
 	for _, t := range terms {
 		if !fits(t.PodAffinityTerm.TopologyKey) {
 			drops.Values++
 			continue
 		}
-		out = append(out, TopologyTerm{
+		out = append(out, model.TopologyTerm{
 			TopologyKey: t.PodAffinityTerm.TopologyKey,
 			Weight:      t.Weight,
 		})
@@ -292,14 +199,14 @@ func appendWeightedTopologyTerms(out []TopologyTerm, terms []corev1.WeightedPodA
 	return out
 }
 
-func reduceSpread(constraints []corev1.TopologySpreadConstraint, drops *placementDrops) []SpreadTerm {
-	var out []SpreadTerm
+func reduceSpread(constraints []corev1.TopologySpreadConstraint, drops *placementDrops) []model.SpreadTerm {
+	var out []model.SpreadTerm
 	for _, c := range constraints {
 		if !fits(c.TopologyKey) {
 			drops.Values++
 			continue
 		}
-		term := SpreadTerm{
+		term := model.SpreadTerm{
 			TopologyKey:       c.TopologyKey,
 			MaxSkew:           c.MaxSkew,
 			WhenUnsatisfiable: string(c.WhenUnsatisfiable),
@@ -313,8 +220,8 @@ func reduceSpread(constraints []corev1.TopologySpreadConstraint, drops *placemen
 	return capTerms(out, drops)
 }
 
-func reduceTolerations(tolerations []corev1.Toleration, drops *placementDrops) []Toleration {
-	var out []Toleration
+func reduceTolerations(tolerations []corev1.Toleration, drops *placementDrops) []model.Toleration {
+	var out []model.Toleration
 	for _, t := range tolerations {
 		if tolerationIsClusterDefault(t) {
 			continue
@@ -323,7 +230,7 @@ func reduceTolerations(tolerations []corev1.Toleration, drops *placementDrops) [
 			drops.Values++
 			continue
 		}
-		kept := Toleration{
+		kept := model.Toleration{
 			Key:      t.Key,
 			Operator: string(t.Operator),
 			Value:    t.Value,

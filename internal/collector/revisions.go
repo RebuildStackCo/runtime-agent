@@ -2,8 +2,8 @@ package collector
 
 import (
 	"strconv"
-	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -14,47 +14,6 @@ import (
 // and it is the only revision key the agent knows (ADR 0049 §3).
 const revisionAnnotation = "deployment.kubernetes.io/revision"
 
-// RevisionContainer is one container of a revision's pod template: the name and
-// the image reference, and nothing else from the template.
-//
-// The image is what makes a revision mean something — "revision 47 is this
-// build" is the fact that turns a usage change into an attributable one. The
-// `env`, `args` and `command` beside it in the same template are never read
-// (CLAUDE.md invariant 4), on a ReplicaSet no less than on a pod.
-type RevisionContainer struct {
-	Name  string
-	Image string
-	// Init marks an init container, the same distinction workload metadata
-	// keeps: an init container's image changing is a revision changing.
-	Init bool
-}
-
-// ReplicaSetInfo is the collected view of one ReplicaSet — one revision of the
-// workload that controls it, with how many replicas it is currently carrying.
-type ReplicaSetInfo struct {
-	Namespace string
-	// Workload is the controller that owns the set: a Deployment, or any custom
-	// resource that manages ReplicaSets (ADR 0049). A ReplicaSet with no
-	// controller never reaches this view.
-	Workload WorkloadRef
-	// Name is the ReplicaSet's own name, which is what a `kubectl get rs` shows
-	// and therefore what makes this record findable in the cluster.
-	Name string
-	// Revision is the Deployment controller's revision number. Nil when the
-	// annotation is absent or unparseable, and nil for every other controller,
-	// which numbers its revisions under a key of its own (ADR 0049 §3).
-	Revision  *int64
-	CreatedAt time.Time
-	// DesiredReplicas is spec.replicas; Current and Ready are the status
-	// counters. Together they say which revision is actually carrying traffic:
-	// a rollout in progress has two revisions with non-zero counts, and a stuck
-	// one has a revision with desired > 0 and ready == 0.
-	DesiredReplicas int32
-	CurrentReplicas int32
-	ReadyReplicas   int32
-	Containers      []RevisionContainer
-}
-
 // ReplicaSets returns the collected view of every ReplicaSet whose controller is
 // a workload with admitted pods — a Deployment, or any custom resource that
 // manages ReplicaSets, which is how Argo Rollouts and its kind work (ADR 0049).
@@ -63,7 +22,7 @@ type ReplicaSetInfo struct {
 // from the admitted pod index, so an excluded workload is absent here too. A
 // workload whose pods are all gone therefore has no revisions even while its
 // ReplicaSets exist — the forgetting ADR 0018 chose for the Go inventory.
-func (w *PodWatcher) ReplicaSets() []ReplicaSetInfo {
+func (w *PodWatcher) ReplicaSets() []model.ReplicaSetInfo {
 	owners := w.replicaSetOwners()
 	if len(owners) == 0 {
 		return nil
@@ -73,7 +32,7 @@ func (w *PodWatcher) ReplicaSets() []ReplicaSetInfo {
 		return nil
 	}
 
-	out := make([]ReplicaSetInfo, 0, len(sets))
+	out := make([]model.ReplicaSetInfo, 0, len(sets))
 	for _, set := range sets {
 		// A ReplicaSet with no controller is a bare one, managed directly. It
 		// is the workload rather than a revision of one, so it has no history
@@ -82,7 +41,7 @@ func (w *PodWatcher) ReplicaSets() []ReplicaSetInfo {
 		if owner == nil {
 			continue
 		}
-		key := WorkloadKey{Namespace: set.Namespace, Kind: owner.Kind, Name: owner.Name}
+		key := model.WorkloadKey{Namespace: set.Namespace, Kind: owner.Kind, Name: owner.Name}
 		if !owners[key] {
 			continue
 		}
@@ -100,12 +59,12 @@ type workloadKey struct {
 // pod, keyed by kind as well as name. Kinds that cannot own a ReplicaSet are not
 // filtered out: no set will ever name them, so they cost a map entry and no
 // correctness.
-func (w *PodWatcher) replicaSetOwners() map[WorkloadKey]bool {
+func (w *PodWatcher) replicaSetOwners() map[model.WorkloadKey]bool {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
-	out := make(map[WorkloadKey]bool)
+	out := make(map[model.WorkloadKey]bool)
 	for _, entry := range w.index {
-		out[WorkloadKey{
+		out[model.WorkloadKey{
 			Namespace: entry.namespace,
 			Kind:      entry.workload.Kind,
 			Name:      entry.workload.Name,
@@ -114,10 +73,10 @@ func (w *PodWatcher) replicaSetOwners() map[WorkloadKey]bool {
 	return out
 }
 
-func describeReplicaSet(set *appsv1.ReplicaSet, owner WorkloadKey) ReplicaSetInfo {
-	info := ReplicaSetInfo{
+func describeReplicaSet(set *appsv1.ReplicaSet, owner model.WorkloadKey) model.ReplicaSetInfo {
+	info := model.ReplicaSetInfo{
 		Namespace:       set.Namespace,
-		Workload:        WorkloadRef{Kind: owner.Kind, Name: owner.Name},
+		Workload:        model.WorkloadRef{Kind: owner.Kind, Name: owner.Name},
 		Name:            set.Name,
 		Revision:        revisionOf(set, owner.Kind),
 		CreatedAt:       set.CreationTimestamp.UTC(),
@@ -129,11 +88,11 @@ func describeReplicaSet(set *appsv1.ReplicaSet, owner WorkloadKey) ReplicaSetInf
 	}
 	for _, c := range set.Spec.Template.Spec.InitContainers {
 		info.Containers = append(info.Containers,
-			RevisionContainer{Name: c.Name, Image: c.Image, Init: true})
+			model.RevisionContainer{Name: c.Name, Image: c.Image, Init: true})
 	}
 	for _, c := range set.Spec.Template.Spec.Containers {
 		info.Containers = append(info.Containers,
-			RevisionContainer{Name: c.Name, Image: c.Image})
+			model.RevisionContainer{Name: c.Name, Image: c.Image})
 	}
 	return info
 }

@@ -4,14 +4,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 )
 
-func disruption(at time.Time, pod, reason string) collector.PodDisruption {
-	return collector.PodDisruption{
+func disruption(at time.Time, pod, reason string) model.PodDisruption {
+	return model.PodDisruption{
 		Namespace:   "shop",
 		Pod:         pod,
-		Workload:    collector.WorkloadRef{Kind: "Deployment", Name: "web"},
+		Workload:    model.WorkloadRef{Kind: "Deployment", Name: "web"},
 		Node:        "node-1",
 		Reason:      reason,
 		DisruptedAt: at,

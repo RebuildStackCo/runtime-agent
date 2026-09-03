@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -362,11 +362,11 @@ func TestRetainNodesForgetsDepartedNodes(t *testing.T) {
 }
 
 func TestLiveKeysCoversEveryContainerIncludingInit(t *testing.T) {
-	pods := []collector.PodInfo{
+	pods := []model.PodInfo{
 		{
 			Namespace: "shop",
-			Workload:  collector.WorkloadRef{Kind: "Deployment", Name: "web"},
-			Containers: []collector.Container{
+			Workload:  model.WorkloadRef{Kind: "Deployment", Name: "web"},
+			Containers: []model.Container{
 				{Name: "app"},
 				{Name: "istio-proxy"},
 				// A native sidecar is declared as an init container and runs for
@@ -377,8 +377,8 @@ func TestLiveKeysCoversEveryContainerIncludingInit(t *testing.T) {
 		},
 		{
 			Namespace:  "search",
-			Workload:   collector.WorkloadRef{Kind: "StatefulSet", Name: "index"},
-			Containers: []collector.Container{{Name: "app"}},
+			Workload:   model.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			Containers: []model.Container{{Name: "app"}},
 		},
 	}
 	got := LiveKeys(pods)
@@ -405,9 +405,9 @@ func TestRetainSurvivesWhileAnyReplicaLives(t *testing.T) {
 	}}, resolver)
 
 	// Two replicas of the same workload: the key repeats in the live set.
-	live := LiveKeys([]collector.PodInfo{
-		{Namespace: "shop", Workload: collector.WorkloadRef{Kind: "Deployment", Name: "web"}, Containers: []collector.Container{{Name: "app"}}},
-		{Namespace: "shop", Workload: collector.WorkloadRef{Kind: "Deployment", Name: "web"}, Containers: []collector.Container{{Name: "app"}}},
+	live := LiveKeys([]model.PodInfo{
+		{Namespace: "shop", Workload: model.WorkloadRef{Kind: "Deployment", Name: "web"}, Containers: []model.Container{{Name: "app"}}},
+		{Namespace: "shop", Workload: model.WorkloadRef{Kind: "Deployment", Name: "web"}, Containers: []model.Container{{Name: "app"}}},
 	})
 	if ev := s.Retain(live); ev.Records != 0 {
 		t.Errorf("evicted = %+v, want nothing", ev)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 )
@@ -19,7 +20,7 @@ import (
 // seen its pods, which is exactly this window.
 
 func TestPodWatcherShutdownBeforeRegistrationIsNotAFailure(t *testing.T) {
-	watcher := NewPodWatcher(fake.NewClientset(pod("checkout-1", nil)), func(PodInfo) {})
+	watcher := NewPodWatcher(fake.NewClientset(pod("checkout-1", nil)), func(model.PodInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	watcher.afterSync = func(informer cache.SharedIndexInformer) {
@@ -33,7 +34,7 @@ func TestPodWatcherShutdownBeforeRegistrationIsNotAFailure(t *testing.T) {
 }
 
 func TestNodeWatcherShutdownBeforeRegistrationIsNotAFailure(t *testing.T) {
-	watcher := NewNodeWatcher(fake.NewClientset(node("node-a", nil)), func(NodeInfo) {})
+	watcher := NewNodeWatcher(fake.NewClientset(node("node-a", nil)), func(model.NodeInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	watcher.afterSync = func(informer cache.SharedIndexInformer) {

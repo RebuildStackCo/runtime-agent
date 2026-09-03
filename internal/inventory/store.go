@@ -16,7 +16,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/RebuildStackCo/runtime-agent/internal/collector"
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
@@ -575,7 +575,7 @@ func (s *Store) PendingBuilds() []BuildFacts {
 //
 // Init containers are included: a native sidecar is declared as one and runs for
 // the pod's whole life, so excluding them would evict its record every flush.
-func LiveKeys(pods []collector.PodInfo) []Key {
+func LiveKeys(pods []model.PodInfo) []Key {
 	out := make([]Key, 0, len(pods))
 	for _, p := range pods {
 		for _, c := range p.Containers {

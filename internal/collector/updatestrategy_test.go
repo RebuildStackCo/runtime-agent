@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,7 +26,7 @@ func ownedPod(name, kind, owner string) *corev1.Pod {
 
 func strategyWatcher(t *testing.T, objects ...runtime.Object) *PodWatcher {
 	t.Helper()
-	watcher := NewPodWatcher(fake.NewClientset(objects...), func(PodInfo) {})
+	watcher := NewPodWatcher(fake.NewClientset(objects...), func(model.PodInfo) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = watcher.Run(ctx) }()
@@ -74,7 +75,7 @@ func TestUpdateStrategiesReadEveryKindTheAgentKnows(t *testing.T) {
 	waitFor(t, 5*time.Second, "three strategies", func() bool { return len(watcher.UpdateStrategies()) == 3 })
 
 	got := watcher.UpdateStrategies()
-	for key, want := range map[WorkloadKey]UpdateStrategy{
+	for key, want := range map[model.WorkloadKey]model.UpdateStrategy{
 		{Namespace: "shop", Kind: "Deployment", Name: "web"}: {
 			Type: "RollingUpdate", MaxUnavailable: "25%", MaxSurge: "1", MinReadySeconds: 30,
 		},
@@ -115,7 +116,7 @@ func TestUpdateStrategyKeepsPercentAndCountAsWritten(t *testing.T) {
 	watcher := strategyWatcher(t, deployment, ownedPod("web-1", "Deployment", "web"))
 	waitFor(t, 5*time.Second, "the deployment strategy", func() bool { return len(watcher.UpdateStrategies()) == 1 })
 
-	got := watcher.UpdateStrategies()[WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}]
+	got := watcher.UpdateStrategies()[model.WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}]
 	if got.MaxUnavailable != "0" || got.MaxSurge != "100%" {
 		t.Errorf("maxUnavailable/maxSurge = %q/%q, want \"0\"/\"100%%\"", got.MaxUnavailable, got.MaxSurge)
 	}
@@ -150,7 +151,7 @@ func TestUpdateStrategyFollowsAnEditThatCausesNoPodEvent(t *testing.T) {
 		}},
 	}
 	watcher := strategyWatcher(t, deployment, ownedPod("web-1", "Deployment", "web"))
-	key := WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}
+	key := model.WorkloadKey{Namespace: "shop", Kind: "Deployment", Name: "web"}
 	waitFor(t, 5*time.Second, "the declared quarter", func() bool { return watcher.UpdateStrategies()[key].MaxUnavailable == "25%" })
 
 	updated := deployment.DeepCopy()

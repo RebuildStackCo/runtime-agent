@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -110,16 +111,16 @@ func TestWatcherGatesPodsAndCountsCoverage(t *testing.T) {
 	clientset := fake.NewClientset(optOutNs, deniedPod, optedOutPod, annotatedPod, collected)
 
 	var mu sync.Mutex
-	seen := make(map[string]PodInfo)
-	watcher := NewPodWatcher(clientset, func(p PodInfo) {
+	seen := make(map[string]model.PodInfo)
+	watcher := NewPodWatcher(clientset, func(p model.PodInfo) {
 		mu.Lock()
 		seen[p.Namespace+"/"+p.Name] = p
 		mu.Unlock()
 	})
 	filter := NewFilter(nil, []string{"pr-*"})
 	watcher.SetFilter(filter)
-	oomEvents := make(chan OOMKill, 16)
-	watcher.OnOOMKill(func(o OOMKill) { oomEvents <- o })
+	oomEvents := make(chan model.OOMKill, 16)
+	watcher.OnOOMKill(func(o model.OOMKill) { oomEvents <- o })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -149,7 +150,7 @@ func TestWatcherGatesPodsAndCountsCoverage(t *testing.T) {
 	}
 	mu.Unlock()
 
-	want := Coverage{
+	want := model.Coverage{
 		PodsObserved:                1,
 		ExcludedNamespaceFilter:     1,
 		ExcludedNamespaceAnnotation: 1,
@@ -243,7 +244,7 @@ func TestWorkloadAnnotationExcludesWithoutTouchingPodTemplates(t *testing.T) {
 
 	var mu sync.Mutex
 	seen := map[string]bool{}
-	watcher := NewPodWatcher(clientset, func(p PodInfo) {
+	watcher := NewPodWatcher(clientset, func(p model.PodInfo) {
 		mu.Lock()
 		seen[p.Name] = true
 		mu.Unlock()
