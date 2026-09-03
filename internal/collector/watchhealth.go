@@ -178,6 +178,14 @@ func watchdog(ctx context.Context, now func() time.Time, limits watchLimits, gat
 	}
 }
 
+// afterSync runs between the cache-sync wait and handler registration when set,
+// receiving the informer the registration is about to be made on.
+//
+// Only tests set it, and only to stop that informer at that instant: the window
+// where a registration is refused is otherwise reached by a race, and a race is
+// not something a regression test can stand on.
+type afterSync func(cache.SharedIndexInformer)
+
 // useWatchLimits re-times an assembled watcher, for tests that cannot wait five
 // minutes to watch a five-minute rule fire. It must be called before Run: the
 // health records are already registered with their informers, so only their
@@ -202,6 +210,24 @@ func takeWatchFailure(fatal <-chan error) error {
 	default:
 		return nil
 	}
+}
+
+// registrationFailure classifies an AddEventHandler error, which an informer
+// returns once it has stopped.
+//
+// Informers stop when the run context is canceled, so a shutdown landing
+// between the sync wait and registration has its handler refused: the agent was
+// asked to stop, not prevented from watching, and the wait above already draws
+// that distinction. The watchdog's verdict is read first — it is the other
+// reason the context is canceled, and the one the caller must return.
+func registrationFailure(ctx context.Context, fatal <-chan error, resource string, err error) error {
+	if verdict := takeWatchFailure(fatal); verdict != nil {
+		return verdict
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return fmt.Errorf("register %s handler: %w", resource, err)
 }
 
 // recordWatchFailures returns the handler an informer calls when ListAndWatch
