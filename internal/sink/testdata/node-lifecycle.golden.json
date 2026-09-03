@@ -1,0 +1,40 @@
+{
+  "kind": "node_lifecycle",
+  "source": "journal",
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "records": [
+    {
+      "node": "node-3",
+      "event": "joined",
+      "at": "2026-08-06T10:09:00Z",
+      "instance_type": "m6i.large",
+      "capacity_type": "on-demand",
+      "zone": "eu-west-1a",
+      "capacity_cpu_milli": 2000,
+      "capacity_memory_bytes": 8589934592,
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600
+    },
+    {
+      "node": "node-4",
+      "event": "left",
+      "at": "2026-08-06T10:41:00Z",
+      "at_observed": true,
+      "instance_type": "g5.2xlarge",
+      "capacity_type": "spot",
+      "zone": "eu-west-1b",
+      "capacity_cpu_milli": 8000,
+      "capacity_memory_bytes": 34359738368,
+      "devices": [
+        {
+          "name": "nvidia.com/gpu",
+          "capacity": 4,
+          "allocatable": 4
+        }
+      ],
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600
+    }
+  ]
+}

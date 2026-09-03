@@ -52,6 +52,12 @@
     "values_dropped": 3,
     "terms_dropped": 1
   },
+  "nodes": {
+    "conditions_dropped": 4,
+    "devices_dropped": 1,
+    "taints_dropped": 0,
+    "values_dropped": 2
+  },
   "inventory": {
     "records": 24,
     "go_versions": 3,

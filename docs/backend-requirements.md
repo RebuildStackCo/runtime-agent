@@ -272,6 +272,34 @@ was taken away, which is the normal state.
   `EvictionByEvictionAPI`, `Evicted`) plus `other`. The backend MUST tolerate
   `other` and MUST NOT assume the set never grows.
 
+**`node_lifecycle` is the only payload that describes a node that no longer
+exists** ([ADR 0064](adr/0064-the-node-is-described-and-its-comings-recorded.md)).
+One record per (node, event) per hour-aligned window, `event` being `joined` or
+`left`. It supersedes by (window start, window length), so the backend MUST
+upsert and MUST NOT append.
+
+- Each record repeats the node's instance type, capacity type, zone, capacity and
+  devices. **The backend MUST NOT resolve a `left` record against
+  `node_metadata`** — the node is gone from that snapshot by definition, which is
+  why the size travels on the event.
+- `at` carries two provenances and `at_observed` says which. Absent, `at` is the
+  node object's creation timestamp; `true`, it is the instant the agent noticed
+  the node was gone, because a deleted object carries no deletion time. The
+  backend MUST NOT treat a departure's `at` as exact.
+- Arrivals are reported only when the agent can prove them. A node already
+  present when the agent started produces no `joined` record, so **the backend
+  MUST NOT compute fleet size by summing arrivals and departures** — that is
+  `node_metadata`'s job. This payload is churn, not inventory.
+- A window in which the fleet did not change produces no file. A node that cycles
+  twice within one window produces one record per event type, not two.
+
+**`node_metadata.nodes[].conditions` is present in full or not at all** (ADR
+0064). All five allow-listed condition types are reported when the node reports
+them, healthy or not, so **the backend MUST NOT read a missing condition as
+healthy** — it means the node never reported one. `devices` is allow-listed by
+hardware vendor: an absent `devices` list means no *recognized* accelerator, not
+no extended resource. Both, and `taints`, are omitted when empty.
+
 **`workload_metadata.workload` and `.pod` are two different scopes, and neither
 is per record** (ADR 0014). A pod's containers each produce a record repeating
 both blocks, so **the backend MUST NOT sum either across one workload's

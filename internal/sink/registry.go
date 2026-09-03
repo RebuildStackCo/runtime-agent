@@ -121,6 +121,16 @@ var registry = []PayloadKind{
 		ADR:        "0021",
 	},
 	{
+		// The fleet's comings and goings, which no snapshot can hold: a node
+		// that left is absent from `node_metadata` by definition, so the
+		// departure record is the only place its size survives (ADR 0064 §3).
+		Kind:       "node_lifecycle",
+		Source:     SourceJournal,
+		NaturalKey: "(window start, window length)",
+		Delivery:   DeliverySupersedes,
+		ADR:        "0064",
+	},
+	{
 		// Windowed like the other two journals, and for the same reason: the
 		// window bounds the spool's file count, which a fleet of CronJobs would
 		// otherwise control (ADR 0029).

@@ -247,6 +247,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// the run's own instants and outcome, which is what a usage rollup cannot
 	// supply for a workload that ran for part of a window (ADR 0029).
 	jobJournal := journal.NewJobRuns(collector.UsageWindowLength)
+	nodeJournal := journal.NewNodeEvents(collector.UsageWindowLength)
 	podWatcher.OnJobFinished(func(r collector.JobRun) {
 		logger.Info("job run finished",
 			"namespace", r.Namespace,
@@ -273,7 +274,28 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			"allocatable_memory_bytes", n.AllocatableMemoryBytes,
 			"capacity_cpu_milli", n.CapacityCPUMilli,
 			"capacity_memory_bytes", n.CapacityMemoryBytes,
+			"kubelet_version", n.KubeletVersion,
+			"os_image", n.OSImage,
+			"container_runtime", n.ContainerRuntime,
+			"devices", len(n.Devices),
+			"taints", len(n.Taints),
 		)
+	})
+	nodeWatcher.OnNodeLifecycle(func(e collector.NodeLifecycle) {
+		event := "node left"
+		if e.Joined {
+			event = "node joined"
+		}
+		logger.Info(event,
+			"node", e.Node.Name,
+			"at", e.At,
+			"at_observed", e.Observed,
+			"instance_type", e.Node.InstanceType,
+			"capacity_type", e.Node.CapacityType,
+			"capacity_cpu_milli", e.Node.CapacityCPUMilli,
+			"capacity_memory_bytes", e.Node.CapacityMemoryBytes,
+		)
+		nodeJournal.Observe(e)
 	})
 
 	// logRecords writes rollup records one line each; the JSON body is the
@@ -547,6 +569,21 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		logger.Info("pod disruptions flushed", "records", len(records))
 	}
 
+	flushNodeLifecycle := func() {
+		if spool == nil {
+			return
+		}
+		records := append(nodeJournal.CloseBefore(time.Now()), nodeJournal.Snapshots()...)
+		if len(records) == 0 {
+			return // a fleet that did not change writes nothing
+		}
+		if err := spool.WriteNodeLifecycle(records); err != nil {
+			logger.Error("spooling node lifecycle", "error", err)
+			return
+		}
+		logger.Info("node lifecycle flushed", "records", len(records))
+	}
+
 	flushJobRuns := func() {
 		if spool == nil {
 			return
@@ -658,7 +695,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			pullCoverage = &pc
 		}
 		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
-			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), inv, scan,
+			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), nodeWatcher.Drops(), inv, scan,
 			ebpf, probeCoverage, pullCoverage); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
 		}
@@ -695,6 +732,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				flushRestarts()
 				flushDisruptions()
 				flushJobRuns()
+				flushNodeLifecycle()
 				// Unconditionally, on the agent's own cadence rather than the
 				// usage poller's: the spool's bounds must hold on a cluster
 				// where no usage record is ever written, which is exactly the
@@ -817,6 +855,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	flushRestarts()
 	flushDisruptions()
 	flushJobRuns()
+	flushNodeLifecycle()
 	return errors.Join(errs...)
 }
 

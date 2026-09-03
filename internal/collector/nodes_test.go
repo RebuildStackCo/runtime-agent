@@ -83,7 +83,7 @@ func TestCollectsNodeSizes(t *testing.T) {
 		CapacityCPUMilli:       4000,
 		CapacityMemoryBytes:    16 << 30,
 	}
-	if info != want {
+	if !info.sameAs(want) {
 		t.Errorf("node = %+v, want %+v", info, want)
 	}
 }
@@ -301,7 +301,18 @@ func TestNodesSnapshotTracksLiveNodesOnly(t *testing.T) {
 // touches the collected view. A relabeled node must be re-reported; an
 // otherwise unchanged one must not be.
 func TestNodeReportedOnlyWhenViewChanges(t *testing.T) {
-	clientset := fake.NewClientset(node("node-1", nil))
+	ready := func(heartbeat time.Time) []corev1.NodeCondition {
+		return []corev1.NodeCondition{{
+			Type:               corev1.NodeReady,
+			Status:             corev1.ConditionTrue,
+			Reason:             "KubeletReady",
+			LastTransitionTime: metav1.NewTime(time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)),
+			LastHeartbeatTime:  metav1.NewTime(heartbeat),
+		}}
+	}
+	first := node("node-1", nil)
+	first.Status.Conditions = ready(time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC))
+	clientset := fake.NewClientset(first)
 
 	events := make(chan NodeInfo, 16)
 	watcher := NewNodeWatcher(clientset, func(n NodeInfo) { events <- n })
@@ -317,15 +328,19 @@ func TestNodeReportedOnlyWhenViewChanges(t *testing.T) {
 		t.Fatal("initial node was not reported")
 	}
 
-	// An update that changes nothing in the collected view.
+	// An update that changes nothing in the collected view: the condition's
+	// heartbeat moves and nothing else does. It is the update every node in
+	// every cluster sends, and the reason NodeCondition keeps the transition
+	// time rather than the heartbeat (ADR 0064 §2).
 	unchanged := node("node-1", nil)
-	unchanged.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+	unchanged.Status.Conditions = ready(time.Date(2026, 8, 6, 10, 0, 40, 0, time.UTC))
 	if _, err := clientset.CoreV1().Nodes().Update(ctx, unchanged, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("updating node: %v", err)
 	}
 
 	// One that does.
 	relabeled := node("node-1", map[string]string{"topology.kubernetes.io/zone": "eu-west-1a"})
+	relabeled.Status.Conditions = ready(time.Date(2026, 8, 6, 10, 1, 20, 0, time.UTC))
 	if _, err := clientset.CoreV1().Nodes().Update(ctx, relabeled, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("relabeling node: %v", err)
 	}
@@ -380,6 +395,108 @@ func TestReportsNodesAddedAfterStart(t *testing.T) {
 		t.Fatalf("creating node: %v", err)
 	}
 	waitFor("scaled-up")
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher returned error: %v", err)
+	}
+}
+
+// The join test of ADR 0064 §3: the creation timestamp decides, not the fact
+// that the informer had not seen the node before. At cache sync the add handler
+// fires for every node in the cluster, and counting those would report an agent
+// restart as the whole fleet arriving at once.
+func TestOnlyAProvableArrivalIsAJoin(t *testing.T) {
+	old := node("node-old", nil)
+	old.CreationTimestamp = metav1.NewTime(time.Now().Add(-72 * time.Hour))
+	clientset := fake.NewClientset(old)
+
+	events := make(chan NodeLifecycle, 8)
+	watcher := NewNodeWatcher(clientset, func(NodeInfo) {})
+	watcher.OnNodeLifecycle(func(e NodeLifecycle) { events <- e })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	// Wait for the pre-existing node to be in the view, so a join for it would
+	// already have fired by the time the new one is created.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(watcher.Names()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("pre-existing node never synced")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	fresh := node("node-new", nil)
+	fresh.CreationTimestamp = metav1.NewTime(time.Now())
+	if _, err := clientset.CoreV1().Nodes().Create(ctx, fresh, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating node: %v", err)
+	}
+
+	select {
+	case e := <-events:
+		if e.Node.Name != "node-new" {
+			t.Errorf("joined %q, want node-new; a node older than the agent is not an arrival", e.Node.Name)
+		}
+		if !e.Joined || e.Observed {
+			t.Errorf("event = %+v, want a join timestamped by the object", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the new node was not reported as a join")
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher returned error: %v", err)
+	}
+}
+
+// A departure needs no proof but has no time of its own, and it is the last
+// moment the node's size exists anywhere (ADR 0064 §3).
+func TestADepartureCarriesTheSizeAndSaysTheTimeIsObserved(t *testing.T) {
+	leaving := node("node-1", nil)
+	leaving.CreationTimestamp = metav1.NewTime(time.Now().Add(-72 * time.Hour))
+	leaving.Status.Capacity["nvidia.com/gpu"] = resource.MustParse("4")
+	clientset := fake.NewClientset(leaving)
+
+	events := make(chan NodeLifecycle, 8)
+	watcher := NewNodeWatcher(clientset, func(NodeInfo) {})
+	watcher.OnNodeLifecycle(func(e NodeLifecycle) { events <- e })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(watcher.Names()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("node never synced")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := clientset.CoreV1().Nodes().Delete(ctx, "node-1", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("deleting node: %v", err)
+	}
+
+	select {
+	case e := <-events:
+		if e.Joined || !e.Observed {
+			t.Errorf("event = %+v, want a departure marked as observed", e)
+		}
+		if e.Node.CapacityCPUMilli != 4000 {
+			t.Errorf("departure carries %d millicores, want the node's 4000 — nothing else holds it now", e.Node.CapacityCPUMilli)
+		}
+		if len(e.Node.Devices) != 1 || e.Node.Devices[0].Name != "nvidia.com/gpu" {
+			t.Errorf("departure carries devices %+v, want the GPU", e.Node.Devices)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the deleted node was not reported as a departure")
+	}
 
 	cancel()
 	if err := <-done; err != nil {
