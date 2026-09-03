@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -208,5 +209,46 @@ func TestNodeProfilingNormalizedDefaults(t *testing.T) {
 	}
 	if got := (NodeProfiling{CaptureDurationSeconds: 9}).Normalized(); got.CaptureDurationSeconds != 9 {
 		t.Errorf("set CaptureDurationSeconds overwritten: %d", got.CaptureDurationSeconds)
+	}
+}
+
+// A value outside the enumeration used to parse cleanly and then mean "drop",
+// because nothing compared it to anything (ADR 0066). It governs which frames
+// may leave the node, so it fails the start instead.
+func TestAnUnknownThirdPartySymbolsValueIsAStartupFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		load func(string) error
+	}{
+		{"controller", "profiling:\n  thirdPartySymbols: Keep\n",
+			func(p string) error { _, err := Load(p); return err }},
+		{"node", "profiling:\n  thirdPartySymbols: yes\n",
+			func(p string) error { _, err := LoadNode(p); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.load(write(t, tc.body))
+			if err == nil {
+				t.Fatal("an unrecognized policy was accepted; it would have silently meant drop")
+			}
+			if !strings.Contains(err.Error(), "thirdPartySymbols") {
+				t.Errorf("error = %v, want it to name the field the operator has to fix", err)
+			}
+		})
+	}
+}
+
+// The two policies and the empty value that selects the default all load. The
+// empty case is the one a default install ships (charts/runtime-agent renders
+// the key only when set), so a rule that rejected it would break every install.
+func TestTheThirdPartySymbolsEnumerationLoads(t *testing.T) {
+	for _, value := range []string{"", ThirdPartySymbolsDrop, ThirdPartySymbolsKeep} {
+		body := "profiling:\n  thirdPartySymbols: " + `"` + value + `"` + "\n"
+		if _, err := Load(write(t, body)); err != nil {
+			t.Errorf("controller rejected %q: %v", value, err)
+		}
+		if _, err := LoadNode(write(t, body)); err != nil {
+			t.Errorf("node rejected %q: %v", value, err)
+		}
 	}
 }

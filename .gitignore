@@ -17,11 +17,13 @@ bin/
 # Local run logs from e2e / manual agent runs
 test/e2e/logs/
 
-# Code coverage profiles and other test artifacts
+# Code coverage profiles and other test artifacts. The coverage patterns are
+# anchored to the root, where the tooling writes them: unanchored, they also
+# match a source file legitimately named coverage.go, and swallow it in silence.
 *.out
-coverage.*
+/coverage.*
 *.coverprofile
-profile.cov
+/profile.cov
 
 # Dependency directories (remove the comment below to include it)
 # vendor/

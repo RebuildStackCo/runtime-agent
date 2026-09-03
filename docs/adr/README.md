@@ -123,3 +123,4 @@ line to paste.
 - [0063. A profile the collector dominates is still a profile](0063-a-profile-of-the-collector-is-still-a-profile.md)
 - [0064. The node is described, and its comings and goings recorded](0064-the-node-is-described-and-its-comings-recorded.md)
 - [0065. The vocabulary of a collected fact is a package, and it does not know Kubernetes](0065-the-vocabulary-is-a-package.md)
+- [0066. An unverified caller does not set the refresh rate, and a value outside the enumeration does not load](0066-an-unverified-caller-does-not-set-the-refresh-rate.md)
