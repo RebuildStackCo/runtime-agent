@@ -718,7 +718,33 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 	}
 
+	// Everything that writes a payload on the agent's own cadence, in the order
+	// it is written. One list rather than a call sequence per pass: the periodic
+	// pass and the shutdown pass have to agree about this set, and as two
+	// hand-written sequences they had already drifted.
+	flushers := []flusher{
+		{run: logCoverage, onShutdown: true},
+		// Not on shutdown: it re-derives a snapshot from the watchers' live
+		// indexes, and by then the watchers have stopped. It would write the
+		// state of the previous pass under a fresh capture instant, which is
+		// the one way a superseding payload can lie (ADR 0027).
+		{run: flushMetadata},
+		{run: flushInventory, onShutdown: true},
+		{run: flushRestarts, onShutdown: true},
+		{run: flushDisruptions, onShutdown: true},
+		{run: flushJobRuns, onShutdown: true},
+		{run: flushNodeLifecycle, onShutdown: true},
+	}
+
+	// The periodic pass is a lifecycle task like the watchers below, and for a
+	// load-bearing reason: the shutdown pass writes the same payload keys, and
+	// the spool has no lock — two writers of one key share a temp file name and
+	// publish whichever interleaving won. Waiting for this goroutine is what
+	// makes the shutdown pass the only writer it claims to be.
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(coverageInterval)
 		defer ticker.Stop()
 		for {
@@ -726,13 +752,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				logCoverage()
-				flushMetadata()
-				flushInventory()
-				flushRestarts()
-				flushDisruptions()
-				flushJobRuns()
-				flushNodeLifecycle()
+				runFlushers(flushers, false)
 				// Unconditionally, on the agent's own cadence rather than the
 				// usage poller's: the spool's bounds must hold on a cluster
 				// where no usage record is ever written, which is exactly the
@@ -827,7 +847,6 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		tasks["node-intake"] = intake.Run
 	}
 
-	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []error
 	for name, run := range tasks {
@@ -843,19 +862,13 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}()
 	}
 	wg.Wait()
-	logCoverage()
 	// A final flush lands whatever arrived since the last periodic write: an
 	// inventory fact joined, a container restarted, a pod preempted. Without it
 	// a graceful shutdown silently drops up to one coverage interval of the
 	// journals, which is exactly the minute a rolling upgrade or a node drain
-	// tends to be interesting in. The coverage goroutine has returned (ctx is
-	// canceled), so this is the only writer; the accumulators serialize
-	// regardless.
-	flushInventory()
-	flushRestarts()
-	flushDisruptions()
-	flushJobRuns()
-	flushNodeLifecycle()
+	// tends to be interesting in. The periodic pass is waited for above, so this
+	// is the only writer; the accumulators serialize regardless.
+	runFlushers(flushers, true)
 	return errors.Join(errs...)
 }
 

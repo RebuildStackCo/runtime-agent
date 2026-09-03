@@ -178,6 +178,9 @@ type PodWatcher struct {
 	priorityLister     schedulinglisters.PriorityClassLister
 	storageClassLister storagelisters.StorageClassLister
 
+	// afterSync is the test seam described where the type is declared.
+	afterSync afterSync
+
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
 	// restartCounts is what the agent remembers about each container's restart
@@ -529,6 +532,9 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("informer caches did not sync")
 	}
+	if w.afterSync != nil {
+		w.afterSync(podsInformer)
+	}
 
 	// Registered after sync: the handler replays every pod already in the
 	// cache as an Add, then receives genuinely new pods as they appear.
@@ -578,7 +584,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("register pod handler: %w", err)
+		return registrationFailure(ctx, fatal, "pod", err)
 	}
 	defer func() { _ = podsInformer.RemoveEventHandler(reg) }()
 
@@ -611,7 +617,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("register job handler: %w", err)
+		return registrationFailure(ctx, fatal, "job", err)
 	}
 	defer func() { _ = jobsInformer.RemoveEventHandler(jobReg) }()
 

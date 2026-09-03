@@ -111,6 +111,9 @@ type NodeWatcher struct {
 	taintsDropped     atomic.Int64
 	valuesDropped     atomic.Int64
 
+	// afterSync is the test seam described where the type is declared.
+	afterSync afterSync
+
 	mu    sync.RWMutex
 	nodes map[string]NodeInfo
 
@@ -238,6 +241,9 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("node informer cache did not sync")
 	}
+	if w.afterSync != nil {
+		w.afterSync(nodesInformer)
+	}
 
 	reg, err := nodesInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
@@ -265,7 +271,7 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("register node handler: %w", err)
+		return registrationFailure(ctx, fatal, "node", err)
 	}
 	defer func() { _ = nodesInformer.RemoveEventHandler(reg) }()
 
