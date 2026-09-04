@@ -241,26 +241,42 @@ func (s StaticKeys) Key(_ context.Context, kid string) (crypto.PublicKey, error)
 // milliseconds; this is a ceiling on a hang, not a budget.
 const defaultFetchTimeout = 10 * time.Second
 
+// defaultRefetchInterval is how often an unknown kid may cost a refresh
+// (ADR 0066).
+//
+// The node's scan interval is a minute and a lost report is re-sent by the next
+// pass (ADR 0003), so a rotation picked up this late costs at most one round of
+// one payload — against an unauthenticated caller otherwise choosing how often
+// the controller talks to the API server.
+const defaultRefetchInterval = 30 * time.Second
+
 // CachingKeySource is a KeyProvider that caches the fetched KeySet and refetches
-// once when asked for a kid it does not hold — the signal that the cluster
-// rotated its signing keys. Concurrent verifications share one refresh.
+// when asked for a kid it does not hold — the signal that the cluster rotated
+// its signing keys. Concurrent verifications share one refresh, and refreshes
+// are rate-limited: see Key.
 type CachingKeySource struct {
 	Source KeySource
 	// FetchTimeout bounds a single refresh; zero selects defaultFetchTimeout.
 	FetchTimeout time.Duration
+	// RefetchInterval is the floor between refreshes; zero selects
+	// defaultRefetchInterval.
+	RefetchInterval time.Duration
 
 	mu     sync.Mutex
 	cached *KeySet
+	// lastFetch is when a refresh was last attempted, successfully or not.
+	lastFetch time.Time
+	// now is the clock, a field so a test can hold time still.
+	now func() time.Time
 }
 
-// Key returns the key for kid, fetching the set on first use and refetching once
-// if the cached set lacks it. Still absent after that is an error: the token was
-// signed by a key the cluster does not advertise.
+// Key returns the key for kid, fetching the set on first use and refetching when
+// the cached set lacks it and the refresh floor has passed. Absent after that is
+// an error: the token was signed by a key the cluster does not advertise.
 //
-// The refresh runs under the mutex, which serializes it — a key rotation makes
-// every verification miss the cache at once, and one attempt at a time keeps
-// that off a control plane that is likely rolling. The cost is that a slow
-// refresh stalls verification, which is why the fetch carries its own deadline.
+// A miss is rate-limited because a miss is not a trusted event — the kid is read
+// before the signature is checked, so an unverified caller picks it (ADR 0066).
+// The refresh is serialized by the mutex and carries its own deadline.
 func (c *CachingKeySource) Key(ctx context.Context, kid string) (crypto.PublicKey, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -270,6 +286,19 @@ func (c *CachingKeySource) Key(ctx context.Context, kid string) (crypto.PublicKe
 			return key, nil
 		}
 	}
+
+	interval := c.RefetchInterval
+	if interval <= 0 {
+		interval = defaultRefetchInterval
+	}
+	at := c.clock()
+	if !c.lastFetch.IsZero() && at.Sub(c.lastFetch) < interval {
+		return nil, fmt.Errorf("nodeauth: no signing key for kid %q, and the key set was refreshed less than %s ago", kid, interval)
+	}
+	// Stamped before the attempt, so a failing refresh is rate-limited too: an
+	// API server that is down is the case where retrying per request costs the
+	// most and helps least.
+	c.lastFetch = at
 
 	timeout := c.FetchTimeout
 	if timeout <= 0 {
@@ -288,4 +317,12 @@ func (c *CachingKeySource) Key(ctx context.Context, kid string) (crypto.PublicKe
 	}
 	c.cached = set
 	return set.Key(kid)
+}
+
+// clock is the refresh floor's time source, defaulting to the wall clock.
+func (c *CachingKeySource) clock() time.Time {
+	if c.now == nil {
+		return time.Now()
+	}
+	return c.now()
 }

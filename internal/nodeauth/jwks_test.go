@@ -111,7 +111,11 @@ func TestCachingKeySourceCachesThenRefreshesOnUnknownKid(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := newJWKSTestServer(t, rsaJWKS("rsa-1", &key1.PublicKey))
-	c := &CachingKeySource{Source: &HTTPKeySource{IssuerBaseURL: srv.URL, Client: srv.Client()}}
+	at := time.Unix(1_700_000_000, 0)
+	c := &CachingKeySource{
+		Source: &HTTPKeySource{IssuerBaseURL: srv.URL, Client: srv.Client()},
+		now:    func() time.Time { return at },
+	}
 	ctx := context.Background()
 
 	if _, err := c.Key(ctx, "rsa-1"); err != nil {
@@ -124,14 +128,16 @@ func TestCachingKeySourceCachesThenRefreshesOnUnknownKid(t *testing.T) {
 		t.Fatalf("JWKS fetched %d times for a cached kid, want 1", got)
 	}
 
-	// Rotate the cluster's signing key: a new kid appears. The next lookup for
-	// the unknown kid must trigger exactly one refetch and then resolve.
+	// Rotate the cluster's signing key: a new kid appears. Once the refresh
+	// floor has passed, the lookup for the unknown kid must trigger exactly one
+	// refetch and then resolve.
 	key2, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rotated := rsaJWKS("rsa-2", &key2.PublicKey)
 	srv.body.Store(&rotated)
+	at = at.Add(defaultRefetchInterval)
 
 	if _, err := c.Key(ctx, "rsa-2"); err != nil {
 		t.Fatalf("lookup after rotation: %v", err)
@@ -214,7 +220,19 @@ func TestAFailedRefreshKeepsTheKeysAlreadyInHand(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := newJWKSTestServer(t, rsaJWKS("rsa-1", &key.PublicKey))
-	c := &CachingKeySource{Source: &HTTPKeySource{IssuerBaseURL: srv.URL, Client: srv.Client()}}
+	at := time.Unix(1_700_000_000, 0)
+	// Attempts are counted on the source itself: after the change of ADR 0066,
+	// "the refresh failed" and "no refresh was made" both leave the server's own
+	// hit count where it was, and only the first is what this test is about.
+	var attempts atomic.Int64
+	source := &HTTPKeySource{IssuerBaseURL: srv.URL, Client: srv.Client()}
+	c := &CachingKeySource{
+		Source: keySourceFunc(func(ctx context.Context) (*KeySet, error) {
+			attempts.Add(1)
+			return source.Fetch(ctx)
+		}),
+		now: func() time.Time { return at },
+	}
 	ctx := context.Background()
 
 	if _, err := c.Key(ctx, "rsa-1"); err != nil {
@@ -222,9 +240,16 @@ func TestAFailedRefreshKeepsTheKeysAlreadyInHand(t *testing.T) {
 	}
 
 	// The source goes away, and a lookup for an unknown kid fails against it.
+	// The clock moves past the refresh floor first, so this is a refresh that
+	// was attempted and failed rather than one the floor declined to make —
+	// which is the case this test is about.
 	srv.Close()
+	at = at.Add(defaultRefetchInterval)
 	if _, err := c.Key(ctx, "rsa-2"); err == nil {
 		t.Fatal("a refresh against a dead source should error")
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("the source was asked %d times, want 2: the failing refresh must have been attempted", got)
 	}
 
 	// The key that was already held still verifies.
@@ -232,3 +257,65 @@ func TestAFailedRefreshKeepsTheKeysAlreadyInHand(t *testing.T) {
 		t.Errorf("the cached key was lost when a refresh failed: %v", err)
 	}
 }
+
+// The defense of ADR 0066: the kid comes from an unverified token, so a caller
+// that can reach the port picks it. Without the floor, each invented kid is two
+// GETs to the API server.
+func TestUnknownKidsWithinTheFloorCostNoFetch(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newJWKSTestServer(t, rsaJWKS("rsa-1", &key.PublicKey))
+	at := time.Unix(1_700_000_000, 0)
+	c := &CachingKeySource{
+		Source: &HTTPKeySource{IssuerBaseURL: srv.URL, Client: srv.Client()},
+		now:    func() time.Time { return at },
+	}
+
+	for i := range 50 {
+		if _, err := c.Key(context.Background(), fmt.Sprintf("forged-%d", i)); err == nil {
+			t.Fatal("a kid the cluster does not advertise should never resolve")
+		}
+	}
+	if got := srv.jwksHits.Load(); got != 1 {
+		t.Fatalf("JWKS fetched %d times for 50 invented kids, want 1", got)
+	}
+
+	// The floor is a delay, not a latch: the next rotation is still picked up.
+	at = at.Add(defaultRefetchInterval)
+	if _, err := c.Key(context.Background(), "forged-51"); err == nil {
+		t.Fatal("a kid the cluster does not advertise should never resolve")
+	}
+	if got := srv.jwksHits.Load(); got != 2 {
+		t.Fatalf("JWKS fetched %d times, want 2 (one more once the floor passed)", got)
+	}
+}
+
+// A refresh that failed is rate-limited on the same floor. An API server that is
+// down is where retrying once per request costs the most and helps least.
+func TestAFailedRefreshIsRateLimitedToo(t *testing.T) {
+	var attempts atomic.Int64
+	at := time.Unix(1_700_000_000, 0)
+	c := &CachingKeySource{
+		Source: keySourceFunc(func(context.Context) (*KeySet, error) {
+			attempts.Add(1)
+			return nil, errors.New("api server unreachable")
+		}),
+		now: func() time.Time { return at },
+	}
+
+	for range 20 {
+		if _, err := c.Key(context.Background(), "rsa-1"); err == nil {
+			t.Fatal("a lookup with no key set should error")
+		}
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("fetch attempted %d times behind an unreachable server, want 1", got)
+	}
+}
+
+// keySourceFunc adapts a function to KeySource.
+type keySourceFunc func(context.Context) (*KeySet, error)
+
+func (f keySourceFunc) Fetch(ctx context.Context) (*KeySet, error) { return f(ctx) }

@@ -228,7 +228,14 @@ func LoadNode(path string) (NodeConfig, error) {
 	return load[NodeConfig](path)
 }
 
-func load[T any](path string) (T, error) {
+// validated is the half of a schema that the type system does not carry.
+// UnmarshalStrict rejects a field that does not exist; this rejects a value that
+// does not exist for a field that does.
+type validated interface {
+	Validate() error
+}
+
+func load[T validated](path string) (T, error) {
 	var cfg T
 	if path == "" {
 		return cfg, nil
@@ -240,5 +247,33 @@ func load[T any](path string) (T, error) {
 	if err := yaml.UnmarshalStrict(raw, &cfg); err != nil {
 		return cfg, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+	if err := cfg.Validate(); err != nil {
+		var zero T
+		return zero, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	return cfg, nil
+}
+
+// Validate checks the controller's enumerated values.
+func (c Config) Validate() error {
+	return validThirdPartySymbols(c.Profiling.ThirdPartySymbols)
+}
+
+// Validate checks the node's enumerated values.
+func (c NodeConfig) Validate() error {
+	return validThirdPartySymbols(c.Profiling.ThirdPartySymbols)
+}
+
+// validThirdPartySymbols accepts the two policies and the empty value that
+// selects the default (see the Normalized methods). An unrecognized value is a
+// startup failure rather than the silent "drop" it used to mean: this field
+// governs which frames may leave the node (ADR 0011 §4, ADR 0066).
+func validThirdPartySymbols(s string) error {
+	switch s {
+	case "", ThirdPartySymbolsDrop, ThirdPartySymbolsKeep:
+		return nil
+	default:
+		return fmt.Errorf("profiling.thirdPartySymbols is %q; it must be %q or %q",
+			s, ThirdPartySymbolsDrop, ThirdPartySymbolsKeep)
+	}
 }
