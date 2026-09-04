@@ -116,6 +116,11 @@ spec:
             # Without this it fails closed and scans nothing.
             - -scope-endpoint
             - {{ printf "%s/v1/node-scope" $endpoint | quote }}
+            # Where this pod answers the kubelet's two questions. A flag and not
+            # the node's config file: that file exists only in the profile that
+            # profiles, and probes are needed in both (ADR 0069, ADR 0025).
+            - -health-address
+            - {{ printf ":%s" (include "runtime-agent.healthPort" .) | quote }}
             {{- if $ebpf }}
             # The master switch for the eBPF CPU profiler (ADR 0011). On a
             # kernel below 5.8 or without BTF the profiler refuses gracefully
@@ -137,6 +142,36 @@ spec:
             - -profile-endpoint
             - {{ printf "%s/v1/node-profile" $endpoint | quote }}
             {{- end }}
+          ports:
+            - name: health
+              containerPort: {{ include "runtime-agent.healthPort" . }}
+          # Readiness is the first completed pass, so a DaemonSet rollout waits
+          # for a node that has actually scanned. The budget covers a first pass
+          # whose scope query and report both wait out their 30s timeouts against
+          # a controller that is not up yet (ADR 0069).
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: {{ include "runtime-agent.healthPort" . }}
+            periodSeconds: 5
+            failureThreshold: 36
+          # The scan loop's own stamp. Not the controller's reachability: a
+          # controller outage would otherwise restart the agent on every node at
+          # once (ADR 0069 §2).
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: {{ include "runtime-agent.healthPort" . }}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ include "runtime-agent.healthPort" . }}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           env:
             # The node name for the report; the controller keys facts by pod UID
             # and container ID, so this is for observability, not attribution.

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -237,6 +238,62 @@ func TestNeitherRefusedObjectHasQuietlyReappeared(t *testing.T) {
 			for _, pod := range allPodSpecs(t, docs) {
 				if len(pod.spec.TopologySpreadConstraints) != 0 {
 					t.Errorf("%s sets topologySpreadConstraints; one replica has nothing to spread and a DaemonSet is already spread (ADR 0068 §3)", pod)
+				}
+			}
+		})
+	}
+}
+
+// The ports a pod opens are a closed list, for the same reason its environment
+// is: every assertion about a port is written per port, and one added beside
+// them is invisible to all of them. A port is also the one thing in this chart
+// that changes what can reach the agent without changing an RBAC rule, a
+// capability or a mount.
+func TestNoPodOpensAPortBeyondThisList(t *testing.T) {
+	permitted := map[string]map[string]int32{
+		"Deployment": {"health": 9090, "node-intake": 8080},
+		// The node receives nothing. Its health port is answered by the kubelet's
+		// probes and reaches no further: the DaemonSet has no Service (ADR 0069).
+		"DaemonSet": {"health": 9090},
+	}
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			for _, pod := range allPodSpecs(t, render(t, values)) {
+				for _, container := range pod.containers() {
+					for _, port := range container.Ports {
+						want, ok := permitted[pod.kind][port.Name]
+						if !ok {
+							t.Errorf("%s: container %q opens port %q (%d), which is not on the permitted list",
+								pod, container.Name, port.Name, port.ContainerPort)
+							continue
+						}
+						if port.ContainerPort != want {
+							t.Errorf("%s: container %q opens %q on %d, want %d",
+								pod, container.Name, port.Name, port.ContainerPort, want)
+						}
+						if port.HostPort != 0 {
+							t.Errorf("%s: container %q maps %q to host port %d; nothing here is reachable from the node's network",
+								pod, container.Name, port.Name, port.HostPort)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// What the health port is, and what it is not: two paths a kubelet asks about
+// this process, and not a service anything in the cluster can address. A Service
+// entry would give every pod a stable name for it and put a port that answers
+// about the agent beside the port that receives node reports (ADR 0069 §5).
+func TestNothingRoutesToTheHealthPort(t *testing.T) {
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			for _, svc := range decode[corev1.Service](t, render(t, values), "Service") {
+				for _, port := range svc.Spec.Ports {
+					if port.Port == 9090 || port.TargetPort.StrVal == "health" {
+						t.Errorf("Service %q exposes the health port; probes reach the pod directly and nothing else needs it", svc.Name)
+					}
 				}
 			}
 		})

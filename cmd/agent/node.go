@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
+	"github.com/RebuildStackCo/runtime-agent/internal/health"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
@@ -18,6 +20,15 @@ import (
 // serviceAccountToken volume mounts the controller-audience token (ADR 0010).
 // It is a mount path, not a secret value.
 const defaultControllerTokenPath = "/var/run/secrets/rebuildstack.co/controller-token/token" // #nosec G101 -- filesystem path, not an embedded credential
+
+// nodePassCeiling is what one scan pass may spend on the controller: the scope
+// query and the report delivery, each bounded by its client's own 30s timeout
+// (nodeship.go). Liveness allows three intervals plus this, so a node whose
+// controller is unreachable is late but never dead (ADR 0069).
+//
+// A variable rather than a constant only so a test can compress it; production
+// never assigns it (see coverageInterval).
+var nodePassCeiling = time.Minute
 
 // runNode is the node role's lifecycle. It scans on-node processes for Go
 // build information, writes the result to the structured log, and — when a
@@ -36,6 +47,7 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	enableEBPF := fs.Bool("enable-ebpf", false, "master switch for the eBPF CPU profiler (ADR 0011); when set, the node checks eBPF readiness at startup and refuses gracefully if the kernel cannot support it")
 	sysRoot := fs.String("sys", "/sys", "sysfs root used to check kernel BTF at <sys>/kernel/btf/vmlinux")
 	configPath := fs.String("config", "", "path to the agent configuration file (YAML); supplies the eBPF profiling config (ADR 0011)")
+	healthAddress := fs.String("health-address", "", "address for the health listener (ADR 0069), e.g. \":9090\"; empty opens no listener")
 	scopeEndpoint := fs.String("scope-endpoint", "", "controller URL to query for the pods this node may scan (ADR 0015); empty means the node scans nothing — it cannot honor namespace filters on its own")
 	targetsEndpoint := fs.String("targets-endpoint", "", "controller URL to query for profiling targets (ADR 0011); empty disables targeting")
 	profileEndpoint := fs.String("profile-endpoint", "", "controller URL to ship captured profiles to (ADR 0011); empty runs capture-only")
@@ -135,7 +147,16 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		return nodescan.NewScope(uids)
 	}
 
+	// What the two probes read. The heartbeat is stamped at the top of a pass,
+	// so a pass wedged in a syscall goes stale; `passed` latches when the first
+	// one finishes, which is what makes a DaemonSet rollout wait for a node that
+	// has actually scanned (ADR 0069).
+	beat := health.NewHeartbeat(time.Now(), nodeLivenessDeadline(*interval))
+	var passed atomic.Bool
+
 	scanOnce := func() {
+		beat.Beat(time.Now())
+		defer passed.Store(true)
 		scope := scanScope()
 		res, err := scanner.Scan(scope)
 		if err != nil {
@@ -216,6 +237,30 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		}
 	}
 
+	// The health listener, when the installation configured one. Liveness is the
+	// scan loop's own stamp and nothing else: the controller being unreachable
+	// makes a node late, never dead, for the same reason the controller's own
+	// liveness ignores the API server (ADR 0069).
+	healthErr := make(chan error, 1)
+	if *healthAddress != "" {
+		live := func() (bool, string) {
+			if alive, age := beat.Alive(time.Now()); !alive {
+				return false, fmt.Sprintf("the scan pass last started %s ago", age.Round(time.Second))
+			}
+			return true, ""
+		}
+		ready := func() (bool, string) {
+			if !passed.Load() {
+				return false, "the first scan pass has not finished"
+			}
+			return true, ""
+		}
+		healthCtx, stopHealth := context.WithCancel(ctx)
+		defer stopHealth()
+		srv := health.New(*healthAddress, live, ready, logger)
+		go func() { healthErr <- srv.Run(healthCtx) }()
+	}
+
 	scanOnce()
 	if *interval <= 0 {
 		return nil
@@ -226,10 +271,24 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case err := <-healthErr:
+			// The listener stopped while the scanner did not: it could not bind,
+			// or serving failed. A node whose probes cannot be answered is
+			// restarted by the kubelet regardless, so exit with the reason.
+			return err
 		case <-ticker.C:
 			scanOnce()
 		}
 	}
+}
+
+// nodeLivenessDeadline is how stale the scan loop's stamp may get: three missed
+// passes plus what one pass may spend waiting on the controller.
+func nodeLivenessDeadline(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return nodePassCeiling
+	}
+	return 3*interval + nodePassCeiling
 }
 
 // ebpfGate evaluates the eBPF readiness gate once, logs a clear line, records

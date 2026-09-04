@@ -37,6 +37,10 @@ type NodeWatcher struct {
 	// afterSync is the test seam described where the type is declared.
 	afterSync afterSync
 
+	// synced latches when the node cache has filled; readiness reads it
+	// (ADR 0069).
+	synced atomic.Bool
+
 	mu    sync.RWMutex
 	nodes map[string]model.NodeInfo
 
@@ -117,6 +121,13 @@ func (w *NodeWatcher) Nodes() []model.NodeInfo {
 	return out
 }
 
+// Synced reports whether the node cache has filled. It gates collection — the
+// usage poller takes its targets from it — so it is one of the caches readiness
+// waits for (ADR 0069).
+func (w *NodeWatcher) Synced() bool {
+	return w.synced.Load()
+}
+
 // Run blocks until ctx is canceled.
 func (w *NodeWatcher) Run(ctx context.Context) error {
 	factory := informers.NewSharedInformerFactory(w.clientset, 0)
@@ -154,6 +165,7 @@ func (w *NodeWatcher) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("node informer cache did not sync")
 	}
+	w.synced.Store(true)
 	if w.afterSync != nil {
 		w.afterSync(nodesInformer)
 	}

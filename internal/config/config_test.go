@@ -252,3 +252,42 @@ func TestTheThirdPartySymbolsEnumerationLoads(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadsTheHealthListenAddress(t *testing.T) {
+	path := write(t, `
+health:
+  listenAddress: ":9090"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Health.ListenAddress != ":9090" {
+		t.Errorf("health.listenAddress = %q, want \":9090\"", cfg.Health.ListenAddress)
+	}
+	// Empty is not the default address: a listener nobody configured is a port
+	// opened by omission, and the chart is what configures it (ADR 0069 §4).
+	empty, err := Load(write(t, "spool:\n  dir: /tmp\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Health.ListenAddress != "" {
+		t.Errorf("an unset health.listenAddress became %q", empty.Health.ListenAddress)
+	}
+}
+
+// The node's file holds only what the node enforces on its own samples
+// (ADR 0025), and the node's listener is a flag. A health block placed in the
+// node's file is therefore a startup error rather than a field parsed and
+// ignored — the whole point of the two schemas being separate.
+func TestTheNodeFileHasNoHealthBlock(t *testing.T) {
+	path := write(t, `
+health:
+  listenAddress: ":9090"
+`)
+	if _, err := LoadNode(path); err == nil {
+		t.Fatal("LoadNode accepted a health block; the node's listener is a flag")
+	} else if !strings.Contains(err.Error(), "health") {
+		t.Errorf("the refusal does not name the offending field: %v", err)
+	}
+}

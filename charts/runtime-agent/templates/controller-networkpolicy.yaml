@@ -46,10 +46,9 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # One rule, and no second: naming a single source is what makes everything
-    # else denied. An empty `ingress:` would deny all, and an absent one would
-    # allow all — this is the middle case and it is the one that has to be
-    # written exactly.
+    # Two rules, and no third. An empty `ingress:` would deny all and an absent
+    # one would allow all; this is the middle case, and each rule has to be
+    # written exactly. The receiver names its source and nothing else reaches it.
     - from:
         - podSelector:
             matchLabels:
@@ -63,4 +62,12 @@ spec:
         # number that has to stay in step with the Deployment.
         - protocol: TCP
           port: 8080
+    # The health port, from anywhere, because the caller is the kubelet and it
+    # arrives from the node's own address — not a pod, not a source any selector
+    # in this template can name portably (ADR 0069 §5). What the rule opens is
+    # two read-only paths that answer yes or no about this process and name
+    # nothing in the cluster.
+    - ports:
+        - protocol: TCP
+          port: {{ include "runtime-agent.healthPort" . }}
 {{- end }}

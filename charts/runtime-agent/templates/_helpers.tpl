@@ -28,6 +28,16 @@ runtime-agent-controller-{{ .Release.Namespace }}
 system:serviceaccount:{{ .Release.Namespace }}:{{ include "runtime-agent.nodeName" . }}
 {{- end -}}
 
+{{/*
+The port both roles answer probes on, and the one number the chart states about
+it: the container port, the probes and the policy hole all read this (ADR 0069).
+It is not a value — no other port the chart opens is one — and it is deliberately
+not 8080: that port exists only where a DaemonSet does, and it carries the node
+reports. The metrics endpoint of a later slice joins this listener as a path, so
+the hole in the network policy stays one.
+*/}}
+{{- define "runtime-agent.healthPort" -}}9090{{- end -}}
+
 {{/* The in-cluster base URL of the controller's receiver. */}}
 {{- define "runtime-agent.controllerEndpoint" -}}
 http://{{ include "runtime-agent.controllerName" . }}.{{ .Release.Namespace }}.svc:8080

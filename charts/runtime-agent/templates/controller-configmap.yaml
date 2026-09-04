@@ -38,6 +38,10 @@ data:
       {{- if .Values.spool.maxAgeHours }}
       maxAgeHours: {{ .Values.spool.maxAgeHours }}
       {{- end }}
+    health:
+      # The port the probes ask on. Rendered in every profile: the two questions
+      # a kubelet asks are not a feature of one (ADR 0069).
+      listenAddress: ":{{ include "runtime-agent.healthPort" . }}"
     nodeIntake:
       {{- if include "runtime-agent.nodeEnabled" . }}
       enabled: true
