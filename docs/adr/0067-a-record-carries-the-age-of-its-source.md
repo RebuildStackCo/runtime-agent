@@ -6,10 +6,12 @@ Status: Accepted
 
 Amends: 0052, 0056, 0062
 
-The node-fed payloads gain `asserted_at`, and `go_inventory.coverage` gains the
-list of reporting nodes with the instant of each one's latest report. No new
-collection, no new privilege, no change to what the node sends: the controller
-already knew when each report arrived and was throwing the number away.
+The node-fed payloads gain `asserted_at`, `go_inventory.coverage` gains the list
+of reporting nodes with the instant of each one's latest report, and
+`collection_coverage` gains what the receiver refused. No new collection, no new
+privilege, no change to what the node sends: the controller already knew when
+each report arrived, and why it turned one away, and was throwing both numbers
+away.
 
 ## Context
 
@@ -77,6 +79,13 @@ becomes `map[string]time.Time` and is the whole of the new state.
 - `go_inventory.coverage.nodes` names each reporting node and its instant. It is
   the only place a node is named — records are keyed by workload — and it is
   what answers *which* node went quiet.
+- `collection_coverage.intake_rejections` counts what the receiver refused on
+  its two push paths, by reason: unauthorized, too large, malformed. An instant
+  that stops advancing says a node went quiet; this says whether the controller
+  is the one turning it away, which no other signal distinguishes — a rejected
+  report appears otherwise only in that node's own log, in the customer's
+  cluster, where nobody looks until something prompts them. The query paths are
+  not counted: a refused query costs a node its next pass, not data it holds.
 
 The instant is read from the controller's clock, the same one that stamps
 `captured_at`, so the two are comparable without a skew term. Nothing is added
@@ -115,13 +124,15 @@ A consumer can tell a measurement restated a moment ago from one an hour old,
 which it could not before, and `captured_at` stops being mistaken for the age of
 what it stamps. `backend-requirements.md` now states that as an obligation.
 
-The four payloads grow by one instant per record, and `go_inventory` by one entry
-per reporting node — the same per-node cost `node_metadata` already pays.
+The four payloads grow by one instant per record, `go_inventory` by one entry per
+reporting node — the same per-node cost `node_metadata` already pays — and
+`collection_coverage` by three counters.
 
-What this does not answer is *why* a node is quiet. Rejected for size, crashed,
-denied by a NetworkPolicy and never scheduled all look alike from here; the
-controller knows the first of those and currently discards it. Counting rejected
-reports is the obvious next thing and is not in this change.
+Whether and why are answered together. A node whose `asserted_at` has stopped
+advancing while `intake_rejections.too_large` climbs is a node outgrowing the
+channel; one with no rejections at all is quiet for a reason the controller never
+saw — crashed, unscheduled, or refused by a NetworkPolicy — and that difference
+is what an operator needs before they can look anywhere.
 
 The 4 MiB receiver bound is unchanged. It was only ever a problem because the
-loss was silent, and this is the part that was silent.
+loss was silent, and silence is what this removes.

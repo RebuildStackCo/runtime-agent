@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 )
 
@@ -43,6 +44,7 @@ type ProfileHandler struct {
 	onProfile    func(nodeauth.Identity, ProfileReport)
 	logger       *slog.Logger
 	maxBodyBytes int64
+	rejections   *Rejections
 }
 
 // NewProfileHandler builds a profile receiver handler. onProfile may be nil (the
@@ -68,12 +70,14 @@ func (h *ProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	token, ok := bearerToken(r)
 	if !ok {
+		h.rejections.unauthorizedAdd()
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return
 	}
 	identity, err := h.verifier.Verify(r.Context(), token)
 	if err != nil {
 		h.logger.Warn("node profile rejected: token verification failed", "error", err)
+		h.rejections.unauthorizedAdd()
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -83,17 +87,20 @@ func (h *ProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&report); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			h.rejections.tooLargeAdd()
 			http.Error(w, "profile too large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		h.rejections.malformedAdd()
 		http.Error(w, "malformed profile", http.StatusBadRequest)
 		return
 	}
 	if dec.More() {
+		h.rejections.malformedAdd()
 		http.Error(w, "malformed profile", http.StatusBadRequest)
 		return
 	}
-	if !authorizeNode(w, h.logger, "node profile", identity, report.Node) {
+	if !authorizeNode(w, h.logger, h.rejections, "node profile", identity, report.Node) {
 		return
 	}
 
@@ -106,3 +113,7 @@ func (h *ProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Status string `json:"status"`
 	}{Status: "accepted"})
 }
+
+// Rejections returns what this handler has refused so far, for the coverage
+// report (ADR 0067).
+func (h *ProfileHandler) Rejections() model.IntakeRejections { return h.rejections.Snapshot() }

@@ -606,6 +606,10 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// (ADR 0060 §3).
 	var profilesReceived, profilesUnjoined atomic.Uint64
 
+	// What the node-intake receiver refused, read by the coverage report below
+	// and set only when there is a receiver (ADR 0067).
+	var intakeRejections func() model.IntakeRejections
+
 	// Excluded pods are reported as aggregate counts only, never by name
 	// (docs/security.md §8). Inventory counters are aggregate too: no identity
 	// of an unjoined fact appears, only a count (CLAUDE.md invariant 6).
@@ -695,9 +699,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			pc := puller.Snapshot()
 			pullCoverage = &pc
 		}
+		// What the receiver refused, when there is a receiver: the other half of
+		// a quiet node, beside the asserted_at the records carry (ADR 0067).
+		var rejections *model.IntakeRejections
+		if intakeRejections != nil {
+			r := intakeRejections()
+			rejections = &r
+		}
 		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
 			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), nodeWatcher.Drops(), inv, scan,
-			ebpf, probeCoverage, pullCoverage); err != nil {
+			ebpf, probeCoverage, pullCoverage, rejections); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
 		}
 	}
@@ -841,10 +852,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if targetsPublisher != nil {
 			targeter = nodeTargeter{publisher: targetsPublisher, pw: podWatcher}
 		}
-		intake, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile, targeter, podWatcher)
+		intake, rejections, err := buildNodeIntake(logger, restConfig, cfg.NodeIntake, onReport, onProfile, targeter, podWatcher)
 		if err != nil {
 			return fmt.Errorf("configuring node intake: %w", err)
 		}
+		intakeRejections = rejections
 		tasks["node-intake"] = intake.Run
 	}
 
@@ -877,7 +889,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 // by the cluster JWKS (fetched over the API server's in-cluster transport, no
 // TokenReview) and an HTTP server that decodes node reports and hands each to
 // onReport (which joins it into the Go inventory, ADR 0010).
-func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport), targeter nodeintake.NodeTargeter, scoper nodeintake.NodeScoper) (*nodeintake.Server, error) {
+func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.NodeIntake, onReport func(nodeauth.Identity, nodescan.Report), onProfile func(nodeauth.Identity, nodeintake.ProfileReport), targeter nodeintake.NodeTargeter, scoper nodeintake.NodeScoper) (*nodeintake.Server, func() model.IntakeRejections, error) {
 	addr := cfg.ListenAddress
 	if addr == "" {
 		addr = config.DefaultNodeIntakeListenAddress
@@ -895,13 +907,13 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 	// it; what changes is that an install which does not is a startup failure
 	// rather than a silently open door.
 	if cfg.ExpectedSubject == "" {
-		return nil, fmt.Errorf("nodeIntake.expectedSubject is required when nodeIntake.enabled is true: " +
+		return nil, nil, fmt.Errorf("nodeIntake.expectedSubject is required when nodeIntake.enabled is true: " +
 			"without it any token bearing the audience is accepted, and any pod can obtain one")
 	}
 
 	httpClient, err := rest.HTTPClientFor(restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("building JWKS http client: %w", err)
+		return nil, nil, fmt.Errorf("building JWKS http client: %w", err)
 	}
 	keys := &nodeauth.CachingKeySource{
 		Source: &nodeauth.HTTPKeySource{IssuerBaseURL: restConfig.Host, Client: httpClient},
@@ -922,7 +934,12 @@ func buildNodeIntake(logger *slog.Logger, restConfig *rest.Config, cfg config.No
 	scopeHandler := nodeintake.NewScopeHandler(verifier, logger, scoper)
 	logger.Info("node intake enabled", "addr", addr, "audience", audience,
 		"expected_subject", cfg.ExpectedSubject, "targeting", targeter != nil)
-	return nodeintake.NewServer(addr, handler, profileHandler, targetsHandler, scopeHandler, logger), nil
+	// The two push handlers each count what they refuse; the coverage report
+	// states the channel, so the accessor sums them (ADR 0067).
+	rejections := func() model.IntakeRejections {
+		return handler.Rejections().Plus(profileHandler.Rejections())
+	}
+	return nodeintake.NewServer(addr, handler, profileHandler, targetsHandler, scopeHandler, logger), rejections, nil
 }
 
 // nodeTargeter answers a node's targets query: it intersects the publisher's

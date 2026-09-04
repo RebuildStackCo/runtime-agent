@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
@@ -38,6 +39,7 @@ type Handler struct {
 	onReport     func(nodeauth.Identity, nodescan.Report)
 	logger       *slog.Logger
 	maxBodyBytes int64
+	rejections   *Rejections
 }
 
 // NewHandler builds a receiver handler. onReport may be nil (the report is
@@ -48,6 +50,7 @@ func NewHandler(verifier TokenVerifier, logger *slog.Logger, onReport func(nodea
 		onReport:     onReport,
 		logger:       logger,
 		maxBodyBytes: defaultMaxBodyBytes,
+		rejections:   &Rejections{},
 	}
 }
 
@@ -64,6 +67,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	token, ok := bearerToken(r)
 	if !ok {
+		h.rejections.unauthorizedAdd()
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return
 	}
@@ -72,6 +76,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Do not echo the verifier's reason to the caller; log it for the
 		// operator instead. A caller learns only "unauthorized".
 		h.logger.Warn("node report rejected: token verification failed", "error", err)
+		h.rejections.unauthorizedAdd()
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -81,19 +86,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&report); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			h.rejections.tooLargeAdd()
 			http.Error(w, "report too large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		h.rejections.malformedAdd()
 		http.Error(w, "malformed report", http.StatusBadRequest)
 		return
 	}
 	// Reject trailing data after the JSON object — a well-formed report is a
 	// single object, nothing more.
 	if dec.More() {
+		h.rejections.malformedAdd()
 		http.Error(w, "malformed report", http.StatusBadRequest)
 		return
 	}
-	if !authorizeNode(w, h.logger, "node report", identity, report.Node) {
+	if !authorizeNode(w, h.logger, h.rejections, "node report", identity, report.Node) {
 		return
 	}
 
@@ -124,3 +132,7 @@ func bearerToken(r *http.Request) (string, bool) {
 	}
 	return token, true
 }
+
+// Rejections returns what this handler has refused so far, for the coverage
+// report (ADR 0067).
+func (h *Handler) Rejections() model.IntakeRejections { return h.rejections.Snapshot() }

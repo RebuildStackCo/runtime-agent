@@ -173,10 +173,14 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	// A refusal beside the shipped profiles, because that is the number a reader
 	// will otherwise mistake for a broken agent (ADR 0058 §3).
 	pull := pprofpull.Coverage{Shipped: 4, Refused: 1, Unreachable: 0, Invalid: 1}
+	// A node whose reports are being refused for size, beside the quiet one the
+	// scan block's oldest_asserted_at describes: together they are whether and
+	// why (ADR 0067).
+	rejected := model.IntakeRejections{TooLarge: 3, Unauthorized: 1}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
 		sources, filter, model.PlacementDrops{Values: 3, Terms: 1},
 		model.NodeDrops{Conditions: 4, Devices: 1, Taints: 0, Values: 2},
-		&inv, &scan, &ebpf, &probe, &pull); err != nil {
+		&inv, &scan, &ebpf, &probe, &pull, &rejected); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -1950,7 +1954,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]model.SourceHealth{{Name: "services", Synced: true}},
 		model.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil)
+		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

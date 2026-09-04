@@ -103,6 +103,11 @@
     "absent": 11,
     "unreachable": 2
   },
+  "intake_rejections": {
+    "unauthorized": 1,
+    "too_large": 3,
+    "malformed": 0
+  },
   "pprof_pull": {
     "shipped": 4,
     "refused": 1,
