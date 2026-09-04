@@ -338,6 +338,20 @@ assembled, which is not a window and not the age of the facts in it.
   what arrived and what could not be attributed. **The backend MUST NOT read a
   missing workload as "not a Go workload"** when these say otherwise.
 
+**Node-fed records carry `asserted_at`, and the backend MUST read it rather than
+`captured_at`** ([ADR 0067](adr/0067-a-record-carries-the-age-of-its-source.md)).
+In `go_inventory`, `process_peaks`, `process_counters` and `listening_ports` a
+node's contribution stands until that node pushes again, so a node that stops
+pushing keeps contributing what it last said into payloads whose `captured_at`
+is always current. `asserted_at` is when a node last stated the record — the
+**oldest** contributing report where several nodes merge — and
+`collection_coverage.scan.oldest_asserted_at` bounds that block's sums likewise.
+Two payloads a minute apart can therefore carry the same hour-old measurement.
+`go_inventory.coverage.nodes` names each node and its latest instant; it is the
+only place a node is named, and an instant that stops advancing is a node gone
+quiet, never "nothing changed there". How stale is too stale is the backend's
+judgement: the agent ships the instant and draws no conclusion.
+
 **A `go_inventory` record exists only while its workload does**
 ([ADR 0018](adr/0018-inventory-records-live-only-while-their-workload-does.md)).
 The agent drops records whose workload container has left its filtered pod index

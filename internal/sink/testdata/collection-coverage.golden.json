@@ -71,6 +71,7 @@
   },
   "scan": {
     "nodes": 4,
+    "oldest_asserted_at": "2026-08-06T09:12:00Z",
     "processes_scanned": 1840,
     "go_found": 96,
     "filtered_scope": 1204,

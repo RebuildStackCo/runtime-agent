@@ -41,6 +41,12 @@ type GoRecord struct {
 	ImageDigest string `json:"image_digest,omitempty"`
 	// PGO is true when the binary was built with profile-guided optimization.
 	PGO bool `json:"pgo"`
+	// AssertedAt is when a node last stated this record. Read against the
+	// payload's captured_at it is how current the record is; a record whose
+	// node stopped reporting keeps the instant it was last stated, which is the
+	// only thing that distinguishes it from one restated a moment ago
+	// (ADR 0067).
+	AssertedAt time.Time `json:"asserted_at,omitzero"`
 }
 
 // PeakKey extends Key with the build, because a peak belongs to the code that
@@ -84,7 +90,12 @@ type PeakRecord struct {
 	RSSFileBytesMax      int64 `json:"rss_file_bytes_max,omitempty"`
 	PSSBytesMax          int64 `json:"pss_bytes_max,omitempty"`
 	PrivateDirtyBytesMax int64 `json:"private_dirty_bytes_max,omitempty"`
-	ThreadsMax           int   `json:"threads_max,omitempty"`
+	// AssertedAt is the oldest of the contributing nodes' latest reports — the
+	// bound on how current this record is. A node that stopped reporting keeps
+	// contributing what it last stated, so without this the record would be
+	// indistinguishable from one every node restated a moment ago (ADR 0067).
+	AssertedAt time.Time `json:"asserted_at,omitzero"`
+	ThreadsMax int       `json:"threads_max,omitempty"`
 	// OpenFilesMax against OpenFilesLimitMin is the tightest headroom any
 	// replica of this build has: the most descriptors one held, against the
 	// lowest ceiling another was given.
@@ -143,6 +154,11 @@ type CounterRecord struct {
 	// Bytes that actually moved to and from block storage.
 	ReadBytes  int64 `json:"read_bytes"`
 	WriteBytes int64 `json:"write_bytes"`
+	// AssertedAt is the oldest of the contributing nodes' latest reports — the
+	// bound on how current this record is. A node that stopped reporting keeps
+	// contributing what it last stated, so without this the record would be
+	// indistinguishable from one every node restated a moment ago (ADR 0067).
+	AssertedAt time.Time `json:"asserted_at,omitzero"`
 }
 
 // nodeCounters is one node's contribution to a CounterRecord: the sum of the
@@ -170,6 +186,11 @@ type PortRecord struct {
 	PortKey
 	// Ports is the union of what the replicas listen on, in port order.
 	Ports []nodescan.ListeningPort `json:"ports"`
+	// AssertedAt is the oldest of the contributing nodes' latest reports — the
+	// bound on how current this record is. A node that stopped reporting keeps
+	// contributing what it last stated, so without this the record would be
+	// indistinguishable from one every node restated a moment ago (ADR 0067).
+	AssertedAt time.Time `json:"asserted_at,omitzero"`
 }
 
 // BuildFacts is everything immutable the agent knows about one build, keyed by
@@ -269,13 +290,19 @@ type Store struct {
 	// those statements (ADR 0060 §3).
 	profiling map[string]nodescan.ProfilingCoverage
 
-	// nodesReported is the set of nodes still in the cluster that have delivered
-	// at least one report. Compared against the node count in the node-metadata
-	// payload it is what makes a DaemonSet that never started visible
-	// downstream — which is why departed nodes are pruned from it (ADR 0018):
-	// a count that outlives the nodes would exceed the fleet and hide the gap
-	// it exists to show.
-	nodesReported map[string]struct{}
+	// nodesReported maps each node still in the cluster that has reported to the
+	// instant of its latest report. Its size stays comparable with the node
+	// count in node_metadata, which is why departed nodes are pruned (ADR 0018).
+	//
+	// The instant is the assertion time of every contribution that node holds
+	// above, exactly and not by approximation: a report replaces that node's
+	// contributions wholesale, so they were all stated in one pass (ADR 0067).
+	nodesReported map[string]time.Time
+
+	// now is the clock the assertion instants are read from. It is the
+	// controller's own, the same one that stamps a payload's captured_at, so the
+	// two are comparable without a skew term (ADR 0067).
+	now func() time.Time
 
 	// since is when this store started counting: the base of every cumulative
 	// counter below, carried in the payload so the base is in the bytes rather
@@ -294,13 +321,14 @@ type Store struct {
 // NewStore returns an empty store counting from since.
 func NewStore(since time.Time) *Store {
 	return &Store{
+		now:           time.Now,
 		records:       make(map[Key]GoRecord),
 		builds:        make(map[string]BuildFacts),
 		written:       make(map[string]struct{}),
 		peaks:         make(map[PeakKey]map[string]nodePeaks),
 		ports:         make(map[PortKey]map[string][]nodescan.ListeningPort),
 		counters:      make(map[CounterKey]map[string]nodeCounters),
-		nodesReported: make(map[string]struct{}),
+		nodesReported: make(map[string]time.Time),
 		scans:         make(map[string]nodescan.Counters),
 		profiling:     make(map[string]nodescan.ProfilingCoverage),
 		since:         since,
@@ -317,8 +345,11 @@ func NewStore(since time.Time) *Store {
 func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// One instant for the whole report: everything below is stated in the same
+	// pass, and a contribution's age is the age of the pass that stated it.
+	at := s.clock()
 	if report.Node != "" {
-		s.nodesReported[report.Node] = struct{}{}
+		s.nodesReported[report.Node] = at
 		s.scans[report.Node] = report.Counters
 		if report.Profiling != nil {
 			s.profiling[report.Node] = *report.Profiling
@@ -347,6 +378,7 @@ func (s *Store) Ingest(report nodescan.Report, resolver ContainerResolver) {
 			ModulePath:  b.MainModule,
 			ImageDigest: res.ImageDigest,
 			PGO:         b.PGO,
+			AssertedAt:  at,
 		}
 		s.ingestBuild(b, res.ImageDigest)
 		s.ingestPeaks(b, key, res.ImageDigest, report.Node, seenPeaks)
@@ -546,6 +578,43 @@ func (s *Store) ingestBuild(b nodescan.BinaryInfo, digest string) {
 		GoDebug:     maps.Clone(b.GoDebug),
 		HasPprof:    b.HasPprof,
 	}
+}
+
+// nodeAssertionsLocked lists every reporting node with its latest instant,
+// sorted by name so the payload bytes are deterministic (the golden contract).
+//
+// Callers hold s.mu.
+func (s *Store) nodeAssertionsLocked() []NodeAssertion {
+	out := make([]NodeAssertion, 0, len(s.nodesReported))
+	for node, at := range s.nodesReported {
+		out = append(out, NodeAssertion{Node: node, AssertedAt: at.UTC()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Node < out[j].Node })
+	return out
+}
+
+// clock is the store's time source, defaulting to the wall clock for a store
+// built by hand in a test.
+func (s *Store) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+// assertedAt is the instant node last stated anything, and the zero time for a
+// node that never has. Callers hold s.mu.
+func (s *Store) assertedAt(node string) time.Time { return s.nodesReported[node] }
+
+// oldest returns the earlier of two assertion instants, ignoring the zero time.
+// Folded over the nodes contributing to one record it yields the bound on how
+// current that record is: a record merged from several nodes is only as fresh as
+// its stalest contributor (ADR 0067).
+func oldest(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.Before(a)) {
+		return b
+	}
+	return a
 }
 
 // PendingBuilds returns the build facts not yet acknowledged as written, sorted
@@ -753,6 +822,11 @@ func (s *Store) PeakSnapshot() []PeakRecord {
 	out := make([]PeakRecord, 0, len(s.peaks))
 	for pk, byNode := range s.peaks {
 		rec := PeakRecord{PeakKey: pk}
+		var asserted time.Time
+		for node := range byNode {
+			asserted = oldest(asserted, s.assertedAt(node))
+		}
+		rec.AssertedAt = asserted
 		for _, n := range byNode {
 			rec.PeakRSSBytes = max(rec.PeakRSSBytes, n.peakRSSBytes)
 			rec.Processes += n.processes
@@ -792,6 +866,11 @@ func (s *Store) CounterSnapshot() []CounterRecord {
 	out := make([]CounterRecord, 0, len(s.counters))
 	for ck, byNode := range s.counters {
 		rec := CounterRecord{CounterKey: ck}
+		var asserted time.Time
+		for node := range byNode {
+			asserted = oldest(asserted, s.assertedAt(node))
+		}
+		rec.AssertedAt = asserted
 		for _, n := range byNode {
 			rec.Processes += n.processes
 			rec.ObservedNanos += n.delta.ObservedNanos
@@ -827,14 +906,16 @@ func (s *Store) PortSnapshot() []PortRecord {
 	out := make([]PortRecord, 0, len(s.ports))
 	for pk, byNode := range s.ports {
 		lists := make([][]nodescan.ListeningPort, 0, len(byNode))
-		for _, ports := range byNode {
+		var asserted time.Time
+		for node, ports := range byNode {
 			lists = append(lists, ports)
+			asserted = oldest(asserted, s.assertedAt(node))
 		}
 		merged := nodescan.MergeListeningPorts(lists...)
 		if len(merged) == 0 {
 			continue
 		}
-		out = append(out, PortRecord{PortKey: pk, Ports: merged})
+		out = append(out, PortRecord{PortKey: pk, Ports: merged, AssertedAt: asserted})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Key != out[j].Key {
@@ -875,6 +956,10 @@ func (s *Store) PprofBuilds() map[string][]string {
 type ScanCoverage struct {
 	// Nodes is how many nodes contributed the counters below.
 	Nodes int `json:"nodes"`
+	// OldestAssertedAt is the earliest of those nodes' latest reports. The sums
+	// below are as current as their stalest contributor, and a node that stopped
+	// reporting keeps contributing its last pass (ADR 0067).
+	OldestAssertedAt time.Time `json:"oldest_asserted_at,omitzero"`
 	// ProcessesScanned is every PID the passes attempted; GoFound is what they
 	// kept. The three drops in between are the whole of what the node did not
 	// report, and none of them names anything (CLAUDE.md invariant 6).
@@ -894,6 +979,9 @@ func (s *Store) ScanCoverage() ScanCoverage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := ScanCoverage{Nodes: len(s.scans)}
+	for node := range s.scans {
+		out.OldestAssertedAt = oldest(out.OldestAssertedAt, s.assertedAt(node))
+	}
 	for _, c := range s.scans {
 		out.ProcessesScanned += c.ProcessesScanned
 		out.GoFound += c.GoFound
@@ -1025,6 +1113,12 @@ type Coverage struct {
 	// so this stays directly comparable with the node count in node_metadata
 	// (ADR 0018).
 	NodesReported int `json:"nodes_reported"`
+	// Nodes is when each of those nodes last reported, sorted by name. It is the
+	// only place that says *which* node went quiet: the records themselves are
+	// keyed by workload and carry no node, so their asserted_at bounds their age
+	// without naming a cause (ADR 0067). A node absent from node_metadata is
+	// never here — departed nodes are pruned.
+	Nodes []NodeAssertion `json:"nodes"`
 	// FactsReceived is every binary in every report; Joined is those attributed
 	// to a workload container; Unjoined is those that could not be. Undigested
 	// counts joined facts whose container had no image digest yet, so their
@@ -1033,6 +1127,12 @@ type Coverage struct {
 	FactsJoined     int64 `json:"facts_joined"`
 	FactsUnjoined   int64 `json:"facts_unjoined"`
 	FactsUndigested int64 `json:"facts_undigested"`
+}
+
+// NodeAssertion is one node and the instant of its latest report.
+type NodeAssertion struct {
+	Node       string    `json:"node"`
+	AssertedAt time.Time `json:"asserted_at,omitzero"`
 }
 
 // Coverage returns the completeness block for the Go-inventory payload.
@@ -1044,6 +1144,7 @@ func (s *Store) Coverage() Coverage {
 		// local zone is not a fact about the cluster.
 		Since:           s.since.UTC(),
 		NodesReported:   len(s.nodesReported),
+		Nodes:           s.nodeAssertionsLocked(),
 		FactsReceived:   s.factsReceived,
 		FactsJoined:     s.factsJoined,
 		FactsUnjoined:   s.factsUnjoined,

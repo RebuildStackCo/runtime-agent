@@ -5,6 +5,7 @@ Date: 2026-08-30
 Status: Accepted
 
 Amends: 0009
+Amended by: 0067
 
 Adds the payload kind `listening_ports` and one field to `go_build`. Widens the
 node scanner's reads to the executable's function-name table and to the

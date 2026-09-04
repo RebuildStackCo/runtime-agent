@@ -17,7 +17,8 @@
           "port": 6060,
           "loopback": true
         }
-      ]
+      ],
+      "asserted_at": "2026-08-06T10:11:30Z"
     },
     {
       "namespace": "shop",
@@ -28,7 +29,8 @@
         {
           "port": 5432
         }
-      ]
+      ],
+      "asserted_at": "2026-08-06T09:12:00Z"
     }
   ]
 }

@@ -17,6 +17,7 @@
       "rss_file_bytes_max": 63963136,
       "pss_bytes_max": 461373440,
       "private_dirty_bytes_max": 417333248,
+      "asserted_at": "2026-08-06T10:11:30Z",
       "threads_max": 42,
       "open_files_max": 61000,
       "open_files_limit_min": 65536
@@ -32,6 +33,7 @@
       "cpus_allowed_max": 8,
       "rss_anon_bytes_max": 74448896,
       "rss_file_bytes_max": 26214400,
+      "asserted_at": "2026-08-06T09:12:00Z",
       "threads_max": 11,
       "open_files_max": 34,
       "open_files_limit_min": 1024
