@@ -59,6 +59,13 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "runtime-agent.nodeName" . }}
+      {{- with .Values.node.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      # Short on purpose: the node runs no shutdown pass and a cut-off report is
+      # re-scanned by the next pod, so this bounds only how long the agent can
+      # hold up your node drain (ADR 0068 §4).
+      terminationGracePeriodSeconds: {{ .Values.node.terminationGracePeriodSeconds }}
       # No *API* credential in the container: the default ServiceAccount token
       # (audience = the API server) is never mounted, so the node role cannot
       # call the API server. The projected token below is a different token,
@@ -137,6 +144,17 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- if or (not .Values.node.resources) ((.Values.node.resources).limits).memory }}
+            # The limit the Go runtime does not read for itself (ADR 0068 §5).
+            # Absent when an operator replaces the resources below without a
+            # memory limit: the downward API would substitute the node's
+            # allocatable memory, and the agent would size itself to the node.
+            - name: MEMORY_LIMIT_BYTES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: node
+                  resource: limits.memory
+            {{- end }}
           securityContext:
             privileged: false
             allowPrivilegeEscalation: false

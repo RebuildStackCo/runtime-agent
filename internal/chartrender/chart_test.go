@@ -683,3 +683,169 @@ func TestRootIsOneRolesExceptionAndTheControllerDoesNotTakeIt(t *testing.T) {
 		})
 	}
 }
+
+// The agent is a guest of a cluster it did not come with, and ADR 0068 turns
+// four omissions into decisions. Two of them are values with defaults, and the
+// defaults are the decision: 30s is the controller's shutdown pass plus room,
+// 10s is a DaemonSet that has nothing to lose bounding a drain it delays.
+func TestThePodsSayWhatTheyCostTheClusterToRemove(t *testing.T) {
+	want := map[string]int64{"Deployment": 30, "DaemonSet": 10}
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			for _, pod := range allPodSpecs(t, render(t, values)) {
+				grace := pod.spec.TerminationGracePeriodSeconds
+				if grace == nil {
+					t.Errorf("%s sets no terminationGracePeriodSeconds; the shutdown pass would run inside a number nobody chose (ADR 0068 §4)", pod)
+					continue
+				}
+				if *grace != want[pod.kind] {
+					t.Errorf("%s terminationGracePeriodSeconds = %d, want %d", pod, *grace, want[pod.kind])
+				}
+				// Empty by default and by decision: the chart creates no
+				// PriorityClass, so a name here would name nothing.
+				if pod.spec.PriorityClassName != "" {
+					t.Errorf("%s defaults priorityClassName to %q; the chart ships no PriorityClass for it to name (ADR 0068 §1)",
+						pod, pod.spec.PriorityClassName)
+				}
+			}
+		})
+	}
+}
+
+// And the name an operator does set reaches both pods. The whole point is that
+// the agent can be told to yield, so a value that renders on one role only is a
+// promise kept on one role only.
+func TestThePriorityClassNameReachesBothRoles(t *testing.T) {
+	values := ebpfValues()
+	values["controller"] = map[string]any{"priorityClassName": "rebuildstack-yields"}
+	values["node"] = map[string]any{"priorityClassName": "rebuildstack-yields"}
+	for _, pod := range allPodSpecs(t, render(t, values)) {
+		if pod.spec.PriorityClassName != "rebuildstack-yields" {
+			t.Errorf("%s priorityClassName = %q, want the configured class", pod, pod.spec.PriorityClassName)
+		}
+	}
+}
+
+// A class admission will not accept is refused at render time. `system-` names
+// are reserved for kube-system, so on any other release namespace the pods are
+// rejected outright — a DaemonSet that creates no pods and does not say why.
+func TestAPriorityClassTheClusterWillNotAdmitIsRefused(t *testing.T) {
+	for _, role := range []string{"controller", "node"} {
+		values := map[string]any{
+			"profile": "inventory",
+			role:      map[string]any{"priorityClassName": "system-node-critical"},
+		}
+		if _, err := chartrender.Manifests(chartDir, chartrender.Options{Namespace: "observability", Values: values}); err == nil {
+			t.Errorf("the chart rendered %s.priorityClassName=system-node-critical outside kube-system", role)
+		}
+		// Installed where admission does accept it, it renders: the chart must
+		// refuse what the cluster refuses, and nothing else.
+		if _, err := chartrender.Manifests(chartDir, chartrender.Options{Namespace: "kube-system", Values: values}); err != nil {
+			t.Errorf("the chart refuses a system- class in kube-system, where admission accepts it: %v", err)
+		}
+	}
+}
+
+// The floor under the controller's grace period, which exists because what it
+// prevents is silent: below the receiver's own 10s shutdown budget the SIGKILL
+// lands before the flush pass and the journals go with no line saying so.
+func TestAGracePeriodTooShortForTheShutdownPassIsRefused(t *testing.T) {
+	cases := []struct {
+		values  map[string]any
+		refused bool
+	}{
+		{map[string]any{"controller": map[string]any{"terminationGracePeriodSeconds": 14}}, true},
+		{map[string]any{"controller": map[string]any{"terminationGracePeriodSeconds": 15}}, false},
+		{map[string]any{"controller": map[string]any{"terminationGracePeriodSeconds": 120}}, false},
+		{map[string]any{"node": map[string]any{"terminationGracePeriodSeconds": 0}}, true},
+		{map[string]any{"node": map[string]any{"terminationGracePeriodSeconds": 1}}, false},
+	}
+	for _, tc := range cases {
+		tc.values["profile"] = "inventory"
+		_, err := chartrender.Manifests(chartDir, chartrender.Options{Values: tc.values})
+		if tc.refused && err == nil {
+			t.Errorf("the chart accepted %v", tc.values)
+		}
+		if !tc.refused && err != nil {
+			t.Errorf("the chart refused %v: %v", tc.values, err)
+		}
+	}
+}
+
+// The memory limit has to reach the process, because the Go runtime does not
+// read it: it reads the CPU limit and has no memory equivalent (ADR 0068 §5).
+// The container name matters — a resourceFieldRef naming the wrong container
+// renders, installs, and reports somebody else's limit.
+func TestTheMemoryLimitReachesTheAgent(t *testing.T) {
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			for _, pod := range allPodSpecs(t, render(t, values)) {
+				for _, container := range pod.containers() {
+					ref := resourceFieldRef(container, "MEMORY_LIMIT_BYTES")
+					if ref == nil {
+						t.Errorf("%s: container %q is not told its memory limit; the Go runtime does not read one (ADR 0068 §5)", pod, container.Name)
+						continue
+					}
+					if ref.Resource != "limits.memory" {
+						t.Errorf("%s: MEMORY_LIMIT_BYTES reads %q, want limits.memory", pod, ref.Resource)
+					}
+					if ref.ContainerName != container.Name {
+						t.Errorf("%s: MEMORY_LIMIT_BYTES on %q reads container %q's limit",
+							pod, container.Name, ref.ContainerName)
+					}
+					if ref.Divisor.Value() > 1 {
+						t.Errorf("%s: MEMORY_LIMIT_BYTES has divisor %s; anything but bytes makes the value a count of something the agent does not parse",
+							pod, ref.Divisor.String())
+					}
+				}
+			}
+		})
+	}
+}
+
+// And it is absent where there is no limit to read. The downward API substitutes
+// the node's allocatable memory for a limit that is not set, so rendering the
+// variable unconditionally would size the agent to the node — quietly, and worst
+// on the largest node in the cluster.
+func TestNoMemoryLimitMeansNoVariableRatherThanTheNodesMemory(t *testing.T) {
+	// The two roles lose the limit differently, and neither is "write your own
+	// requests". The controller's resources deep-merge with the chart's, so a
+	// partial override keeps the default limit and only an explicit null
+	// removes it; the node's replace the per-profile defaults whole, so
+	// resources without a limit is a pod without one.
+	cases := map[string]map[string]any{
+		"controller": {"profile": "inventory", "controller": map[string]any{
+			"resources": map[string]any{"limits": map[string]any{"memory": nil}},
+		}},
+		"node": {"profile": "inventory", "node": map[string]any{
+			"resources": map[string]any{"requests": map[string]any{"cpu": "20m", "memory": "32Mi"}},
+		}},
+	}
+	for role, values := range cases {
+		t.Run(role, func(t *testing.T) {
+			for _, pod := range allPodSpecs(t, render(t, values)) {
+				for _, container := range pod.containers() {
+					if container.Name != role {
+						continue
+					}
+					if ref := resourceFieldRef(container, "MEMORY_LIMIT_BYTES"); ref != nil {
+						t.Errorf("%s: container %q has no memory limit but is told one; the downward API would report the node's allocatable memory",
+							pod, container.Name)
+					}
+				}
+			}
+		})
+	}
+}
+
+// resourceFieldRef returns the downward-API resource reference behind the named
+// environment variable, or nil if it is absent or sourced some other way.
+func resourceFieldRef(container corev1.Container, name string) *corev1.ResourceFieldSelector {
+	for _, env := range container.Env {
+		if env.Name != name || env.ValueFrom == nil {
+			continue
+		}
+		return env.ValueFrom.ResourceFieldRef
+	}
+	return nil
+}

@@ -66,4 +66,24 @@ renders a workload so it fires whatever is being rendered.
 {{- if not (has .Values.profile (list "metrics-only" "inventory" "ebpf")) -}}
 {{- fail (printf "unknown profile %q: expected metrics-only, inventory or ebpf" .Values.profile) -}}
 {{- end -}}
+{{- if ne .Release.Namespace "kube-system" -}}
+{{- range $role := list "controller" "node" -}}
+{{- $name := (index $.Values $role).priorityClassName -}}
+{{- if hasPrefix "system-" $name -}}
+{{- fail (printf "%s.priorityClassName %q: admission accepts a system- class only for pods in kube-system, and this release is in %q — the pods would be rejected, not scheduled at a lower priority (ADR 0068)" $role $name $.Release.Namespace) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{/*
+The controller's floor, and the only one: below the receiver's own 10s shutdown
+budget the SIGKILL arrives before the flush pass, and the journals it would have
+written are lost with nothing to notice it by (ADR 0068 §4). The node has no
+floor beyond a positive value — it has no pass and no loss.
+*/}}
+{{- if lt (int .Values.controller.terminationGracePeriodSeconds) 15 -}}
+{{- fail (printf "controller.terminationGracePeriodSeconds is %d: below 15 a SIGKILL lands before the shutdown flush, silently dropping up to a minute of the restart, disruption, job-run, node-lifecycle and inventory journals (ADR 0068)" (int .Values.controller.terminationGracePeriodSeconds)) -}}
+{{- end -}}
+{{- if lt (int .Values.node.terminationGracePeriodSeconds) 1 -}}
+{{- fail "node.terminationGracePeriodSeconds must be at least 1: zero deletes the pod without giving the scan pass a chance to end" -}}
+{{- end -}}
 {{- end -}}
