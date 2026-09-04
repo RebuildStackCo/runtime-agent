@@ -120,14 +120,54 @@ profiling:
   intervalSeconds: 0
   overheadCeilingPercent: 0
 
+# How the agent behaves as a guest of a cluster it did not come with: what it
+# yields to, and how long it may take to leave (ADR 0068).
+#
+# Empty priorityClassName gives the pod the cluster's globalDefault, or zero
+# where there is none — the same priority as every unclassified workload, so at
+# a tie the agent is as likely to survive as the application it measures. To make
+# it yield first, apply a class of your own with a negative value and name it
+# below. The chart creates no PriorityClass: a priority value only means
+# something against the classes your cluster already has.
+#
+#   apiVersion: scheduling.k8s.io/v1
+#   kind: PriorityClass
+#   metadata:
+#     name: rebuildstack-yields
+#   value: -100
+#   globalDefault: false
+#   description: RebuildStack agent — preempted before customer workloads.
+#
+# `system-cluster-critical` and `system-node-critical` are not usable here:
+# admission accepts them only for pods in kube-system, and the chart refuses
+# them elsewhere rather than let a DaemonSet create no pods and not say why.
+#
+# There is deliberately no PodDisruptionBudget and no topologySpreadConstraints,
+# in any profile. On a single replica a budget either blocks node drain outright
+# or forbids nothing, and there is nothing to spread across one replica or a
+# DaemonSet (ADR 0068 §2, §3).
+
 controller:
   resources:
     requests:
       cpu: 50m
       memory: 64Mi
+    # The memory limit is also where GOMEMLIMIT comes from: the chart passes it
+    # to the agent via the downward API and the agent runs at 80% of it, so the
+    # Go heap gives way before the cgroup does (ADR 0068 §5). Remove it and the
+    # variable is not rendered — the downward API would substitute the node's
+    # allocatable memory.
     limits:
       cpu: 500m
       memory: 256Mi
+  priorityClassName: ""
+  # How long the controller may take to leave. Its shutdown pass writes the
+  # journals that accumulated since the last periodic flush, and the ceiling of
+  # that path is about ten seconds; the default is the Kubernetes default and
+  # covers it with room. Below 15 the chart refuses: SIGKILL would land before
+  # the pass runs, and the minute of journals lost with it is lost silently
+  # (ADR 0068 §4).
+  terminationGracePeriodSeconds: 30
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -139,8 +179,16 @@ node:
   # How often the node scans its processes.
   scanInterval: 60s
   # Empty selects per-profile defaults: 100m CPU for the scanner, 250m for the
-  # profiler, which samples and symbolizes and therefore costs more.
+  # profiler, which samples and symbolizes and therefore costs more. Whatever is
+  # in force, a memory limit is what GOMEMLIMIT is derived from; set resources
+  # without one and the agent runs on the Go default.
   resources: {}
+  priorityClassName: ""
+  # Shorter than the controller's, because the node has nothing to lose: it runs
+  # no shutdown pass, and a report cut off mid-flight is re-scanned by the next
+  # pod. What the number bounds is how long this agent can hold up your node
+  # drain (ADR 0068 §4).
+  terminationGracePeriodSeconds: 10
   # A node agent runs on every node, control-plane nodes included. Replace this
   # if you mean to exclude some — and note that an excluded node contributes no
   # inventory and no profiles, silently, because nothing there is running.

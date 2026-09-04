@@ -84,6 +84,15 @@
       "additionalProperties": false,
       "properties": {
         "resources": {"type": "object"},
+        "priorityClassName": {
+          "description": "Empty takes the cluster's globalDefault. The chart creates no PriorityClass and cannot read one's value, so whether the name makes the agent yield or win is not checked here (ADR 0068).",
+          "type": "string"
+        },
+        "terminationGracePeriodSeconds": {
+          "description": "The floor is not repeated as a minimum here — the template enforces it, so one place decides and the refusal can explain what is lost below it.",
+          "type": "integer",
+          "minimum": 0
+        },
         "nodeSelector": {"type": "object"},
         "tolerations": {"type": "array", "items": {"type": "object"}},
         "affinity": {"type": "object"},
@@ -97,6 +106,8 @@
       "properties": {
         "scanInterval": {"type": "string", "minLength": 1},
         "resources": {"type": "object"},
+        "priorityClassName": {"type": "string"},
+        "terminationGracePeriodSeconds": {"type": "integer", "minimum": 0},
         "nodeSelector": {"type": "object"},
         "tolerations": {"type": "array", "items": {"type": "object"}},
         "affinity": {"type": "object"},

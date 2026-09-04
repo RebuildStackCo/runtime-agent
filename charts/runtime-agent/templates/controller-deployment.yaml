@@ -44,6 +44,13 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "runtime-agent.controllerName" . }}
+      {{- with .Values.controller.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      # Long enough for the shutdown pass to write the journals that accumulated
+      # since the last periodic flush; the chart refuses a value that is not
+      # (ADR 0068 §4).
+      terminationGracePeriodSeconds: {{ .Values.controller.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -81,6 +88,18 @@ spec:
           ports:
             - name: node-intake
               containerPort: 8080
+          {{- end }}
+          {{- if ((.Values.controller.resources).limits).memory }}
+          env:
+            # The limit the Go runtime does not read for itself; the agent runs
+            # at a fraction of it (ADR 0068 §5). Rendered only when a memory
+            # limit is: with none set the downward API substitutes the node's
+            # allocatable memory, which is a worse answer than none.
+            - name: MEMORY_LIMIT_BYTES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: controller
+                  resource: limits.memory
           {{- end }}
           securityContext:
             allowPrivilegeEscalation: false

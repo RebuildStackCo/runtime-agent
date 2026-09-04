@@ -216,3 +216,65 @@ func kindOf(t *testing.T, doc string) string {
 	}
 	return meta.Kind
 }
+
+// Two objects ADR 0068 decided not to ship, asserted here because a refusal
+// nothing enforces is indistinguishable from an oversight — and the next reader
+// wondering why the chart has no PodDisruptionBudget will add one.
+//
+// On one replica minAvailable:1 forbids the only eviction there is, so the agent
+// becomes the reason a node cannot be drained; maxUnavailable:1 forbids nothing.
+// A spread constraint needs replicas to spread, and a DaemonSet is spread by
+// construction.
+func TestNeitherRefusedObjectHasQuietlyReappeared(t *testing.T) {
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			docs := render(t, values)
+			for _, doc := range docs {
+				if kindOf(t, doc) == "PodDisruptionBudget" {
+					t.Error("the chart renders a PodDisruptionBudget; on one replica it either blocks node drain or means nothing (ADR 0068 §2)")
+				}
+			}
+			for _, pod := range allPodSpecs(t, docs) {
+				if len(pod.spec.TopologySpreadConstraints) != 0 {
+					t.Errorf("%s sets topologySpreadConstraints; one replica has nothing to spread and a DaemonSet is already spread (ADR 0068 §3)", pod)
+				}
+			}
+		})
+	}
+}
+
+// The pod's environment is a closed list, for the reason this whole file exists:
+// every assertion the chart tests make about a container is written per field,
+// and an environment variable added beside them is invisible to all of them. An
+// env var is also how a value reaches the process without appearing in any
+// config the agent's strict parser would reject.
+//
+// Both names here are the downward API reporting the pod's own placement, and
+// neither carries anything read from a customer workload.
+func TestTheContainerEnvironmentNamesNothingBeyondThisList(t *testing.T) {
+	permitted := map[string]map[string]bool{
+		"Deployment": {"MEMORY_LIMIT_BYTES": true},
+		"DaemonSet":  {"NODE_NAME": true, "MEMORY_LIMIT_BYTES": true},
+	}
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			for _, pod := range allPodSpecs(t, render(t, values)) {
+				for _, container := range pod.containers() {
+					for _, env := range container.Env {
+						if !permitted[pod.kind][env.Name] {
+							t.Errorf("%s: container %q sets %s, which is not on the permitted list; "+
+								"a variable is a value reaching the agent past its own config parser",
+								pod, container.Name, env.Name)
+						}
+					}
+					// envFrom would bring in a whole ConfigMap or Secret, which
+					// the list above cannot name and §9 forbids.
+					if len(container.EnvFrom) != 0 {
+						t.Errorf("%s: container %q uses envFrom; the agent reads no Secret and no ConfigMap it did not render (docs/security.md §9)",
+							pod, container.Name)
+					}
+				}
+			}
+		})
+	}
+}

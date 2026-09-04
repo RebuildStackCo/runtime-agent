@@ -58,6 +58,9 @@ const (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	// Before either role starts: both run in a container with a limit the
+	// runtime cannot see for itself (ADR 0068 §5).
+	applyMemoryLimit(logger)
 	role, rest := parseRole(os.Args[1:])
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
