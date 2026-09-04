@@ -14,6 +14,10 @@ import (
 )
 
 // testSince is the fixed base of every cumulative counter in these tests.
+// testAsserted is the instant every report in these tests is stated at; the
+// store's clock is pinned to it so assertion instants can be asserted on.
+var testAsserted = time.Date(2026, 8, 6, 10, 12, 0, 0, time.UTC)
+
 var testSince = time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
 
 // fakeResolver resolves a fixed set of (pod UID, container ID) pairs; anything
@@ -422,6 +426,7 @@ func TestIngestJoinsFacts(t *testing.T) {
 		"pod-web/cid-web": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
 	}
 	s := NewStore(testSince)
+	s.now = func() time.Time { return testAsserted }
 	s.Ingest(nodescan.Report{
 		Node:     "node-1",
 		Binaries: []nodescan.BinaryInfo{binary("pod-web", "cid-web", "go1.26.1", "github.com/acme/web", true)},
@@ -438,6 +443,7 @@ func TestIngestJoinsFacts(t *testing.T) {
 		ModulePath:  "github.com/acme/web",
 		ImageDigest: "sha256:web",
 		PGO:         true,
+		AssertedAt:  testAsserted,
 	}
 	if r != want {
 		t.Errorf("record = %+v, want %+v", r, want)
@@ -997,5 +1003,89 @@ func TestCountersLeaveWithTheirNodeAndTheirWorkload(t *testing.T) {
 	}
 	if recs := s.CounterSnapshot(); len(recs) != 0 {
 		t.Errorf("counters = %+v after the workload left, want none", recs)
+	}
+}
+
+// The defect ADR 0067 names: a node's contribution is expired by the arrival of
+// its next report and by nothing else, so a node that stops reporting keeps
+// contributing what it last said. That behavior is deliberate — the data was
+// true when it was stated — but until now the record it fed carried nothing to
+// say so, and every flush republished it under a fresh captured_at.
+func TestARecordCarriesTheInstantItsSourceLastStatedIt(t *testing.T) {
+	resolver := fakeResolver{
+		"pod-web/cid-a": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+		"pod-web/cid-b": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+	s := NewStore(testSince)
+	at := testAsserted
+	s.now = func() time.Time { return at }
+
+	measured := func(podUID, cid string, peak int64) nodescan.BinaryInfo {
+		b := binary(podUID, cid, "go1.26.1", "github.com/acme/web", false)
+		b.PeakRSSBytes = peak
+		b.CPUsAllowed = 4
+		return b
+	}
+	// Two nodes carry the same workload; both state it at the same instant.
+	s.Ingest(nodescan.Report{Node: "node-a", Binaries: []nodescan.BinaryInfo{measured("pod-web", "cid-a", 100)}}, resolver)
+	s.Ingest(nodescan.Report{Node: "node-b", Binaries: []nodescan.BinaryInfo{measured("pod-web", "cid-b", 300)}}, resolver)
+
+	peaks := s.PeakSnapshot()
+	if len(peaks) != 1 {
+		t.Fatalf("peaks = %d records, want 1", len(peaks))
+	}
+	if !peaks[0].AssertedAt.Equal(at) {
+		t.Errorf("asserted_at = %v, want %v", peaks[0].AssertedAt, at)
+	}
+
+	// node-a keeps reporting; node-b goes quiet. The record still carries
+	// node-b's 300 — that is the accumulator working as designed — so the only
+	// thing separating it from a freshly measured 300 is the instant below.
+	at = at.Add(time.Hour)
+	s.Ingest(nodescan.Report{Node: "node-a", Binaries: []nodescan.BinaryInfo{measured("pod-web", "cid-a", 100)}}, resolver)
+
+	peaks = s.PeakSnapshot()
+	if got := peaks[0].PeakRSSBytes; got != 300 {
+		t.Fatalf("peak = %d, want 300: the quiet node's contribution still stands", got)
+	}
+	if want := testAsserted; !peaks[0].AssertedAt.Equal(want) {
+		t.Errorf("asserted_at = %v, want %v: a record is only as current as its stalest contributor",
+			peaks[0].AssertedAt, want)
+	}
+}
+
+// Which node went quiet is answerable only in the coverage block: records are
+// keyed by workload and never name a node.
+func TestCoverageNamesEachNodeAndWhenItLastSpoke(t *testing.T) {
+	resolver := fakeResolver{
+		"pod-web/cid-a": {Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app", ImageDigest: "sha256:web"},
+	}
+	s := NewStore(testSince)
+	at := testAsserted
+	s.now = func() time.Time { return at }
+
+	s.Ingest(nodescan.Report{Node: "node-b", Binaries: []nodescan.BinaryInfo{binary("pod-web", "cid-a", "go1.26.1", "github.com/acme/web", false)}}, resolver)
+	at = at.Add(time.Hour)
+	s.Ingest(nodescan.Report{Node: "node-a", Binaries: []nodescan.BinaryInfo{binary("pod-web", "cid-a", "go1.26.1", "github.com/acme/web", false)}}, resolver)
+
+	got := s.Coverage().Nodes
+	want := []NodeAssertion{
+		{Node: "node-a", AssertedAt: testAsserted.Add(time.Hour).UTC()},
+		{Node: "node-b", AssertedAt: testAsserted.UTC()},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("nodes = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i].Node != want[i].Node || !got[i].AssertedAt.Equal(want[i].AssertedAt) {
+			t.Errorf("nodes[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// A departed node leaves with its instant: the list stays comparable with
+	// node_metadata (ADR 0018).
+	s.RetainNodes([]string{"node-a"})
+	if got := s.Coverage().Nodes; len(got) != 1 || got[0].Node != "node-a" {
+		t.Errorf("after a node left, nodes = %+v, want only node-a", got)
 	}
 }

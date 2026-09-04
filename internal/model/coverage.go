@@ -73,3 +73,32 @@ type Observation struct {
 	PollsFailed         int64    `json:"polls_failed"`
 	Signals             []string `json:"signals"`
 }
+
+// IntakeRejections is what the node-intake receiver refused on its two push
+// paths, by reason, cumulative since the controller started. It says why a node
+// has gone quiet where asserted_at only says that it has; a refused report
+// appears nowhere else but that node's own log (ADR 0067).
+//
+// Aggregate only: no identity of a refused caller appears, and no number here
+// names a node (CLAUDE.md invariant 6).
+type IntakeRejections struct {
+	// Unauthorized is a token that did not verify — a misconfigured audience or
+	// subject, an expired projection, or a caller that is not the node role.
+	Unauthorized uint64 `json:"unauthorized"`
+	// TooLarge is a body over the receiver's bound. The node that sent it holds
+	// more than the channel can carry, and re-sending will not help.
+	TooLarge uint64 `json:"too_large"`
+	// Malformed is a body the receiver could not decode, including one carrying
+	// a field this build's schema does not have.
+	Malformed uint64 `json:"malformed"`
+}
+
+// Plus adds two rejection counts. The receiver's two push paths keep their own
+// counters; the coverage report states the channel, so they are summed here.
+func (r IntakeRejections) Plus(o IntakeRejections) IntakeRejections {
+	return IntakeRejections{
+		Unauthorized: r.Unauthorized + o.Unauthorized,
+		TooLarge:     r.TooLarge + o.TooLarge,
+		Malformed:    r.Malformed + o.Malformed,
+	}
+}

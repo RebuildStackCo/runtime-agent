@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
@@ -179,5 +180,48 @@ func TestHandlerNilOnReportStillAccepts(t *testing.T) {
 	rec := post(t, h, goodToken, validBody)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 with a nil onReport", rec.Code)
+	}
+}
+
+// A refused report is data that left a node and reached nothing, and the only
+// other place it appears is that node's own log, in the customer's cluster
+// (ADR 0067). Every refusal path is counted, by the reason the caller was given.
+func TestEveryRefusalIsCountedByItsReason(t *testing.T) {
+	h := testHandler(t, nil)
+	h.maxBodyBytes = 64
+
+	big := `{"node":"` + tokenNode + `","binaries":[` + strings.Repeat(`{"pid":1},`, 40) + `{"pid":2}]}`
+	for _, tc := range []struct {
+		name, token, body string
+		want              int
+	}{
+		{"no token", "", `{"node":"` + tokenNode + `"}`, http.StatusUnauthorized},
+		{"bad token", "not-the-token", `{"node":"` + tokenNode + `"}`, http.StatusUnauthorized},
+		{"too large", goodToken, big, http.StatusRequestEntityTooLarge},
+		{"malformed", goodToken, `{"node":`, http.StatusBadRequest},
+		{"no node", goodToken, `{"binaries":[]}`, http.StatusBadRequest},
+		{"another node", goodToken, `{"node":"someone-else"}`, http.StatusForbidden},
+	} {
+		if got := post(t, h, tc.token, tc.body).Code; got != tc.want {
+			t.Fatalf("%s: status = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+
+	got := h.Rejections()
+	want := model.IntakeRejections{Unauthorized: 3, TooLarge: 1, Malformed: 2}
+	if got != want {
+		t.Errorf("rejections = %+v, want %+v", got, want)
+	}
+}
+
+// An accepted report moves nothing: the counters are what was refused, not what
+// arrived.
+func TestAnAcceptedReportCountsNoRejection(t *testing.T) {
+	h := testHandler(t, func(nodeauth.Identity, nodescan.Report) {})
+	if got := post(t, h, goodToken, `{"node":"`+tokenNode+`","binaries":[]}`).Code; got != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", got, http.StatusAccepted)
+	}
+	if got := h.Rejections(); got != (model.IntakeRejections{}) {
+		t.Errorf("rejections = %+v, want all zero", got)
 	}
 }

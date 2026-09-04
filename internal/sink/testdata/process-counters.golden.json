@@ -19,7 +19,8 @@
       "voluntary_switches": 48210,
       "nonvoluntary_switches": 3122,
       "read_bytes": 0,
-      "write_bytes": 4096
+      "write_bytes": 4096,
+      "asserted_at": "2026-08-06T10:11:30Z"
     },
     {
       "namespace": "shop",
@@ -36,7 +37,8 @@
       "voluntary_switches": 9004,
       "nonvoluntary_switches": 61,
       "read_bytes": 268435456,
-      "write_bytes": 134217728
+      "write_bytes": 134217728,
+      "asserted_at": "2026-08-06T09:12:00Z"
     }
   ]
 }

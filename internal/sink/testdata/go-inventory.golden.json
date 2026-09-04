@@ -5,6 +5,16 @@
   "coverage": {
     "since": "2026-08-06T10:00:00Z",
     "nodes_reported": 2,
+    "nodes": [
+      {
+        "node": "node-a",
+        "asserted_at": "2026-08-06T10:11:30Z"
+      },
+      {
+        "node": "node-b",
+        "asserted_at": "2026-08-06T09:12:00Z"
+      }
+    ],
     "facts_received": 9,
     "facts_joined": 7,
     "facts_unjoined": 2,
@@ -19,7 +29,8 @@
       "go_version": "go1.25.0",
       "module_path": "github.com/acme/index",
       "image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-      "pgo": false
+      "pgo": false,
+      "asserted_at": "2026-08-06T09:12:00Z"
     },
     {
       "namespace": "shop",
@@ -29,7 +40,8 @@
       "go_version": "go1.26.1",
       "module_path": "github.com/acme/web",
       "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "pgo": true
+      "pgo": true,
+      "asserted_at": "2026-08-06T10:11:30Z"
     }
   ]
 }

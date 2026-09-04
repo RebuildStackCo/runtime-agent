@@ -47,8 +47,14 @@ var nodeBorn = time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
 // attributed — the state the block exists to make visible.
 func fixedCoverage() inventory.Coverage {
 	return inventory.Coverage{
-		Since:           windowStart,
-		NodesReported:   2,
+		Since:         windowStart,
+		NodesReported: 2,
+		// One node current, one that stopped reporting an hour before this
+		// capture: the pair is what a consumer reads asserted_at against.
+		Nodes: []inventory.NodeAssertion{
+			{Node: "node-a", AssertedAt: capturedAt.Add(-30 * time.Second)},
+			{Node: "node-b", AssertedAt: capturedAt.Add(-time.Hour)},
+		},
 		FactsReceived:   9,
 		FactsJoined:     7,
 		FactsUnjoined:   2,
@@ -143,9 +149,12 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		Records: 24, GoVersions: 3, Builds: 11,
 		FactsReceived: 240, FactsJoined: 231, FactsUnjoined: 9, NodesReported: 4,
 	}
+	// The sums are as current as their stalest contributor: one of the four
+	// nodes last reported an hour before this capture (ADR 0067).
 	scan := inventory.ScanCoverage{
 		Nodes: 4, ProcessesScanned: 1840, GoFound: 96,
 		FilteredScope: 1204, FilteredInfra: 512, Unreadable: 28,
+		OldestAssertedAt: capturedAt.Add(-time.Hour),
 	}
 	// A fleet where the profiler is not the same everywhere: three nodes
 	// capture, one refused the gate. Without `states` the four look alike from
@@ -164,10 +173,14 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	// A refusal beside the shipped profiles, because that is the number a reader
 	// will otherwise mistake for a broken agent (ADR 0058 §3).
 	pull := pprofpull.Coverage{Shipped: 4, Refused: 1, Unreachable: 0, Invalid: 1}
+	// A node whose reports are being refused for size, beside the quiet one the
+	// scan block's oldest_asserted_at describes: together they are whether and
+	// why (ADR 0067).
+	rejected := model.IntakeRejections{TooLarge: 3, Unauthorized: 1}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
 		sources, filter, model.PlacementDrops{Values: 3, Terms: 1},
 		model.NodeDrops{Conditions: 4, Devices: 1, Taints: 0, Values: 2},
-		&inv, &scan, &ebpf, &probe, &pull); err != nil {
+		&inv, &scan, &ebpf, &probe, &pull, &rejected); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -584,6 +597,7 @@ func fixedInventory() []inventory.GoRecord {
 			Key:         inventory.Key{Namespace: "search", WorkloadKind: "StatefulSet", WorkloadName: "index", Container: "app"},
 			GoVersion:   "go1.25.0",
 			ModulePath:  "github.com/acme/index",
+			AssertedAt:  capturedAt.Add(-time.Hour),
 			ImageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			PGO:         false,
 		},
@@ -591,6 +605,7 @@ func fixedInventory() []inventory.GoRecord {
 			Key:         inventory.Key{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app"},
 			GoVersion:   "go1.26.1",
 			ModulePath:  "github.com/acme/web",
+			AssertedAt:  capturedAt.Add(-30 * time.Second),
 			ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 			PGO:         true,
 		},
@@ -622,6 +637,7 @@ func fixedPeaks() []inventory.PeakRecord {
 				},
 				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 			},
+			AssertedAt:   capturedAt.Add(-30 * time.Second),
 			PeakRSSBytes: 481 << 20, Processes: 2,
 			CPUsAllowedMin: 4, CPUsAllowedMax: 8,
 			RSSAnonBytesMax: 402 << 20, RSSFileBytesMax: 61 << 20,
@@ -635,6 +651,7 @@ func fixedPeaks() []inventory.PeakRecord {
 					WorkloadName: "db", Container: "db",
 				},
 			},
+			AssertedAt:   capturedAt.Add(-time.Hour),
 			PeakRSSBytes: 96 << 20, Processes: 1,
 			CPUsAllowedMin: 8, CPUsAllowedMax: 8,
 			// A kernel without smaps_rollup: the two sharing numbers are absent
@@ -659,7 +676,8 @@ func fixedCounters() []inventory.CounterRecord {
 				},
 				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 			},
-			Processes: 2, ObservedNanos: 120 * int64(time.Second),
+			AssertedAt: capturedAt.Add(-30 * time.Second),
+			Processes:  2, ObservedNanos: 120 * int64(time.Second),
 			OnCPUNanos: 9 * int64(time.Second), RunDelayNanos: 4 * int64(time.Second),
 			CPUUserNanos: 7 * int64(time.Second), CPUSystemNanos: 2 * int64(time.Second),
 			MajorFaults: 0, VoluntarySwitches: 48210, NonvoluntarySwitches: 3122,
@@ -672,7 +690,8 @@ func fixedCounters() []inventory.CounterRecord {
 					WorkloadName: "db", Container: "db",
 				},
 			},
-			Processes: 1, ObservedNanos: 60 * int64(time.Second),
+			AssertedAt: capturedAt.Add(-time.Hour),
+			Processes:  1, ObservedNanos: 60 * int64(time.Second),
 			OnCPUNanos: 21 * int64(time.Second), RunDelayNanos: 90 * int64(time.Millisecond),
 			CPUUserNanos: 12 * int64(time.Second), CPUSystemNanos: 9 * int64(time.Second),
 			MajorFaults: 1841, VoluntarySwitches: 9004, NonvoluntarySwitches: 61,
@@ -710,6 +729,7 @@ func fixedPorts() []inventory.PortRecord {
 				},
 				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 			},
+			AssertedAt: capturedAt.Add(-30 * time.Second),
 			Ports: []nodescan.ListeningPort{
 				{Port: 8080},
 				{Port: 6060, Loopback: true},
@@ -722,7 +742,8 @@ func fixedPorts() []inventory.PortRecord {
 					WorkloadName: "db", Container: "db",
 				},
 			},
-			Ports: []nodescan.ListeningPort{{Port: 5432}},
+			AssertedAt: capturedAt.Add(-time.Hour),
+			Ports:      []nodescan.ListeningPort{{Port: 5432}},
 		},
 	}
 }
@@ -1933,7 +1954,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]model.SourceHealth{{Name: "services", Synced: true}},
 		model.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil)
+		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

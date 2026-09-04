@@ -5,6 +5,7 @@ Date: 2026-08-31
 Status: Accepted
 
 Amends: 0052, 0061
+Amended by: 0067
 
 Adds the payload kind `process_counters`, and one piece of node-held state: the
 previous pass's counter reading per process. Reads three more files under

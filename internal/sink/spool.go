@@ -184,6 +184,11 @@ type collectionCoveragePayload struct {
 	// their latest answer, which is what makes "no profiles for this workload"
 	// legible as one of three different things (ADR 0057 §5).
 	Pprof *pprofprobe.Coverage `json:"pprof,omitempty"`
+	// Intake is what the node-intake receiver refused, present only when the
+	// receiver is enabled. It is the other half of a quiet node: `asserted_at`
+	// on the node-fed records says a contribution stopped advancing, and these
+	// say whether the controller was the one refusing it (ADR 0067).
+	Intake *model.IntakeRejections `json:"intake_rejections,omitempty"`
 	// PprofPull is present only when profiles are pulled. `refused` is the one
 	// to read first: it is a workload whose own profiler holds the single CPU
 	// profile Go allows, not a workload the agent failed on (ADR 0058 §3).
@@ -601,7 +606,8 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs model.O
 // WriteCollectionCoverage writes the coverage payload, superseding its
 // predecessor. It is written on every flush, including one that found nothing:
 // an empty report and a broken agent are the same bytes without it (ADR 0054).
-func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []model.SourceHealth, filter model.Coverage, placement model.PlacementDrops, nodes model.NodeDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage) error {
+func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []model.SourceHealth, filter model.Coverage, placement model.PlacementDrops, nodes model.NodeDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage,
+	intake *model.IntakeRejections) error {
 	payload := collectionCoveragePayload{
 		Kind:       "collection_coverage",
 		Source:     SourceAgent,
@@ -616,6 +622,7 @@ func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent Agent
 		Scan:       scan,
 		EBPF:       ebpf,
 		Pprof:      probe,
+		Intake:     intake,
 		PprofPull:  pull,
 	}
 	return s.write("collection-coverage.json", payload)

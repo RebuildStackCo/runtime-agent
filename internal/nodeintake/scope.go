@@ -79,7 +79,7 @@ func (h *ScopeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed query", http.StatusBadRequest)
 		return
 	}
-	if !authorizeNode(w, h.logger, "scope query", identity, req.Node) {
+	if !authorizeNode(w, h.logger, nil, "scope query", identity, req.Node) {
 		return
 	}
 

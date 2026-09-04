@@ -124,3 +124,4 @@ line to paste.
 - [0064. The node is described, and its comings and goings recorded](0064-the-node-is-described-and-its-comings-recorded.md)
 - [0065. The vocabulary of a collected fact is a package, and it does not know Kubernetes](0065-the-vocabulary-is-a-package.md)
 - [0066. An unverified caller does not set the refresh rate, and a value outside the enumeration does not load](0066-an-unverified-caller-does-not-set-the-refresh-rate.md)
+- [0067. A record carries the instant its source last stated it](0067-a-record-carries-the-age-of-its-source.md)

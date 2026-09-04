@@ -81,7 +81,7 @@ func (h *TargetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed query", http.StatusBadRequest)
 		return
 	}
-	if !authorizeNode(w, h.logger, "targets query", identity, req.Node) {
+	if !authorizeNode(w, h.logger, nil, "targets query", identity, req.Node) {
 		return
 	}
 
