@@ -30,6 +30,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
+	"github.com/RebuildStackCo/runtime-agent/internal/health"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
@@ -148,7 +149,16 @@ func connect() (kubernetes.Interface, *rest.Config, error) {
 // coverageInterval is how often the aggregate coverage counters are logged and
 // written as a payload. Unlike every other flush it runs whether or not there is
 // anything to report: staleness here is a fact about the agent (ADR 0054 §5).
-const coverageInterval = time.Minute
+//
+// A variable rather than a constant only so a test can compress it, the way
+// watchLimits is compressible in internal/collector. Production never assigns it.
+var coverageInterval = time.Minute
+
+// controllerLivenessDeadline is how stale the periodic pass's own stamp may get
+// before the controller stops calling itself alive. Three intervals: the pass
+// reads local caches and writes an emptyDir, so it makes no call that could be
+// slow for a reason outside this process (ADR 0069).
+func controllerLivenessDeadline() time.Duration { return 3 * coverageInterval }
 
 // pprofProbeInterval is how often endpoint discovery asks about targets it has
 // no answer for. A round on a steady cluster does nothing — every target already
@@ -751,6 +761,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		{run: flushNodeLifecycle, onShutdown: true},
 	}
 
+	// What liveness reads. Stamped at the top of a pass rather than at the end,
+	// so a pass wedged half way through goes stale rather than never being
+	// counted — which is the state this exists to make visible (ADR 0069).
+	beat := health.NewHeartbeat(time.Now(), controllerLivenessDeadline())
+
 	// The periodic pass is a lifecycle task like the watchers below, and for a
 	// load-bearing reason: the shutdown pass writes the same payload keys, and
 	// the spool has no lock — two writers of one key share a temp file name and
@@ -767,6 +782,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				beat.Beat(time.Now())
 				runFlushers(flushers, false)
 				// Unconditionally, on the agent's own cadence rather than the
 				// usage poller's: the spool's bounds must hold on a cluster
@@ -785,6 +801,34 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		"pods":  podWatcher.Run,
 		"nodes": nodeWatcher.Run,
 		"usage": usagePoller.Run,
+	}
+
+	// The health listener, when the installation configured one. It is a
+	// lifecycle task like the watchers: a port that cannot be bound is a startup
+	// failure with a reason in the log, rather than probes that fail with none.
+	if addr := cfg.Health.ListenAddress; addr != "" {
+		live := func() (bool, string) {
+			if alive, age := beat.Alive(time.Now()); !alive {
+				return false, fmt.Sprintf("the collection pass last ran %s ago", age.Round(time.Second))
+			}
+			return true, ""
+		}
+		// Readiness is the caches that gate collection, and the spool the
+		// payloads land in. The policy caches are not among them (ADR 0033,
+		// ADR 0069).
+		ready := func() (bool, string) {
+			// A spool that failed to open returned above, so nil here is the
+			// log-only development mode — which is not ready, because there is
+			// nothing for a reader to collect from.
+			if spool == nil {
+				return false, "no spool is open; this agent collects into its log only"
+			}
+			if !podWatcher.Synced() || !nodeWatcher.Synced() {
+				return false, "informer caches are still syncing"
+			}
+			return true, ""
+		}
+		tasks["health"] = health.New(addr, live, ready, logger).Run
 	}
 
 	// The node-intake receiver is optional (only the ebpf/node profile ships a

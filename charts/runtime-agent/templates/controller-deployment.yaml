@@ -84,11 +84,42 @@ spec:
           args:
             - -config
             - /etc/runtime-agent/config.yaml
-          {{- if include "runtime-agent.nodeEnabled" . }}
           ports:
+            # Answered in every profile, on a port of its own: probes must not
+            # depend on a receiver that half the profiles do not install
+            # (ADR 0069).
+            - name: health
+              containerPort: {{ include "runtime-agent.healthPort" . }}
+            {{- if include "runtime-agent.nodeEnabled" . }}
             - name: node-intake
               containerPort: 8080
-          {{- end }}
+            {{- end }}
+          # The startup budget is deliberately above the five minutes a gating
+          # cache may fail before the agent stops itself (ADR 0035): a refused
+          # LIST should produce the agent's own diagnostic exit, not an
+          # anonymous probe restart.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: {{ include "runtime-agent.healthPort" . }}
+            periodSeconds: 5
+            failureThreshold: 120
+          # Liveness asks the process about itself and nothing else: an API
+          # server outage must not restart the agent (ADR 0069 §2).
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: {{ include "runtime-agent.healthPort" . }}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ include "runtime-agent.healthPort" . }}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           {{- if ((.Values.controller.resources).limits).memory }}
           env:
             # The limit the Go runtime does not read for itself; the agent runs

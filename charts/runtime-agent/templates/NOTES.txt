@@ -3,6 +3,12 @@ runtime-agent is installed in namespace {{ .Release.Namespace }}, profile {{ .Va
 The agent collects into its local spool and ships nothing: backend transport is
 not built yet. Read charts/runtime-agent/values.yaml for what you can change,
 and docs/security.md for what the agent can reach.
+
+Every pod answers health probes on port {{ include "runtime-agent.healthPort" . }} at /livez and /readyz, in every
+profile (ADR 0069). Readiness means the caches are synced, so the rollout below
+returns when the agent is actually collecting rather than when it has started:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "runtime-agent.controllerName" . }}
 {{- if include "runtime-agent.nodeEnabled" . }}
 
 CHECK ONE THING: the NetworkPolicy needs a CNI that enforces it.
@@ -23,6 +29,11 @@ by any pod in the cluster. What it does not change: what a caller may say. Every
 request is authenticated by audience, signature against your cluster's JWKS, a
 pinned ServiceAccount subject, and the node named in the caller's own token, and
 none of those depend on your CNI (ADR 0040).
+
+The policy has a second rule, on port {{ include "runtime-agent.healthPort" . }}, with no source restriction: the
+probes come from your kubelet at the node's address, which no pod selector can
+name. What it admits is two read-only paths that answer about the agent and name
+nothing in your cluster (ADR 0069).
 {{- end }}
 {{- if or (eq .Values.profile "inventory") (eq .Values.profile "ebpf") }}
 

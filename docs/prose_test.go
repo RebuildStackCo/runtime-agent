@@ -34,7 +34,7 @@ var ceilings = []struct {
 	lines   int
 	section int
 }{
-	{"security.md", 1043, 360},
+	{"security.md", 1044, 360},
 	{"backend-requirements.md", 679, 536},
 }
 

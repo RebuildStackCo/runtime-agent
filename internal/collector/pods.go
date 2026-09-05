@@ -75,6 +75,10 @@ type PodWatcher struct {
 	// afterSync is the test seam described where the type is declared.
 	afterSync afterSync
 
+	// synced latches when the gating caches have filled; readiness reads it
+	// (ADR 0069).
+	synced atomic.Bool
+
 	mu           sync.Mutex
 	reportedOOMs map[string]struct{}
 	// restartCounts is what the agent remembers about each container's restart
@@ -341,6 +345,18 @@ func (w *PodWatcher) SetFilter(filter *Filter) {
 	w.filter = filter
 }
 
+// Synced reports whether the caches that gate collection have filled: the pod
+// index, the owner chain and namespaces. The policy caches are deliberately
+// absent — a permission the agent was not given degrades one payload and stops
+// nothing (ADR 0033), so waiting for them would make a documented degradation
+// into a pod that is never ready (ADR 0069).
+//
+// It latches, as HasSynced does. A cache that later stops being fed is the
+// watchdog's business, and its answer is to stop the agent (ADR 0035).
+func (w *PodWatcher) Synced() bool {
+	return w.synced.Load()
+}
+
 // Run blocks until ctx is canceled. Every owner-chain cache is synced before
 // pod events are delivered, so a pod's workload — and its opt-out annotation
 // — resolves from the first event on. A pod admitted before its controller
@@ -404,6 +420,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("informer caches did not sync")
 	}
+	w.synced.Store(true)
 	if w.afterSync != nil {
 		w.afterSync(podsInformer)
 	}

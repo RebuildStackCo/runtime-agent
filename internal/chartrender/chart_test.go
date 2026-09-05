@@ -1,6 +1,7 @@
 package chartrender_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,6 +29,14 @@ import (
 
 // chartDir is the chart's path from this package.
 const chartDir = "../../" + chartrender.Dir
+
+// The port both roles answer probes on, spelled out here rather than read from
+// the chart: a test that takes its expectation from the thing it tests asserts
+// nothing. Changing it means changing this line (ADR 0069).
+const (
+	healthPort     int32 = 9090
+	healthPortName       = "health"
+)
 
 // ebpfValues is the smallest values overlay that renders the profiler, since
 // the chart refuses to render it with an empty allow-list.
@@ -362,8 +371,10 @@ func TestTheNodeTokenAndTheControllerAgreeInAnyNamespace(t *testing.T) {
 }
 
 // A profile is a claim about what is installed, so the absences have to be real:
-// a controller-only install opens no port and has nothing listening.
-func TestMetricsOnlyInstallsNoNodeAndOpensNoPort(t *testing.T) {
+// a controller-only install receives nothing and is reachable by nothing. The
+// health port is the one exception and it is named, not tolerated — it carries
+// no collected data and answers only about this process (ADR 0069).
+func TestMetricsOnlyInstallsNoNodeAndOpensOnlyItsHealthPort(t *testing.T) {
 	docs := render(t, map[string]any{"profile": "metrics-only"})
 	if ds := decode[appsv1.DaemonSet](t, docs, "DaemonSet"); len(ds) != 0 {
 		t.Error("metrics-only rendered a DaemonSet")
@@ -372,8 +383,9 @@ func TestMetricsOnlyInstallsNoNodeAndOpensNoPort(t *testing.T) {
 		t.Error("metrics-only rendered a Service; nothing sends it reports")
 	}
 	deploy := only(t, decode[appsv1.Deployment](t, docs, "Deployment"), "Deployment")
-	if ports := deploy.Spec.Template.Spec.Containers[0].Ports; len(ports) != 0 {
-		t.Errorf("metrics-only opens ports %v", ports)
+	ports := deploy.Spec.Template.Spec.Containers[0].Ports
+	if len(ports) != 1 || ports[0].Name != healthPortName || ports[0].ContainerPort != healthPort {
+		t.Errorf("metrics-only opens %v, want only the health port %d", ports, healthPort)
 	}
 	if sa := decode[corev1.ServiceAccount](t, docs, "ServiceAccount"); len(sa) != 1 {
 		t.Errorf("metrics-only rendered %d ServiceAccounts, want only the controller's", len(sa))
@@ -381,6 +393,101 @@ func TestMetricsOnlyInstallsNoNodeAndOpensNoPort(t *testing.T) {
 	if np := decode[networkingv1.NetworkPolicy](t, docs, "NetworkPolicy"); len(np) != 0 {
 		t.Error("metrics-only rendered a NetworkPolicy; there is no port to restrict")
 	}
+}
+
+// Every pod the chart renders carries all three probes, in every profile.
+//
+// The two states an install had before them: a controller wedged holding a lock
+// is never restarted, and `kubectl rollout status` returns success while the
+// caches are still filling, because a pod with no readiness probe is Ready as
+// soon as its process exists (ADR 0069). The image has no shell (ADR 0037), so
+// asserting the scheme is asserting the probe can run at all.
+func TestEveryPodSaysWhetherItIsAliveAndWhetherItIsReady(t *testing.T) {
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			for _, pod := range allPodSpecs(t, render(t, values)) {
+				for _, container := range pod.containers() {
+					probes := map[string]*corev1.Probe{
+						"startupProbe":   container.StartupProbe,
+						"livenessProbe":  container.LivenessProbe,
+						"readinessProbe": container.ReadinessProbe,
+					}
+					for kind, probe := range probes {
+						if probe == nil {
+							t.Errorf("%s: container %q has no %s", pod, container.Name, kind)
+							continue
+						}
+						if probe.HTTPGet == nil {
+							t.Errorf("%s: container %q %s is not an httpGet; the image has no shell (ADR 0037)",
+								pod, container.Name, kind)
+							continue
+						}
+						if got := probe.HTTPGet.Port.IntValue(); got != int(healthPort) {
+							t.Errorf("%s: container %q %s asks port %v, want the health port %d",
+								pod, container.Name, kind, probe.HTTPGet.Port, healthPort)
+						}
+					}
+					// Liveness and readiness are different questions, and a
+					// liveness probe pointed at readiness restarts the agent for
+					// every reason readiness fails — an API server outage among
+					// them (ADR 0069 §2).
+					if container.LivenessProbe.HTTPGet.Path == container.ReadinessProbe.HTTPGet.Path {
+						t.Errorf("%s: container %q asks the same path for liveness and readiness (%s)",
+							pod, container.Name, container.LivenessProbe.HTTPGet.Path)
+					}
+					// The container must actually declare the port the probes
+					// ask on, and the process must be told to open it.
+					if got := containerPort(t, container, healthPortName); got != healthPort {
+						t.Errorf("%s: container %q declares %s = %d, want %d", pod, container.Name, healthPortName, got, healthPort)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The address the probes ask on and the address the agent binds are configured
+// through different mechanisms in the two roles — a config file for the
+// controller, a flag for the node (ADR 0025, ADR 0069 §4) — so a change to one
+// cannot be assumed to have reached the other.
+func TestBothRolesAreToldToOpenThePortTheProbesAsk(t *testing.T) {
+	want := fmt.Sprintf(":%d", healthPort)
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			docs := render(t, values)
+
+			var controllerCfg config.Config
+			for _, cm := range decode[corev1.ConfigMap](t, docs, "ConfigMap") {
+				if strings.HasSuffix(cm.Name, "-node") {
+					continue
+				}
+				if err := yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &controllerCfg); err != nil {
+					t.Fatalf("decoding the controller config: %v", err)
+				}
+			}
+			if controllerCfg.Health.ListenAddress != want {
+				t.Errorf("the controller is configured to listen on %q, want %q",
+					controllerCfg.Health.ListenAddress, want)
+			}
+
+			for _, ds := range decode[appsv1.DaemonSet](t, docs, "DaemonSet") {
+				args := ds.Spec.Template.Spec.Containers[0].Args
+				if !hasFlagValue(args, "-health-address", want) {
+					t.Errorf("the node is not told to listen on %q: %v", want, args)
+				}
+			}
+		})
+	}
+}
+
+// hasFlagValue reports whether args carries flag immediately followed by value.
+func hasFlagValue(args []string, flag, value string) bool {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 // NOTES.txt is a template Helm prints rather than applies. It reached the
@@ -427,10 +534,13 @@ func TestTheReceiverIsRestrictedToTheNodeDaemonSet(t *testing.T) {
 					np.Spec.PodSelector.MatchLabels, deploy.Spec.Template.Labels)
 			}
 
-			if len(np.Spec.Ingress) != 1 {
-				t.Fatalf("ingress has %d rules, want exactly 1 — every extra rule is another way in", len(np.Spec.Ingress))
+			// Two rules: the receiver, restricted to the node, and the health
+			// port, restricted to nothing (ADR 0069 §5). A third is another way
+			// in and has to be argued for here.
+			if len(np.Spec.Ingress) != 2 {
+				t.Fatalf("ingress has %d rules, want exactly 2 — every extra rule is another way in", len(np.Spec.Ingress))
 			}
-			rule := np.Spec.Ingress[0]
+			rule := ruleForPort(t, np, 8080)
 			if len(rule.From) != 1 {
 				t.Fatalf("ingress rule has %d peers, want exactly 1; an empty or extra peer opens the port", len(rule.From))
 			}
@@ -455,12 +565,55 @@ func TestTheReceiverIsRestrictedToTheNodeDaemonSet(t *testing.T) {
 			if len(rule.Ports) != 1 {
 				t.Fatalf("ingress rule names %d ports, want exactly 1", len(rule.Ports))
 			}
-			port := deploy.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort
+			// The rule must name the port the receiver actually listens on, or
+			// it is a policy on nothing.
+			port := containerPort(t, deploy.Spec.Template.Spec.Containers[0], "node-intake")
 			if rule.Ports[0].Port == nil || rule.Ports[0].Port.String() != strconv.Itoa(int(port)) {
 				t.Errorf("ingress port = %v, want the receiver's %d", rule.Ports[0].Port, port)
 			}
+
+			// And the second rule opens the health port and only that: an
+			// unrestricted rule naming the receiver's port would hand every pod
+			// in the cluster the channel the first rule just closed.
+			health := ruleForPort(t, np, healthPort)
+			if len(health.From) != 0 {
+				t.Errorf("the health rule names %d peers; the kubelet arrives from the node address and no selector here can name it", len(health.From))
+			}
+			if len(health.Ports) != 1 {
+				t.Errorf("the health rule names %d ports, want only %d", len(health.Ports), healthPort)
+			}
 		})
 	}
+}
+
+// ruleForPort returns the one ingress rule naming port, failing if none or more
+// than one does.
+func ruleForPort(t *testing.T, np networkingv1.NetworkPolicy, port int32) networkingv1.NetworkPolicyIngressRule {
+	t.Helper()
+	var found []networkingv1.NetworkPolicyIngressRule
+	for _, rule := range np.Spec.Ingress {
+		for _, p := range rule.Ports {
+			if p.Port != nil && p.Port.String() == strconv.Itoa(int(port)) {
+				found = append(found, rule)
+			}
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d ingress rules name port %d, want exactly 1", len(found), port)
+	}
+	return found[0]
+}
+
+// containerPort returns the container port declared under name.
+func containerPort(t *testing.T, c corev1.Container, name string) int32 {
+	t.Helper()
+	for _, p := range c.Ports {
+		if p.Name == name {
+			return p.ContainerPort
+		}
+	}
+	t.Fatalf("container %q declares no port named %q", c.Name, name)
+	return 0
 }
 
 // selects reports whether every label in selector is present, with the same

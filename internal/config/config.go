@@ -21,7 +21,24 @@ type Config struct {
 	Spool      Spool               `json:"spool"`
 	NodeIntake NodeIntake          `json:"nodeIntake"`
 	Profiling  ControllerProfiling `json:"profiling"`
+	Health     Health              `json:"health"`
 }
+
+// Health is where the controller answers the kubelet's two questions about it
+// (ADR 0069). It is a port the controller opens, so it is stated here beside the
+// other one; the node's half is a flag, because the node's file exists only in
+// the profile that profiles (ADR 0025).
+type Health struct {
+	// ListenAddress is where the health listener binds (net/http form, e.g.
+	// ":9090"). Empty opens no listener: the chart always renders one, and an
+	// agent run by hand has no kubelet asking.
+	ListenAddress string `json:"listenAddress"`
+}
+
+// DefaultHealthListenAddress is the port the chart renders. The agent does not
+// substitute it for an empty value: a listener nobody asked for is a port
+// opened by omission.
+const DefaultHealthListenAddress = ":9090"
 
 // NodeConfig is the root of the node role's configuration file. It holds only
 // what the node enforces itself; everything else about profiling is the
