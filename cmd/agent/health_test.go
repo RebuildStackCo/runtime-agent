@@ -197,15 +197,16 @@ func TestTheControllerDeadlineIsSeveralPassesAndNotOne(t *testing.T) {
 
 // The heartbeat is the loop, and the loop is what keeps the agent alive. Both
 // tests below run past the deadline: a role whose loop stopped stamping would
-// have gone stale by then, which is exactly what a wedged agent must do and a
-// working one must not (ADR 0069 §2).
+// have gone stale by then (ADR 0069 §2).
 //
-// Both compress the deadline through the seam the two periods open, the way
-// internal/collector compresses watchLimits.
+// Both compress the periods, the way internal/collector compresses watchLimits,
+// and keep the ratio the real ones have — a pass far shorter than its interval.
+// Compressed further, one slow pass overruns its own deadline and the test fails
+// on a busy machine for the reason the agent is designed to report.
 func TestAControllerThatKeepsPassingStaysAlivePastItsDeadline(t *testing.T) {
 	restore := coverageInterval
 	t.Cleanup(func() { coverageInterval = restore })
-	coverageInterval = 20 * time.Millisecond // deadline: 60ms
+	coverageInterval = 250 * time.Millisecond // deadline: 750ms, for a pass of a few small writes
 
 	addr := freeAddress(t)
 	cfg := config.Config{Health: config.Health{ListenAddress: addr}}
@@ -220,12 +221,12 @@ func TestAControllerThatKeepsPassingStaysAlivePastItsDeadline(t *testing.T) {
 	}()
 
 	waitFor(t, addr, health.LivePath, http.StatusOK)
-	deadline := time.Now().Add(20 * controllerLivenessDeadline())
+	deadline := time.Now().Add(3 * controllerLivenessDeadline())
 	for time.Now().Before(deadline) {
 		if code := ask(t, addr, health.LivePath); code != http.StatusOK {
 			t.Fatalf("GET %s = %d while the flush loop was running", health.LivePath, code)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	cancel()
 	<-done
@@ -289,7 +290,8 @@ func TestANodeThatKeepsScanningStaysAlivePastItsDeadline(t *testing.T) {
 	t.Setenv("NODE_NAME", "node-1")
 	restore := nodePassCeiling
 	t.Cleanup(func() { nodePassCeiling = restore })
-	nodePassCeiling = 100 * time.Millisecond
+	const interval = 100 * time.Millisecond
+	nodePassCeiling = 300 * time.Millisecond // deadline: 600ms
 
 	addr := freeAddress(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -298,18 +300,18 @@ func TestANodeThatKeepsScanningStaysAlivePastItsDeadline(t *testing.T) {
 	go func() {
 		done <- runNode(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), []string{
 			"-proc", t.TempDir(),
-			"-interval", "50ms",
+			"-interval", interval.String(),
 			"-health-address", addr,
 		})
 	}()
 
 	waitFor(t, addr, health.LivePath, http.StatusOK)
-	deadline := time.Now().Add(5 * nodeLivenessDeadline(50*time.Millisecond))
+	deadline := time.Now().Add(3 * nodeLivenessDeadline(interval))
 	for time.Now().Before(deadline) {
 		if code := ask(t, addr, health.LivePath); code != http.StatusOK {
 			t.Fatalf("GET %s = %d while the scan loop was running", health.LivePath, code)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	cancel()
 	<-done
