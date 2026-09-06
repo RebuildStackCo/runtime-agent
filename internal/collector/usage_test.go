@@ -567,3 +567,66 @@ func TestNoNetworkBlockRaisesNoSignal(t *testing.T) {
 		}
 	}
 }
+
+// TestTheTwoKubeletPathsAreCountedApartAndTheirSumIsThePayload. ADR 0013 §3
+// states that the two paths are separate requests because they fail
+// independently, and the payload's totals could not show which one did. The
+// per-path counts are what the metrics endpoint reads; the payload keeps the
+// same two numbers it always had, from the same counters (ADR 0070 §2).
+func TestTheTwoKubeletPathsAreCountedApartAndTheirSumIsThePayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only the cadvisor path fails: the case a cluster-wide total hides.
+		if strings.HasSuffix(r.URL.Path, "metrics/cadvisor") {
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, `{"pods":[]}`)
+	}))
+	defer server.Close()
+	clientset, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewUsagePoller(clientset, func() []string { return []string{"node-1", "node-2"} },
+		webResolver(), nil, nil, nil, func(string, error) {})
+	p.pollOnce(context.Background(), usageTestStart)
+
+	want := map[KubeletPath]PathReads{
+		PathStatsSummary:    {Path: PathStatsSummary, Attempted: 2, Failed: 0},
+		PathMetricsCadvisor: {Path: PathMetricsCadvisor, Attempted: 2, Failed: 2},
+	}
+	reads := p.PathReads()
+	if len(reads) != len(want) {
+		t.Fatalf("got %d paths, want %d", len(reads), len(want))
+	}
+	var attempted, failed int64
+	for _, got := range reads {
+		if got != want[got.Path] {
+			t.Errorf("%s: %+v, want %+v", got.Path, got, want[got.Path])
+		}
+		attempted += got.Attempted
+		failed += got.Failed
+	}
+
+	obs := p.Observation()
+	if obs.PollsAttempted != attempted || obs.PollsFailed != failed {
+		t.Errorf("the payload says %d/%d and the paths sum to %d/%d; the two must be one set of counters",
+			obs.PollsAttempted, obs.PollsFailed, attempted, failed)
+	}
+	if obs.PollsAttempted != 4 || obs.PollsFailed != 2 {
+		t.Errorf("payload totals %d/%d, want 4/2 — two nodes, two paths each", obs.PollsAttempted, obs.PollsFailed)
+	}
+}
+
+// TestPathReadsIsStablyOrdered so the exposition does not reorder series
+// between scrapes.
+func TestPathReadsIsStablyOrdered(t *testing.T) {
+	p := NewUsagePoller(nil, func() []string { return nil }, webResolver(), nil, nil, nil, func(string, error) {})
+	for range 5 {
+		reads := p.PathReads()
+		if len(reads) != 2 || reads[0].Path != PathStatsSummary || reads[1].Path != PathMetricsCadvisor {
+			t.Fatalf("paths came back as %+v", reads)
+		}
+	}
+}

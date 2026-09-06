@@ -29,3 +29,29 @@ func TestAStampOlderThanTheDeadlineIsNotAlive(t *testing.T) {
 		t.Error("a beat did not revive the heartbeat")
 	}
 }
+
+// TestTheStampAndTheDeadlineAreReadableForTheMetrics. An alert on the exposed
+// stamp must fire on the same condition /livez answers no for, so both come
+// from the heartbeat rather than from a second clock (ADR 0070 §4).
+func TestTheStampAndTheDeadlineAreReadableForTheMetrics(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	h := NewHeartbeat(start, 90*time.Second)
+	if got := h.Last(); !got.Equal(start) {
+		t.Errorf("Last() = %v, want %v", got, start)
+	}
+	if got := h.Deadline(); got != 90*time.Second {
+		t.Errorf("Deadline() = %v, want 90s", got)
+	}
+
+	next := start.Add(time.Minute)
+	h.Beat(next)
+	if got := h.Last(); !got.Equal(next) {
+		t.Errorf("Last() = %v after a beat, want %v", got, next)
+	}
+	// The two agree by construction: the probe is not alive exactly when the
+	// stamp is older than the deadline the metric reports.
+	alive, _ := h.Alive(h.Last().Add(h.Deadline() + time.Second))
+	if alive {
+		t.Error("a stamp past the exposed deadline still reads as alive")
+	}
+}

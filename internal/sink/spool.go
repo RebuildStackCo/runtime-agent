@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
@@ -97,6 +98,16 @@ type Spool struct {
 	maxAge   time.Duration
 	maxBytes int64
 	maxFiles int
+
+	// The spool's own counters, and the only lock it holds. It guards these
+	// numbers and nothing else: writing a payload is still unsynchronized, and
+	// two writers of one key still race for its temp file (ADR 0070 §5).
+	countMu       sync.Mutex
+	written       map[string]int64
+	writeFailures map[string]int64
+	evicted       map[string]int64
+	bytes         int64
+	files         int64
 }
 
 // NewSpool opens (creating if needed) the spool directory. maxAge ≤ 0
@@ -108,7 +119,12 @@ func NewSpool(dir string, maxAge time.Duration) (*Spool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating spool directory: %w", err)
 	}
-	return &Spool{dir: dir, maxAge: maxAge, maxBytes: DefaultMaxBytes, maxFiles: DefaultMaxFiles}, nil
+	return &Spool{
+		dir: dir, maxAge: maxAge, maxBytes: DefaultMaxBytes, maxFiles: DefaultMaxFiles,
+		written:       newKindCounts(),
+		writeFailures: newKindCounts(),
+		evicted:       newReasonCounts(),
+	}, nil
 }
 
 // usagePayload is one shippable batch: every record of one wall-clock
@@ -549,7 +565,7 @@ func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs model.Observati
 			Observation:   obs,
 			Records:       group,
 		}
-		if err := s.write(k.name()+".snapshot.json", payload); err != nil {
+		if err := s.write(payload.Kind, k.name()+".snapshot.json", payload); err != nil {
 			return err
 		}
 	}
@@ -569,7 +585,7 @@ func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs model.Observati
 			Observation:   obs,
 			Records:       group,
 		}
-		if err := s.write(k.name()+".json", payload); err != nil {
+		if err := s.write(payload.Kind, k.name()+".json", payload); err != nil {
 			return err
 		}
 		if err := os.Remove(filepath.Join(s.dir, k.name()+".snapshot.json")); err != nil && !os.IsNotExist(err) {
@@ -596,7 +612,7 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs model.O
 			Observation:   obs,
 			Records:       group,
 		}
-		if err := s.write(fmt.Sprintf("network-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, fmt.Sprintf("network-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
 			return err
 		}
 	}
@@ -625,7 +641,7 @@ func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent Agent
 		Intake:     intake,
 		PprofPull:  pull,
 	}
-	return s.write("collection-coverage.json", payload)
+	return s.write(payload.Kind, "collection-coverage.json", payload)
 }
 
 // WriteContainerRestarts writes the restart records of each window they belong
@@ -650,7 +666,7 @@ func (s *Spool) WriteContainerRestarts(records []journal.RestartRecord) error {
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(fmt.Sprintf("restarts-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, fmt.Sprintf("restarts-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
 			return err
 		}
 	}
@@ -679,7 +695,7 @@ func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(fmt.Sprintf("disruptions-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, fmt.Sprintf("disruptions-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
 			return err
 		}
 	}
@@ -708,7 +724,7 @@ func (s *Spool) WriteNodeLifecycle(records []journal.NodeEventRecord) error {
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(fmt.Sprintf("node-lifecycle-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, fmt.Sprintf("node-lifecycle-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
 			return err
 		}
 	}
@@ -721,7 +737,8 @@ func (s *Spool) WriteNodeLifecycle(records []journal.NodeEventRecord) error {
 func (s *Spool) WriteOOMKill(e model.OOMKill) error {
 	name := fmt.Sprintf("oom-%d-%s-%s-%s-%d.json",
 		e.FinishedAt.Unix(), fileToken(e.Namespace), fileToken(e.Pod), fileToken(e.Container), e.RestartCount)
-	return s.write(name, oomPayload{Kind: "oom_kill", Source: SourceJournal, Event: e})
+	payload := oomPayload{Kind: "oom_kill", Source: SourceJournal, Event: e}
+	return s.write(payload.Kind, name, payload)
 }
 
 // WriteRestartCounters writes the current restart-counter reading of every
@@ -741,7 +758,7 @@ func (s *Spool) WriteRestartCounters(capturedAt time.Time, records []model.Resta
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
-	return s.write("restart-counters.json", payload)
+	return s.write(payload.Kind, "restart-counters.json", payload)
 }
 
 // WriteJobRuns writes the finished Job runs of each window they belong to, one
@@ -766,7 +783,7 @@ func (s *Spool) WriteJobRuns(records []journal.JobRunRecord) error {
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(fmt.Sprintf("job-runs-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, fmt.Sprintf("job-runs-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
 			return err
 		}
 	}
@@ -787,7 +804,7 @@ func (s *Spool) WriteGoInventory(capturedAt time.Time, cov inventory.Coverage, r
 		Coverage:   cov,
 		Records:    records,
 	}
-	return s.write("go-inventory.json", payload)
+	return s.write(payload.Kind, "go-inventory.json", payload)
 }
 
 // WriteProcessPeaks writes the current peak records as one superseding batch.
@@ -800,7 +817,7 @@ func (s *Spool) WriteProcessPeaks(capturedAt time.Time, records []inventory.Peak
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
-	return s.write("process-peaks.json", payload)
+	return s.write(payload.Kind, "process-peaks.json", payload)
 }
 
 // WriteProcessCounters writes the current counter records as one superseding
@@ -817,7 +834,7 @@ func (s *Spool) WriteProcessCounters(capturedAt time.Time, records []inventory.C
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
-	return s.write("process-counters.json", payload)
+	return s.write(payload.Kind, "process-counters.json", payload)
 }
 
 // WriteListeningPorts writes where every collected workload container accepts
@@ -831,7 +848,7 @@ func (s *Spool) WriteListeningPorts(capturedAt time.Time, records []inventory.Po
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
-	return s.write("listening-ports.json", payload)
+	return s.write(payload.Kind, "listening-ports.json", payload)
 }
 
 // WriteGoBuild writes one build's facts. Unlike the superseding go-inventory,
@@ -858,7 +875,7 @@ func (s *Spool) WriteGoBuild(b inventory.BuildFacts) error {
 		GoDebug:       b.GoDebug,
 		PprofEndpoint: b.HasPprof,
 	}
-	return s.write("go-build-"+digestFileToken(b.ImageDigest)+".json", payload)
+	return s.write(payload.Kind, "go-build-"+digestFileToken(b.ImageDigest)+".json", payload)
 }
 
 // digestFileToken turns an image digest into a filename-safe token. Digests are
@@ -886,7 +903,7 @@ func (s *Spool) WriteWorkloadMetadata(capturedAt time.Time, records []metadata.R
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
-	return s.write("workload-metadata.json", payload)
+	return s.write(payload.Kind, "workload-metadata.json", payload)
 }
 
 // WriteNodeMetadata writes the current node inventory as one superseding batch.
@@ -898,7 +915,7 @@ func (s *Spool) WriteNodeMetadata(capturedAt time.Time, nodes []model.NodeInfo) 
 		CapturedAt: capturedAt.UTC(),
 		Nodes:      nodes,
 	}
-	return s.write("node-metadata.json", payload)
+	return s.write(payload.Kind, "node-metadata.json", payload)
 }
 
 // WriteWorkloadRevisions writes the current revision history as one
@@ -912,7 +929,7 @@ func (s *Spool) WriteWorkloadRevisions(capturedAt time.Time, records []revisions
 		CapturedAt: capturedAt.UTC(),
 		Records:    records,
 	}
-	return s.write("workload-revisions.json", payload)
+	return s.write(payload.Kind, "workload-revisions.json", payload)
 }
 
 // WriteWorkloadPolicy writes the workload-policy snapshot. It supersedes its
@@ -925,7 +942,7 @@ func (s *Spool) WriteWorkloadPolicy(capturedAt time.Time, records []model.Worklo
 		UnavailableSources: unavailable,
 		Records:            records,
 	}
-	return s.write("workload-policy.json", payload)
+	return s.write(payload.Kind, "workload-policy.json", payload)
 }
 
 // WriteClusterPolicy writes the cluster-policy snapshot.
@@ -937,7 +954,7 @@ func (s *Spool) WriteClusterPolicy(capturedAt time.Time, policy model.ClusterPol
 		UnavailableSources: unavailable,
 		Policy:             policy,
 	}
-	return s.write("cluster-policy.json", payload)
+	return s.write(payload.Kind, "cluster-policy.json", payload)
 }
 
 // WriteProfile writes one captured eBPF CPU profile. Each capture is its own
@@ -962,7 +979,7 @@ func (s *Spool) WriteProfile(key ProfileKey, pprof []byte) error {
 	name := fmt.Sprintf("profile-%s-%s-%s-%s-%d-%d.json",
 		fileToken(key.Namespace), fileToken(key.Workload), fileToken(key.Container),
 		shortDigest(key.ImageDigest), key.CaptureStart.Unix(), key.CaptureEnd.Unix())
-	return s.write(name, payload)
+	return s.write(payload.Kind, name, payload)
 }
 
 // WritePulledProfile writes one profile fetched from a workload's own
@@ -986,7 +1003,7 @@ func (s *Spool) WritePulledProfile(key ProfileKey, pprof []byte, dropped Profile
 	name := fmt.Sprintf("pprof-%s-%s-%s-%s-%d-%d.json",
 		fileToken(key.Namespace), fileToken(key.Workload), fileToken(key.Container),
 		shortDigest(key.ImageDigest), key.CaptureStart.Unix(), key.CaptureEnd.Unix())
-	return s.write(name, payload)
+	return s.write(payload.Kind, name, payload)
 }
 
 // shortDigestLen is how much of a digest the filename carries. A digest is
@@ -1070,15 +1087,31 @@ func fileToken(s string) string {
 	return b.String()
 }
 
-// write marshals the payload and lands it atomically: temp file in the same
-// directory, then rename. A crash mid-write leaves a *.tmp file that the
+// write records one payload of one kind and refuses a kind the registry does
+// not hold. Every caller passes the same string it puts in the payload's bytes,
+// so the registry is the one list behind the backend contract and the agent's
+// own per-kind counters alike (ADR 0022, ADR 0070 §3).
+func (s *Spool) write(kind, name string, payload any) error {
+	if _, ok := Lookup(kind); !ok {
+		return fmt.Errorf("refusing to write payload of kind %q: it has no row in the registry", kind)
+	}
+	if err := s.writePayload(name, payload); err != nil {
+		s.countWrite(kind, true)
+		return err
+	}
+	s.countWrite(kind, false)
+	return nil
+}
+
+// writePayload marshals the payload and lands it atomically: temp file in the
+// same directory, then rename. A crash mid-write leaves a *.tmp file that the
 // sweep collects; readers never observe a partial payload.
 //
 // It also refuses a name that is not a plain filename. Callers already build
 // their names from fileToken, so this catches nothing today — it is here for
 // the next caller, because every path this package writes goes through this one
 // function and that makes it the only place worth checking (ADR 0042).
-func (s *Spool) write(name string, payload any) error {
+func (s *Spool) writePayload(name string, payload any) error {
 	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
 		return fmt.Errorf("refusing to write payload under %q: a spool payload name is a plain filename", name)
 	}
@@ -1134,6 +1167,11 @@ func (s *Spool) Sweep(now time.Time) error {
 			if err := s.remove(entry.Name()); err != nil {
 				return err
 			}
+			if expired {
+				s.countEviction(EvictedAge)
+			} else {
+				s.countEviction(EvictedOrphanTemp)
+			}
 			continue
 		}
 		kept = append(kept, file{name: entry.Name(), size: info.Size(), modTime: info.ModTime()})
@@ -1141,6 +1179,7 @@ func (s *Spool) Sweep(now time.Time) error {
 	}
 
 	if total <= s.maxBytes && len(kept) <= s.maxFiles {
+		s.recordSweep(total, len(kept))
 		return nil
 	}
 
@@ -1157,12 +1196,22 @@ func (s *Spool) Sweep(now time.Time) error {
 		if total <= s.maxBytes && count <= s.maxFiles {
 			break
 		}
+		// Which ceiling is still exceeded is why this file goes, and the two
+		// answer different questions: bytes means the cluster produces more
+		// than the volume holds, files means it produces more payloads than
+		// the count allows (ADR 0042 §2).
+		reason := EvictedFiles
+		if total > s.maxBytes {
+			reason = EvictedBytes
+		}
 		if err := s.remove(f.name); err != nil {
 			return err
 		}
+		s.countEviction(reason)
 		total -= f.size
 		count--
 	}
+	s.recordSweep(total, count)
 	return nil
 }
 

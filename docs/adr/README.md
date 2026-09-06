@@ -127,3 +127,4 @@ line to paste.
 - [0067. A record carries the instant its source last stated it](0067-a-record-carries-the-age-of-its-source.md)
 - [0068. The agent yields first, and two objects it does not ship](0068-the-agent-yields-first.md)
 - [0069. Liveness is the process; readiness is what it has collected](0069-liveness-is-the-process-readiness-is-the-caches.md)
+- [0070. The agent says what it did, in the format the cluster already reads](0070-the-agent-says-what-it-did-in-the-format-the-cluster-already-reads.md)

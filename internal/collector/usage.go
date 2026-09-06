@@ -84,10 +84,33 @@ type UsagePoller struct {
 	// (runtime probing, ADR 0006) and how the polling itself is going. Written
 	// by the poll goroutine, read by whoever ships or logs a payload, so it is
 	// the one part of the poller that is synchronized.
-	obsMu          sync.Mutex
-	signals        map[string]bool
-	pollsAttempted int64
-	pollsFailed    int64
+	obsMu   sync.Mutex
+	signals map[string]bool
+	polls   map[KubeletPath]*pathCounts
+}
+
+// KubeletPath is one of the exactly two stats paths the agent requests
+// (docs/security.md §4). The two are counted apart because they fail
+// independently, which ADR 0013 §3 states and the payload's totals could not
+// show; a reader of the metrics endpoint sees which of them is failing.
+type KubeletPath string
+
+// The two paths, as the metrics endpoint's `path` label carries them.
+const (
+	PathStatsSummary    KubeletPath = "stats_summary"
+	PathMetricsCadvisor KubeletPath = "metrics_cadvisor"
+)
+
+// KubeletPaths is the closed set, in the order they are read.
+var KubeletPaths = []KubeletPath{PathStatsSummary, PathMetricsCadvisor}
+
+type pathCounts struct{ attempted, failed int64 }
+
+// PathReads is one path's request counts, cumulative since the agent started.
+type PathReads struct {
+	Path      KubeletPath
+	Attempted int64
+	Failed    int64
 }
 
 type trackerKey struct {
@@ -148,6 +171,7 @@ func NewUsagePoller(
 		onError:    onError,
 		acc:        rollup.NewAccumulator(UsageWindowLength),
 		netAcc:     rollup.NewNetworkAccumulator(UsageWindowLength),
+		polls:      map[KubeletPath]*pathCounts{PathStatsSummary: {}, PathMetricsCadvisor: {}},
 		tracker:    make(map[trackerKey]*counterState),
 		throttle:   make(map[trackerKey]*throttleState),
 		netTracker: make(map[types.UID]*netCounterState),
@@ -201,12 +225,29 @@ func (p *UsagePoller) signalsLocked() []string {
 func (p *UsagePoller) Observation() model.Observation {
 	p.obsMu.Lock()
 	defer p.obsMu.Unlock()
-	return model.Observation{
+	obs := model.Observation{
 		PollIntervalSeconds: int64(usagePollInterval / time.Second),
-		PollsAttempted:      p.pollsAttempted,
-		PollsFailed:         p.pollsFailed,
 		Signals:             p.signalsLocked(),
 	}
+	// The payload states the channel, the per-path counts state which half of
+	// it is failing; summing here keeps one set of counters behind both.
+	for _, c := range p.polls {
+		obs.PollsAttempted += c.attempted
+		obs.PollsFailed += c.failed
+	}
+	return obs
+}
+
+// PathReads returns each kubelet path's request counts, in a stable order.
+func (p *UsagePoller) PathReads() []PathReads {
+	p.obsMu.Lock()
+	defer p.obsMu.Unlock()
+	out := make([]PathReads, 0, len(KubeletPaths))
+	for _, path := range KubeletPaths {
+		c := p.polls[path]
+		out = append(out, PathReads{Path: path, Attempted: c.attempted, Failed: c.failed})
+	}
+	return out
 }
 
 func (p *UsagePoller) markSignal(name string) {
@@ -215,15 +256,15 @@ func (p *UsagePoller) markSignal(name string) {
 	p.obsMu.Unlock()
 }
 
-// countPoll records one kubelet request and whether it failed. Both kubelet
-// paths (/stats/summary and /metrics/cadvisor) count as requests of their own:
-// they fail independently, and which one failed is resolved per record by the
-// per-signal sample counts, not here.
-func (p *UsagePoller) countPoll(failed bool) {
+// countPoll records one request on one kubelet path and whether it failed.
+// Which path lost a given record is still resolved by that record's per-signal
+// sample counts, not by these totals (ADR 0013 §3).
+func (p *UsagePoller) countPoll(path KubeletPath, failed bool) {
 	p.obsMu.Lock()
-	p.pollsAttempted++
+	c := p.polls[path]
+	c.attempted++
 	if failed {
-		p.pollsFailed++
+		c.failed++
 	}
 	p.obsMu.Unlock()
 }
@@ -248,13 +289,13 @@ func (p *UsagePoller) pollOnce(ctx context.Context, now time.Time) {
 	}
 	for i := range reads {
 		r := &reads[i]
-		p.countPoll(r.summaryErr != nil)
+		p.countPoll(PathStatsSummary, r.summaryErr != nil)
 		if r.summaryErr != nil {
 			p.reportError(r.node, r.summaryErr)
 		} else {
 			p.ingest(r.summary, now)
 		}
-		p.countPoll(r.cadvisorErr != nil)
+		p.countPoll(PathMetricsCadvisor, r.cadvisorErr != nil)
 		if r.cadvisorErr != nil {
 			p.reportError(r.node, r.cadvisorErr)
 		} else {

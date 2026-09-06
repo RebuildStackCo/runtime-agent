@@ -34,6 +34,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/metadata"
+	"github.com/RebuildStackCo/runtime-agent/internal/metrics"
 	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeauth"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
@@ -828,7 +829,40 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			}
 			return true, ""
 		}
-		tasks["health"] = health.New(addr, live, ready, logger).Run
+		// The metrics endpoint joins this listener as a third path, as ADR 0069
+		// §1 reserved. Its numbers come from the accessors above rather than
+		// from counters of its own (ADR 0070 §2).
+		sources := controllerSources{
+			beat:      beat,
+			sources:   podWatcher.SourceHealths,
+			kubelet:   usagePoller.PathReads,
+			filter:    filter.Snapshot,
+			placement: podWatcher.PlacementDrops,
+			nodes:     nodeWatcher.Drops,
+			spool:     func() sink.Counters { return spool.Counters() },
+		}
+		sources.intake = func() (model.IntakeRejections, bool) {
+			if intakeRejections == nil {
+				return model.IntakeRejections{}, false
+			}
+			return intakeRejections(), true
+		}
+		if goStore != nil {
+			sources.inventory = func() (inventory.Counters, inventory.ScanCoverage) {
+				return goStore.Counters(), goStore.ScanCoverage()
+			}
+			sources.ebpf = func() (inventory.ProfileCoverage, uint64, uint64) {
+				return goStore.ProfileCoverage(), profilesReceived.Load(), profilesUnjoined.Load()
+			}
+		}
+		if prober != nil {
+			sources.probe = prober.Snapshot
+		}
+		if puller != nil {
+			sources.pull = puller.Snapshot
+		}
+		tasks["health"] = health.New(addr, live, ready,
+			metrics.Handler(sources.gather, logger), logger).Run
 	}
 
 	// The node-intake receiver is optional (only the ebpf/node profile ships a

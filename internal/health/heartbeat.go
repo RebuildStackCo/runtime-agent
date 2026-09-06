@@ -38,3 +38,16 @@ func (h *Heartbeat) Alive(now time.Time) (bool, time.Duration) {
 	age := now.Sub(h.last)
 	return age <= h.deadline, age
 }
+
+// Last is when the loop last reached the top of a pass, and Deadline how stale
+// that may become. The metrics endpoint exposes both, so an alert on the stamp
+// uses the agent's own threshold rather than one an operator guessed
+// (ADR 0070 §4).
+func (h *Heartbeat) Last() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.last
+}
+
+// Deadline is how old a stamp may be before the role is no longer alive.
+func (h *Heartbeat) Deadline() time.Duration { return h.deadline }

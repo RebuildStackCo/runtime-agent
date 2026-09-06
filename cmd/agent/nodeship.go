@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeintake"
@@ -25,6 +26,20 @@ type reportShipper struct {
 	tokenPath string
 	node      string
 	client    *http.Client
+	// What became of each delivery. A node whose reports never land is
+	// otherwise visible only in its own log, in the customer's cluster, where
+	// nobody looks until something prompts them (ADR 0067, ADR 0070 §4).
+	shipped  atomic.Uint64
+	failures atomic.Uint64
+}
+
+// counts returns deliveries that succeeded and deliveries that failed. A nil
+// shipper is the log-only mode and has neither.
+func (s *reportShipper) counts() (uint64, uint64) {
+	if s == nil {
+		return 0, 0
+	}
+	return s.shipped.Load(), s.failures.Load()
 }
 
 // newReportShipper builds a shipper for endpoint, or returns nil when endpoint
@@ -49,7 +64,15 @@ func newReportShipper(endpoint, tokenPath, node string) *reportShipper {
 // best-effort by design: a failure is logged by the caller and the next scan
 // pass retries — the controller reconstructs inventory from re-scans, so a lost
 // report costs nothing (ADR 0010, loss-harmless).
-func (s *reportShipper) ship(ctx context.Context, res nodescan.Result, prof nodescan.ProfilingCoverage) error {
+func (s *reportShipper) ship(ctx context.Context, res nodescan.Result, prof nodescan.ProfilingCoverage) (err error) {
+	defer func() {
+		if err != nil {
+			s.failures.Add(1)
+			return
+		}
+		s.shipped.Add(1)
+	}()
+
 	token, err := s.readToken()
 	if err != nil {
 		return fmt.Errorf("reading controller token: %w", err)
