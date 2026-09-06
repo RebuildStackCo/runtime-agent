@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
 	"github.com/RebuildStackCo/runtime-agent/internal/ebpfgate"
 	"github.com/RebuildStackCo/runtime-agent/internal/health"
+	"github.com/RebuildStackCo/runtime-agent/internal/metrics"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
@@ -154,6 +156,17 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 	beat := health.NewHeartbeat(time.Now(), nodeLivenessDeadline(*interval))
 	var passed atomic.Bool
 
+	// The latest pass's counters, kept so the metrics endpoint can state what
+	// this node did without the controller aggregating it away (ADR 0070 §4).
+	// A pass replaces them wholesale, exactly as a node's report replaces its
+	// contribution on the controller (ADR 0052 §3).
+	var lastScan struct {
+		mu          sync.Mutex
+		counters    nodescan.Counters
+		podsInScope int
+		done        bool
+	}
+
 	scanOnce := func() {
 		beat.Beat(time.Now())
 		defer passed.Store(true)
@@ -202,6 +215,10 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 			"unreadable", res.Counters.Unreadable,
 			"containers_with_known_modules", moduleIndex.Size(),
 		)
+
+		lastScan.mu.Lock()
+		lastScan.counters, lastScan.podsInScope, lastScan.done = res.Counters, scope.Size(), true
+		lastScan.mu.Unlock()
 
 		// What the profiler beside this scanner did, on the scanner's cadence
 		// because it is the only one that fires when the profiler does not
@@ -255,9 +272,20 @@ func runNode(ctx context.Context, logger *slog.Logger, args []string) error {
 			}
 			return true, ""
 		}
+		sources := nodeSources{
+			beat: beat,
+			scan: func() (nodescan.Counters, int, bool) {
+				lastScan.mu.Lock()
+				defer lastScan.mu.Unlock()
+				return lastScan.counters, lastScan.podsInScope, lastScan.done
+			},
+			profiling: ebpfMetrics.snapshot,
+			shipped:   shipper.counts,
+		}
 		healthCtx, stopHealth := context.WithCancel(ctx)
 		defer stopHealth()
-		srv := health.New(*healthAddress, live, ready, logger)
+		srv := health.New(*healthAddress, live, ready,
+			metrics.Handler(sources.gather, logger), logger)
 		go func() { healthErr <- srv.Run(healthCtx) }()
 	}
 

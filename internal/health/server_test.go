@@ -18,7 +18,7 @@ func testLogger() *slog.Logger {
 // serve returns a live server over the two checks, and the base URL to ask.
 func serve(t *testing.T, live, ready Check) string {
 	t.Helper()
-	s := New("127.0.0.1:0", live, ready, testLogger())
+	s := New("127.0.0.1:0", live, ready, nil, testLogger())
 	// httptest owns the listener so the test never picks a port; what is under
 	// test is the handler wiring, which New built.
 	srv := httptest.NewServer(s.handler)
@@ -101,7 +101,7 @@ func TestAnUnknownPathIsNotAnAnswer(t *testing.T) {
 
 func TestTheListenerStopsWithItsContext(t *testing.T) {
 	ok := func() (bool, string) { return true, "" }
-	s := New("127.0.0.1:0", ok, ok, testLogger())
+	s := New("127.0.0.1:0", ok, ok, nil, testLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
@@ -113,5 +113,51 @@ func TestTheListenerStopsWithItsContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after its context was canceled")
+	}
+}
+
+// TestMetricsJoinsTheListenerAsAThirdPath. ADR 0069 §1 chose one port so that
+// there would be one container port, one probe target and one hole in the
+// network policy after metrics landed; this is that path arriving.
+func TestMetricsJoinsTheListenerAsAThirdPath(t *testing.T) {
+	ok := func() (bool, string) { return true, "" }
+	body := "# TYPE runtime_agent_spool_files gauge\nruntime_agent_spool_files 3\n"
+	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	})
+	s := New("127.0.0.1:0", ok, ok, metrics, testLogger())
+	srv := httptest.NewServer(s.handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + MetricsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(got) != body {
+		t.Errorf("status %d body %q", resp.StatusCode, got)
+	}
+}
+
+// TestWithoutAMetricsHandlerThePathIsNotThere: an agent run without metrics
+// opens no path it was not asked for, the same way an empty listen address
+// opens no listener (ADR 0069 §4).
+func TestWithoutAMetricsHandlerThePathIsNotThere(t *testing.T) {
+	ok := func() (bool, string) { return true, "" }
+	s := New("127.0.0.1:0", ok, ok, nil, testLogger())
+	srv := httptest.NewServer(s.handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + MetricsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status %d, want 404", resp.StatusCode)
 	}
 }

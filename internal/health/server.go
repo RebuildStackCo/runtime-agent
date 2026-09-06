@@ -1,8 +1,9 @@
 // Package health serves the two questions the kubelet asks a pod about itself:
-// is this process still working, and may it be depended on yet.
+// is this process still working, and may it be depended on yet — and, on the
+// same listener, what the agent has to say about its own work (ADR 0070).
 //
-// It is one listener per role, on a port of its own, and it answers nothing
-// else: no request body is read, no query is parsed, and no reply names a
+// It is one listener per role, on a port of its own, and every path on it is
+// read-only: no request body is read, no query is parsed, and no reply names a
 // cluster object (ADR 0069, CLAUDE.md invariants 1 and 6).
 package health
 
@@ -16,11 +17,14 @@ import (
 	"time"
 )
 
-// The two paths, in the API server's vocabulary, because the distinction is the
-// whole point: /livez is the process, /readyz is what it has collected.
+// The probe paths, in the API server's vocabulary, because the distinction is
+// the whole point: /livez is the process, /readyz is what it has collected.
+// /metrics is the third, on this listener rather than a port of its own
+// (ADR 0069 §1).
 const (
-	LivePath  = "/livez"
-	ReadyPath = "/readyz"
+	LivePath    = "/livez"
+	ReadyPath   = "/readyz"
+	MetricsPath = "/metrics"
 )
 
 // Check answers one question. The string is why the answer is no, and it may
@@ -36,11 +40,15 @@ type Server struct {
 	logger  *slog.Logger
 }
 
-// New wires a listener on addr answering live at /livez and ready at /readyz.
-func New(addr string, live, ready Check, logger *slog.Logger) *Server {
+// New wires a listener on addr answering live at /livez, ready at /readyz, and
+// — when metrics is non-nil — the agent's own numbers at /metrics.
+func New(addr string, live, ready Check, metrics http.Handler, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 	mux.Handle(LivePath, answer(live))
 	mux.Handle(ReadyPath, answer(ready))
+	if metrics != nil {
+		mux.Handle(MetricsPath, metrics)
+	}
 	return &Server{addr: addr, handler: mux, logger: logger}
 }
 
@@ -84,7 +92,7 @@ func (s *Server) Run(ctx context.Context) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		s.logger.Info("health listener serving", "addr", s.addr,
-			"live", LivePath, "ready", ReadyPath)
+			"live", LivePath, "ready", ReadyPath, "metrics", MetricsPath)
 		serveErr <- srv.ListenAndServe()
 	}()
 

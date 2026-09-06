@@ -3,7 +3,7 @@
 Date: 2026-08-20
 Status: Accepted
 Amends: 0006 §3, 0012
-Amended by: 0022
+Amended by: 0022, 0070
 
 ## Context
 

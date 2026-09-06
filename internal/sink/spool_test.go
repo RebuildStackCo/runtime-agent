@@ -1792,7 +1792,7 @@ func TestAnOwnerReferenceNameCannotEscapeTheSpool(t *testing.T) {
 func TestWriteRefusesANameThatIsNotAPlainFilename(t *testing.T) {
 	s, dir := newTestSpool(t)
 	for _, name := range []string{"../escape.json", "sub/dir.json", `..\escape.json`, ".", ".."} {
-		if err := s.write(name, struct{}{}); err == nil {
+		if err := s.write("usage_window", name, struct{}{}); err == nil {
 			t.Errorf("write(%q) was allowed", name)
 		}
 	}
