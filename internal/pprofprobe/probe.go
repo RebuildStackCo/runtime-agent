@@ -272,6 +272,11 @@ type Coverage struct {
 	Confirmed   int `json:"confirmed"`
 	Absent      int `json:"absent"`
 	Unreachable int `json:"unreachable"`
+	// ExcludedByAnnotation is targets the profiling opt-out removed before they
+	// were asked about. A gauge like the three above, and deliberately not a pull
+	// outcome: there was no attempt to count, and the number falls when the
+	// annotation is removed (ADR 0071).
+	ExcludedByAnnotation int `json:"excluded_by_annotation"`
 }
 
 // Snapshot returns the current coverage.
@@ -342,4 +347,21 @@ func Candidates(ports []inventory.PortRecord, builds map[string][]string) []Cand
 		}
 	}
 	return out
+}
+
+// Admitted drops the candidates of workloads the profiling opt-out excludes and
+// reports how many distinct targets it removed, for the coverage report.
+// Dropping them at the mouth of the funnel is what makes one annotation stop
+// the confirmation as well as the pull (ADR 0071).
+func Admitted(candidates []Candidate, optedOut func(namespace, workloadKind, workloadName string) bool) ([]Candidate, int) {
+	out := make([]Candidate, 0, len(candidates))
+	excluded := map[Target]struct{}{}
+	for _, c := range candidates {
+		if optedOut(c.Namespace, c.WorkloadKind, c.WorkloadName) {
+			excluded[c.Target] = struct{}{}
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, len(excluded)
 }

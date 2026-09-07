@@ -6,6 +6,8 @@ Status: Accepted
 
 Amends: 0054
 
+Amended by: 0071
+
 Adds `/debug/pprof` endpoint discovery to the controller: the first outbound
 connection the agent makes to anything but the API server. Removes the `pprof`
 installation profile, which never existed. No new RBAC, no new read of the API.

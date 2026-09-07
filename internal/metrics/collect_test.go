@@ -31,7 +31,7 @@ func fullController() Controller {
 		Nodes: 2, States: map[string]int{"supported": 1, "btf_absent": 1},
 		Windows: 5, WindowsNoScope: 1, ProfilesShipped: 4, ThirdPartyDropped: 7,
 	}
-	probe := pprofprobe.Coverage{Confirmed: 3, Absent: 2, Unreachable: 1}
+	probe := pprofprobe.Coverage{Confirmed: 3, Absent: 2, Unreachable: 1, ExcludedByAnnotation: 4}
 	pull := pprofpull.Coverage{Shipped: 2, Refused: 1, Unreachable: 1, Invalid: 1}
 	spool := sink.Counters{
 		Written:       map[string]int64{},
@@ -54,7 +54,7 @@ func fullController() Controller {
 			{Path: collector.PathStatsSummary, Attempted: 10, Failed: 1},
 			{Path: collector.PathMetricsCadvisor, Attempted: 10, Failed: 4},
 		},
-		Filter:           model.Coverage{PodsObserved: 412, ExcludedNamespaceFilter: 37, JobsObserved: 9},
+		Filter:           model.Coverage{PodsObserved: 412, ExcludedNamespaceFilter: 37, ExcludedProfilingAnnotation: 5, JobsObserved: 9},
 		Placement:        model.PlacementDrops{Values: 1, Terms: 2},
 		Nodes:            model.NodeDrops{Conditions: 1, Devices: 2, Taints: 3, Values: 4},
 		Spool:            spool,
@@ -145,7 +145,7 @@ func TestNoLabelValueNamesAnythingFromTheCluster(t *testing.T) {
 		"scanned", "go_found", "filtered_scope", "filtered_infra", "unreadable",
 		"no_scope", "no_targets", "no_samples", "shipped", "invalid", "unshipped",
 		"out_of_scope", "third_party", "unsymbolized", "filtered",
-		"confirmed", "absent", "unreachable", "refused",
+		"confirmed", "absent", "unreachable", "refused", "excluded_by_annotation",
 	} {
 		permitted[v] = true
 	}
@@ -321,5 +321,37 @@ func TestANodeSaysNothingAboutAScanItHasNotRun(t *testing.T) {
 		if !present[Prefix+required] {
 			t.Errorf("%s%s is missing", Prefix, required)
 		}
+	}
+}
+
+// The opt-out is answerable from the cluster's own metrics, and it lands on the
+// funnel gauge rather than beside a pull outcome: no attempt was made, and the
+// number falls when an annotation is removed (ADR 0071).
+func TestTheProfilingOptOutIsExposedOnBothItsSubjects(t *testing.T) {
+	var pods, targets *dto.MetricFamily
+	for _, fam := range families(t, CollectController(fullController())) {
+		switch fam.GetName() {
+		case Prefix + "pods_excluded_from_profiling_total":
+			pods = fam
+		case Prefix + "pprof_targets":
+			targets = fam
+		}
+	}
+	if pods == nil || pods.GetType() != dto.MetricType_COUNTER || pods.GetMetric()[0].GetCounter().GetValue() != 5 {
+		t.Errorf("pods excluded from profiling = %v, want a counter reading 5", pods)
+	}
+	if targets == nil {
+		t.Fatal("pprof_targets is absent")
+	}
+	var excluded *dto.Metric
+	for _, m := range targets.GetMetric() {
+		for _, l := range m.GetLabel() {
+			if l.GetValue() == "excluded_by_annotation" {
+				excluded = m
+			}
+		}
+	}
+	if excluded == nil || excluded.GetGauge().GetValue() != 4 {
+		t.Errorf("targets excluded by annotation = %v, want a gauge reading 4", excluded)
 	}
 }

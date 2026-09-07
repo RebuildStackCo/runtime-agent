@@ -946,6 +946,18 @@ profile. There remains a narrow window — your profiler idle at the moment we
 ask — in which our capture is the one that wins; if that is unacceptable, turn
 `profiling.pprof.pull` off and keep everything else.
 
+**Excluding one workload, and nothing else about it.** `rebuildstack.co/profile:
+"false"` on the Namespace, the workload object or the Pod stops both profiling
+paths and every connection to it, the one that confirms an endpoint included
+([ADR 0071](adr/0071-refusing-the-profiler-without-refusing-the-rest.md)).
+Everything else about it keeps being collected — which is what the four older
+controls could not offer.
+
+**Every capture is a line in your own logs.** One per attempt, on the message
+`pprof profile pull`, naming the workload, container, build and outcome, so "who
+did you profile, and when" is answerable inside your cluster and not only from
+what we receive.
+
 **Where the filtering happens is different for these profiles, and it is worth
 knowing.** A profile the node captures is reduced on the node, before any byte
 crosses to the controller. A profile pulled from your endpoint arrives already
@@ -970,7 +982,7 @@ that implies.
 
 ### Your controls
 
-Four, and they are the complete list:
+Five, and they are the complete list:
 
 | Control | Where | What it does |
 |---|---|---|
@@ -978,6 +990,7 @@ Four, and they are the complete list:
 | **Namespace opt-out annotation** | on the Namespace object | `rebuildstack.co/collect: "false"` excludes every pod in it |
 | **Workload opt-out annotation** | on the Deployment, StatefulSet, DaemonSet, CronJob, or a bare Job or ReplicaSet | the same annotation excludes every pod that workload manages. **On the object itself, never in its pod template** — a template annotation is part of the template hash, so writing one there would roll every replica ([ADR 0028](adr/0028-workload-level-opt-out.md)) |
 | **Pod opt-out annotation** | on the Pod object | the same annotation excludes that pod |
+| **Profiling opt-out annotation** | on the Namespace, the workload object, or the Pod | `rebuildstack.co/profile: "false"` excludes it from profiling alone — no capture, no pull, and no connection to it — and changes nothing else that is collected about it ([ADR 0071](adr/0071-refusing-the-profiler-without-refusing-the-rest.md)) |
 
 **Where the workload control does not reach.** The agent reads the workload kinds
 above and no others. A pod managed by a custom resource — an Argo Rollout, a
@@ -989,11 +1002,13 @@ still work on those workloads, and the coverage report counts the case in
 `workload_unknown_kind`, separately from the transient `workload_not_cached`.
 Both are counts; no pod or workload is named.
 
-These four scope **everything**, profiling included: the workloads that may be
-profiled are the workloads you collect, and there is no separate list for it
-(ADR 0025). What profiling adds is not another filter but two deliberate acts —
-deploying the node DaemonSet with the `ebpf` profile, and enabling it on the
-controller — plus the symbol allow-list of
+The first four scope **everything**, profiling included: the workloads that may
+be profiled are the workloads you collect, and there is no separate list for it
+(ADR 0025). The fifth narrows inside that and nowhere else — `collect: "false"`
+still excludes profiling too, so it is the narrower of the two rather than a
+second control beside it. What profiling adds beyond them is not another filter
+but two deliberate acts — deploying the node DaemonSet with the `ebpf` profile,
+and enabling it on the controller — plus the symbol allow-list of
 [§7.2](#72-the-ebpf-cpu-profiler-opt-in-ebpf-profile-adr-0011).
 
 There is **no label-selector filter.** Earlier revisions of this document listed
@@ -1012,7 +1027,7 @@ failing. No `SelfSubjectRulesReview` self-audit is performed: that is a `create`
 call (ADR 0054 §3). A 403 degrades with a log line, never a crash-loop.
 
 **What those counts can and cannot tell us.** They say how much was excluded and
-under which of your four controls, never which object. One inference remains and
+under which of your five controls, never which object. One inference remains and
 is stated rather than hidden ([ADR 0039](adr/0039-stated-limits-are-measured-limits.md)):
 a workload that was collected and then opted out disappears from the data, and
 that disappearance is visible whether or not a counter explains it. The counter
@@ -1036,6 +1051,10 @@ and the next snapshot of each payload no longer carries it — including the Go
 inventory, which is assembled from facts nodes push and therefore has to be told
 to forget rather than simply stop learning (ADR 0018). Nothing about an opted-out
 pod survives in a later payload.
+
+To decline the profiling and keep everything else, the annotation is
+`rebuildstack.co/profile: "false"`, on the same three kinds of object.
+
 ---
 
 ## 12. Reporting a vulnerability

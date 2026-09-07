@@ -228,7 +228,7 @@ func (p *Puller) visit(ctx context.Context, c pprofprobe.Candidate) {
 	case err != nil:
 		p.hold(c.Target, unreachableFor)
 		p.count(func(cv *Coverage) { cv.Unreachable++ })
-		p.logger.Debug("pprof pull could not complete", "error", err)
+		p.record(ctx, c, slog.LevelInfo, outcomeUnreachable, err)
 		return
 	case status != http.StatusOK:
 		// Nearly always 500 "cpu profiling already in use": the service runs its
@@ -236,6 +236,7 @@ func (p *Puller) visit(ctx context.Context, c pprofprobe.Candidate) {
 		// soon, and never fought over (ADR 0058 §3).
 		p.hold(c.Target, refusedFor)
 		p.count(func(cv *Coverage) { cv.Refused++ })
+		p.record(ctx, c, slog.LevelInfo, outcomeRefused, nil)
 		return
 	}
 
@@ -246,7 +247,7 @@ func (p *Puller) visit(ctx context.Context, c pprofprobe.Candidate) {
 	if err != nil {
 		p.hold(c.Target, unreachableFor)
 		p.count(func(cv *Coverage) { cv.Invalid++ })
-		p.logger.Warn("pulled profile refused", "error", err)
+		p.record(ctx, c, slog.LevelWarn, outcomeInvalid, err)
 		return
 	}
 
@@ -262,10 +263,42 @@ func (p *Puller) visit(ctx context.Context, c pprofprobe.Candidate) {
 		Pprof:        filtered,
 		Dropped:      dropped,
 	}); err != nil {
-		p.logger.Error("spooling pulled profile", "error", err)
+		p.record(ctx, c, slog.LevelError, outcomeUnspooled, err)
 		return
 	}
 	p.count(func(cv *Coverage) { cv.Shipped++ })
+	p.record(ctx, c, slog.LevelInfo, outcomeShipped, nil)
+}
+
+// Outcomes of one visit. The first four are the coverage counters; the fifth is
+// a capture that happened and then could not be spooled, which is a loss the
+// counters do not have a field for and the log line must still name.
+const (
+	outcomeShipped     = "shipped"
+	outcomeRefused     = "refused"
+	outcomeUnreachable = "unreachable"
+	outcomeInvalid     = "invalid"
+	outcomeUnspooled   = "unspooled"
+)
+
+// record writes the one line the customer's own logs carry about a capture in
+// their cluster: which workload, when, and what came of it. One message string
+// so it greps, one line per attempt so an incident review finds the capture
+// that happened rather than the first one ever (ADR 0071).
+func (p *Puller) record(ctx context.Context, c pprofprobe.Candidate, level slog.Level, outcome string, err error) {
+	attrs := []any{
+		"namespace", c.Namespace,
+		"workload_kind", c.WorkloadKind,
+		"workload", c.WorkloadName,
+		"container", c.Container,
+		"image_digest", c.ImageDigest,
+		"seconds", captureSeconds,
+		"outcome", outcome,
+	}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	p.logger.Log(ctx, level, "pprof profile pull", attrs...)
 }
 
 // filterFor builds the allow-list this build's profile is reduced against: the

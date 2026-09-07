@@ -6,6 +6,8 @@ Status: Accepted
 
 Amends: 0011 §4, 0025, 0054
 
+Amended by: 0071
+
 Adds the payload kind `pprof_profile`: a CPU profile fetched from an endpoint
 [ADR 0057](0057-the-controller-confirms-an-endpoint-once.md) confirmed, reduced
 to allowed frames in the controller. Moves the symbol allow-list into the

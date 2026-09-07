@@ -2,6 +2,7 @@ package pprofpull
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -283,4 +284,49 @@ func portsOf(p *Puller) []int {
 		out = append(out, t.Port)
 	}
 	return out
+}
+
+// A capture is an event inside the customer's cluster, so it is an event in the
+// customer's logs: one line per attempt, one message string to grep, and the
+// workload named (ADR 0071).
+func TestEachAttemptLeavesOneLineNamingTheWorkload(t *testing.T) {
+	cases := []struct {
+		status  int
+		outcome string
+	}{
+		{http.StatusOK, "shipped"},
+		{http.StatusInternalServerError, "refused"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.outcome, func(t *testing.T) {
+			c := &capture{}
+			srv := httptest.NewServer(c.handler(t, tc.status))
+			defer srv.Close()
+
+			var logged bytes.Buffer
+			p := newPuller(t, srv, c.sink)
+			p.logger = slog.New(slog.NewJSONHandler(&logged, nil))
+			p.cycle(t.Context(), []pprofprobe.Candidate{candidate()})
+
+			var lines []map[string]any
+			for _, raw := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+				var line map[string]any
+				if err := json.Unmarshal([]byte(raw), &line); err != nil {
+					t.Fatalf("log line is not JSON: %v", err)
+				}
+				if line["msg"] == "pprof profile pull" {
+					lines = append(lines, line)
+				}
+			}
+			if len(lines) != 1 {
+				t.Fatalf("%d pull lines, want exactly 1: %s", len(lines), logged.String())
+			}
+			line := lines[0]
+			if line["outcome"] != tc.outcome || line["namespace"] != "shop" ||
+				line["workload"] != "web" || line["workload_kind"] != "Deployment" ||
+				line["container"] != "app" || line["seconds"] != float64(captureSeconds) {
+				t.Errorf("log line = %v, want the workload named and outcome %q", line, tc.outcome)
+			}
+		})
+	}
 }

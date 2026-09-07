@@ -424,6 +424,12 @@ or `failing: true` bounds every finding resting on it — the backend MUST NOT
 present such a finding as complete. The scan block is a fleet aggregate over the
 latest pass of each reporting node and MUST NOT be summed across flushes.
 
+`filter.excluded_profiling_annotation` counts pods the customer excluded from
+profiling alone ([ADR 0071](adr/0071-refusing-the-profiler-without-refusing-the-rest.md)):
+they are still collected and still ship every other kind, so the backend MUST NOT
+treat them as absent, and MUST NOT present a workload with no profile as one the
+agent failed on.
+
 No field of this payload names an object the customer excluded, and the backend
 MUST NOT ask for one.
 
@@ -539,9 +545,12 @@ several. `confirmed` served the pprof index; `absent` answered and did not,
 which for a build whose `pprof_endpoint` is true means that port is not the one
 serving it — the backend MUST NOT read `absent` as the package being missing.
 `unreachable` is a statement about the network, not the endpoint, and is
-retried, so it MUST NOT be presented as a workload that cannot be profiled. An
-absent block means discovery is switched off or no node role is deployed; it
-does not mean zero.
+retried, so it MUST NOT be presented as a workload that cannot be profiled.
+`excluded_by_annotation` is targets the customer removed with
+`rebuildstack.co/profile`, and unlike the counters elsewhere in this payload it
+is a current count rather than a total: it falls when an annotation is removed,
+so it MUST NOT be summed across flushes. An absent block means discovery is
+switched off or no node role is deployed; it does not mean zero.
 
 **`listening_ports` is what the processes bind, and `go_build.pprof_endpoint` is
 what the build contains; neither implies the other**

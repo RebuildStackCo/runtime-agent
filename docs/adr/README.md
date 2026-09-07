@@ -128,3 +128,4 @@ line to paste.
 - [0068. The agent yields first, and two objects it does not ship](0068-the-agent-yields-first.md)
 - [0069. Liveness is the process; readiness is what it has collected](0069-liveness-is-the-process-readiness-is-the-caches.md)
 - [0070. The agent says what it did, in the format the cluster already reads](0070-the-agent-says-what-it-did-in-the-format-the-cluster-already-reads.md)
+- [0071. A workload can refuse the profiler without refusing everything else](0071-refusing-the-profiler-without-refusing-the-rest.md)

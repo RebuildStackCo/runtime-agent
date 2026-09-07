@@ -138,9 +138,12 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		{Name: "services", Synced: true},
 	}
 	filter := model.Coverage{
-		PodsObserved:                412,
-		ExcludedNamespaceFilter:     37,
-		ExcludedWorkloadAnnotation:  2,
+		PodsObserved:               412,
+		ExcludedNamespaceFilter:    37,
+		ExcludedWorkloadAnnotation: 2,
+		// Collected and not profiled: the one exclusion that removes nothing from
+		// the data beside it, so it has to be visible here (ADR 0071).
+		ExcludedProfilingAnnotation: 9,
 		WorkloadUnknownKind:         6,
 		JobsObserved:                18,
 		JobsExcludedNamespaceFilter: 4,
@@ -168,8 +171,8 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		ProfilesReceived: 154, ProfilesUnjoined: 3,
 	}
 	// One target of each answer, so the golden shows that "no profiles for this
-	// workload" has three distinguishable causes (ADR 0057 §5).
-	probe := pprofprobe.Coverage{Confirmed: 6, Absent: 11, Unreachable: 2}
+	// workload" has four distinguishable causes (ADR 0057 §5, ADR 0071).
+	probe := pprofprobe.Coverage{Confirmed: 6, Absent: 11, Unreachable: 2, ExcludedByAnnotation: 3}
 	// A refusal beside the shipped profiles, because that is the number a reader
 	// will otherwise mistake for a broken agent (ADR 0058 §3).
 	pull := pprofpull.Coverage{Shipped: 4, Refused: 1, Unreachable: 0, Invalid: 1}

@@ -27,16 +27,22 @@ type Target struct {
 
 // Publisher ranks collected workloads by CPU consumption and publishes the top N.
 type Publisher struct {
-	topN    int
-	current atomic.Pointer[[]Target]
+	topN     int
+	optedOut func() map[Target]struct{}
+	current  atomic.Pointer[[]Target]
 }
 
 // NewPublisher builds a publisher capped at topN; 0 or less selects one.
-func NewPublisher(topN int) *Publisher {
+//
+// optedOut names the workloads the profiling opt-out excludes, and may be nil.
+// They are dropped before the ranking rather than after it: an excluded
+// workload would otherwise take one of the topN places and yield no containers,
+// spending the ceiling on nothing (ADR 0071).
+func NewPublisher(topN int, optedOut func() map[Target]struct{}) *Publisher {
 	if topN <= 0 {
 		topN = 1
 	}
-	return &Publisher{topN: topN}
+	return &Publisher{topN: topN, optedOut: optedOut}
 }
 
 // Publish ranks records by CPU consumption, takes the top N, and publishes the
@@ -44,12 +50,19 @@ func NewPublisher(topN int) *Publisher {
 // are already a deep copy — so it never races the Accumulator. Consumption is
 // summed per workload across the records.
 func (p *Publisher) Publish(records []*rollup.Record) {
+	var excluded map[Target]struct{}
+	if p.optedOut != nil {
+		excluded = p.optedOut()
+	}
 	sum := make(map[Target]int64)
 	for _, r := range records {
 		t := Target{
 			Namespace:    r.Namespace,
 			WorkloadKind: r.WorkloadKind,
 			WorkloadName: r.WorkloadName,
+		}
+		if _, ok := excluded[t]; ok {
+			continue
 		}
 		sum[t] += r.CPU.CoreNanoseconds
 	}
