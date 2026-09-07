@@ -108,6 +108,7 @@ type Spool struct {
 	evicted       map[string]int64
 	bytes         int64
 	files         int64
+	recovered     Recovered
 }
 
 // NewSpool opens (creating if needed) the spool directory. maxAge ≤ 0
@@ -534,6 +535,19 @@ type windowKey struct {
 	seconds int64
 }
 
+// The usage snapshot's kind and the shape of its filename, together because
+// the startup read of ADR 0072 has to recognise exactly what the write below
+// produced.
+const (
+	kindUsageSnapshot   = "usage_snapshot"
+	usageNamePrefix     = "usage-"
+	usageSnapshotSuffix = ".snapshot.json"
+)
+
+func (w windowKey) end() time.Time {
+	return w.start.Add(time.Duration(w.seconds) * time.Second)
+}
+
 func groupByWindow(records []*rollup.Record) map[windowKey][]*rollup.Record {
 	grouped := make(map[windowKey][]*rollup.Record)
 	for _, r := range records {
@@ -544,7 +558,7 @@ func groupByWindow(records []*rollup.Record) map[windowKey][]*rollup.Record {
 }
 
 func (w windowKey) name() string {
-	return fmt.Sprintf("usage-%d-%d", w.start.Unix(), w.seconds)
+	return fmt.Sprintf("%s%d-%d", usageNamePrefix, w.start.Unix(), w.seconds)
 }
 
 // WriteUsageSnapshot writes open-window snapshots, one file per window,
@@ -558,14 +572,14 @@ func (w windowKey) name() string {
 func (s *Spool) WriteUsageSnapshot(records []*rollup.Record, obs model.Observation) error {
 	for k, group := range groupByWindow(records) {
 		payload := usagePayload{
-			Kind:          "usage_snapshot",
+			Kind:          kindUsageSnapshot,
 			Source:        SourceMeasured,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Observation:   obs,
 			Records:       group,
 		}
-		if err := s.write(payload.Kind, k.name()+".snapshot.json", payload); err != nil {
+		if err := s.write(payload.Kind, k.name()+usageSnapshotSuffix, payload); err != nil {
 			return err
 		}
 	}
@@ -588,7 +602,7 @@ func (s *Spool) WriteClosedWindows(records []*rollup.Record, obs model.Observati
 		if err := s.write(payload.Kind, k.name()+".json", payload); err != nil {
 			return err
 		}
-		if err := os.Remove(filepath.Join(s.dir, k.name()+".snapshot.json")); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(s.dir, k.name()+usageSnapshotSuffix)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("removing superseded snapshot: %w", err)
 		}
 	}

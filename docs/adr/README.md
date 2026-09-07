@@ -129,3 +129,4 @@ line to paste.
 - [0069. Liveness is the process; readiness is what it has collected](0069-liveness-is-the-process-readiness-is-the-caches.md)
 - [0070. The agent says what it did, in the format the cluster already reads](0070-the-agent-says-what-it-did-in-the-format-the-cluster-already-reads.md)
 - [0071. A workload can refuse the profiler without refusing everything else](0071-refusing-the-profiler-without-refusing-the-rest.md)
+- [0072. A restart resumes the open window the spool already holds](0072-a-restart-resumes-the-window-the-spool-holds.md)

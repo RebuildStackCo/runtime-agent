@@ -379,6 +379,13 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			logger.Warn("kubelet poll failed", "node", node, "error", err)
 		},
 	)
+	// Before anything runs, and here rather than inside the poller: the
+	// accumulator has no lock, so the one moment it is safe to write from
+	// another goroutine is the one where there is no other goroutine
+	// (ADR 0072). An empty spool seeds nothing and behaves as it always did.
+	if spool != nil {
+		seedOpenWindows(logger, spool, usagePoller, time.Now())
+	}
 
 	// The Go inventory joins node-role build-info facts against the workload
 	// index (ADR 0010). It exists only when the receiver does; the receiver's

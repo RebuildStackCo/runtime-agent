@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -110,6 +111,27 @@ func (a *Accumulator) ObserveMemory(k Key, at time.Time, workingSetBytes int64) 
 		return
 	}
 	a.record(k, at).Memory.observe(workingSetBytes)
+}
+
+// Seed folds a record recovered from outside this process into the window it
+// names, so a restart resumes an open window instead of reopening it empty
+// (ADR 0072). It is the merge property applied to the agent's own history, and
+// it rejects a record this accumulator could not have produced: a foreign
+// window length, a start off the grid, or a record carrying no histogram grid
+// to merge onto.
+func (a *Accumulator) Seed(r *Record) error {
+	if r.WindowSeconds != a.win.seconds() {
+		return fmt.Errorf("rollup: seeding a %d s window into a %d s accumulator",
+			r.WindowSeconds, a.win.seconds())
+	}
+	start := r.WindowStart.UTC()
+	if !a.win.startOf(start).Equal(start) {
+		return fmt.Errorf("rollup: seed window start %s is not on the window grid", start)
+	}
+	if r.CPU.Hist == nil || r.Memory.Hist == nil {
+		return fmt.Errorf("rollup: seed record for window %s carries no histogram", start)
+	}
+	return a.recordAt(r.Key, start).Merge(r)
 }
 
 // CloseBefore removes and returns every record whose window ended at or

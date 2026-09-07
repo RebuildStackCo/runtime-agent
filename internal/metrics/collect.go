@@ -232,6 +232,17 @@ func (s *Set) spool(c sink.Counters) {
 	s.Gauge("spool_files", "Payload files the spool held at the last sweep.", float64(c.Files))
 	s.Gauge("spool_max_bytes", "The spool's byte ceiling.", float64(sink.DefaultMaxBytes))
 	s.Gauge("spool_max_files", "The spool's file-count ceiling.", float64(sink.DefaultMaxFiles))
+	// Gauges, not counters: the startup read happens once and these never move
+	// again. Zero windows after a restart is the state ADR 0072 exists to
+	// prevent, and this is the only place it is visible from outside.
+	s.Gauge("spool_windows_resumed",
+		"Open usage windows this process resumed from the spool at startup (ADR 0072).",
+		float64(c.Recovered.Windows))
+	s.Gauge("spool_records_resumed", "Records those resumed windows carried.",
+		float64(c.Recovered.Records))
+	s.Gauge("spool_recovery_files_skipped",
+		"Spool files the startup read could not use. They were left where they are.",
+		float64(c.Recovered.Skipped))
 }
 
 // scanProcesses is one scan pass's process counts — the fleet's latest passes
