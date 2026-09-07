@@ -615,9 +615,54 @@ report one.
   reconnect with nothing older than its fresh data. Routine loss is bounded
   by the snapshot cadence. The backend MUST NOT treat a gap as an error and
   MUST NOT expect agents to re-supply history they no longer hold.
-- **Declared limits.** Payload size and rate limits MUST be explicit in the
-  protocol so the agent can chunk deterministically, not discover limits by
-  failing.
+- **Declared limits.** Payload size and request-rate limits MUST be explicit in
+  the protocol rather than discovered by failing. Their purpose is not to let the
+  agent chunk: a superseding payload is the complete state under its key and the
+  agent never splits one
+  ([ADR 0027](adr/0027-no-payload-ordering-field.md),
+  [ADR 0073](adr/0073-a-kind-declares-how-often-it-is-sent.md)). A backend that
+  needs a bound MUST derive it from the cadence below and the per-record sizes,
+  and MUST accept what a cluster of the size it admits will produce. Chunking, if
+  it is ever required, is a protocol change on both sides.
+
+### Cadence
+
+**Every kind has a declared cadence, and it is a constant of the agent's
+protocol version**
+([ADR 0073](adr/0073-a-kind-declares-how-often-it-is-sent.md)). The backend
+MUST NOT set, request, or influence it — §1 leaves no channel that could. The
+numbers travel with the published agent version the backend already records
+(§6), not in the payloads.
+
+A cadence is a floor (the shortest gap between two deliveries of one natural
+key), a ceiling (the longest, unconditional), and what decides the deliveries
+between them.
+
+| Cadence | Kinds |
+|---|---|
+| every minute, unconditionally | `collection_coverage`, `usage_snapshot`, `container_restarts`, `pod_disruptions`, `job_runs`, `node_lifecycle`, `process_counters` |
+| on change; floor 1 min, ceiling 15 min | `node_metadata` |
+| on change; floor 5 min, ceiling 15 min | `workload_metadata`, `workload_revisions`, `workload_policy`, `cluster_policy`, `restart_counters`, `go_inventory`, `process_peaks`, `listening_ports` |
+| when the event happens | `usage_window` and `network_window` (their window closed), `oom_kill`, `go_build`, `ebpf_profile`, `pprof_profile` |
+
+- **A superseding payload is current until the next delivery of its kind, not
+  only at its `captured_at`.** A change-triggered kind is re-sent when its
+  contents change and not otherwise, so an unchanged payload's absence states
+  that the payload still holds. `captured_at` is when the state was last
+  observed, never the last moment it was true. Two payloads that are joined to
+  each other — `workload_metadata`, `workload_revisions`, `workload_policy`,
+  `restart_counters` and `node_metadata` — MAY therefore carry different capture
+  instants, and the backend MUST NOT treat the older of two as stale on that
+  ground.
+- **Nothing longer than a kind's ceiling is silence about the cluster.** Past
+  it, the absence of a delivery is a fact about the agent — the same reading
+  `collection_coverage` supports every minute — and the backend SHOULD alert on
+  it through whatever it uses for a silent cluster.
+- **The effective cadence of a fleet is its oldest installed agent.** Agents
+  stay installed for a long time (§6) and cannot be told to change, so the
+  backend MUST tolerate every cadence any supported agent version declares, and
+  MUST NOT assume the newest table applies to a cluster it has not seen the
+  version of.
 
 ## 5. Error semantics
 

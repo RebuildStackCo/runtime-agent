@@ -223,6 +223,11 @@ func (s *Set) spool(c sink.Counters) {
 		s.Counter("spool_write_failures_total", "Spool writes that failed, by payload kind.",
 			float64(c.WriteFailures[kind]), L(LabelKind, kind))
 	}
+	for _, kind := range sink.SortedKeys(c.Suppressed) {
+		s.Counter("spool_payloads_suppressed_total",
+			"Payloads a pass assembled and the kind's cadence did not write, by kind (ADR 0073).",
+			float64(c.Suppressed[kind]), L(LabelKind, kind))
+	}
 	for _, reason := range sink.SortedKeys(c.Evicted) {
 		s.Counter("spool_evicted_total",
 			"Payloads the sweep removed, by which bound removed them (ADR 0042).",

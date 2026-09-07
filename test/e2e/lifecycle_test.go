@@ -39,7 +39,7 @@ func TestPodLifecycleEndToEnd(t *testing.T) {
 	}
 	config := clusterConfig(t)
 	clientset := clusterClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Minute)
 	defer cancel()
 
 	ns := fmt.Sprintf("runtime-agent-lifecycle-e2e-%d", os.Getpid())
@@ -70,7 +70,8 @@ func checkUnschedulableReasonReported(ctx context.Context, t *testing.T, config 
 	// rather than leaving the pod merely pending.
 	deployPods(ctx, t, cs, ns, "toobig", 1, "1000", "", nil)
 
-	deadline := time.Now().Add(4 * time.Minute)
+	// Long enough for the change-triggered floor this payload is on (ADR 0073).
+	deadline := time.Now().Add(9 * time.Minute)
 	for {
 		if rec, ok := findMetadataRecord(ctx, t, config, cs, ns, controllerPod, "toobig"); ok {
 			if rec.Pod.Unscheduled["Unschedulable"] >= 1 {

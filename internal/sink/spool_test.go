@@ -761,6 +761,7 @@ func TestGoldenListeningPortsPayload(t *testing.T) {
 
 func TestGoInventorySupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
+	ignoreCadence(s)
 	if err := s.WriteGoInventory(capturedAt, fixedCoverage(), fixedInventory()); err != nil {
 		t.Fatal(err)
 	}
@@ -1179,6 +1180,7 @@ func TestGoldenNodeMetadataPayload(t *testing.T) {
 // there, not by a counter inside it.
 func TestMetadataSupersedesOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
+	ignoreCadence(s)
 	var last time.Time
 	for i := range 3 {
 		last = capturedAt.Add(time.Duration(i) * time.Minute)
@@ -1291,6 +1293,7 @@ func TestGoldenWorkloadRevisionsPayload(t *testing.T) {
 // rather than accumulating — the on-disk mirror of upsert-by-key ingest.
 func TestWorkloadRevisionsSupersedeOnDisk(t *testing.T) {
 	s, dir := newTestSpool(t)
+	ignoreCadence(s)
 	if err := s.WriteWorkloadRevisions(capturedAt, fixedRevisions()); err != nil {
 		t.Fatal(err)
 	}

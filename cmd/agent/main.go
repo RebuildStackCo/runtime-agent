@@ -147,13 +147,19 @@ func connect() (kubernetes.Interface, *rest.Config, error) {
 	return clientset, config, nil
 }
 
-// coverageInterval is how often the aggregate coverage counters are logged and
-// written as a payload. Unlike every other flush it runs whether or not there is
-// anything to report: staleness here is a fact about the agent (ADR 0054 §5).
+// defaultCoverageInterval is how often the periodic pass runs. It is also the
+// declared cadence of every kind the registry writes on every pass — coverage,
+// the journals, the counters — and cadence_test.go binds the two so neither can
+// move without the other (ADR 0073 §5).
 //
-// A variable rather than a constant only so a test can compress it, the way
-// watchLimits is compressible in internal/collector. Production never assigns it.
-var coverageInterval = time.Minute
+// Coverage in particular runs whether or not there is anything to report:
+// staleness here is a fact about the agent (ADR 0054 §5).
+const defaultCoverageInterval = time.Minute
+
+// coverageInterval is that interval, a variable only so a test can compress it,
+// the way watchLimits is compressible in internal/collector. Production never
+// assigns it.
+var coverageInterval = defaultCoverageInterval
 
 // controllerLivenessDeadline is how stale the periodic pass's own stamp may get
 // before the controller stops calling itself alive. Three intervals: the pass
@@ -506,13 +512,18 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// state of its own (ADR 0003, loss-harmless). Both are superseding batches
 	// under a fixed key, and neither carries anything that orders it: each write
 	// replaces the previous file, so there is never a second version to rank
-	// (ADR 0027).
+	// (ADR 0027). The pass assembles all six every minute; which of them are
+	// written is the sink's decision, per kind (ADR 0073).
 	flushMetadata := func() {
 		if spool == nil {
 			return
 		}
-		// One capture instant for both payloads of a flush: they describe the
-		// same cluster state and are joined against each other downstream.
+		// One capture instant for every payload of a flush: they describe the
+		// same cluster state and are joined against each other downstream. Two
+		// of them written on different passes therefore carry different
+		// instants, and what makes the join sound is no longer the shared
+		// number but the reason the older one was not rewritten — nothing in it
+		// had changed (ADR 0073 §6, amending ADR 0030 §7 and ADR 0034 §7).
 		capturedAt := time.Now()
 		records := metadata.Aggregate(podWatcher.Pods(), podWatcher.UpdateStrategies())
 		if err := spool.WriteWorkloadMetadata(capturedAt, records); err != nil {
@@ -558,7 +569,9 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			logger.Warn("policy sources unavailable at this capture",
 				"workload_policy", policyGaps, "cluster_policy", clusterGaps)
 		}
-		logger.Info("metadata flushed",
+		// What the pass assembled, which past the first flush is not what it
+		// wrote: the per-kind counters carry that (ADR 0073).
+		logger.Info("metadata captured",
 			"captured_at", capturedAt,
 			"workload_records", len(records),
 			"nodes", len(nodes),

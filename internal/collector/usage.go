@@ -23,8 +23,13 @@ import (
 // nothing; snapshots of the open window ship once a minute so the backend is
 // never more than ~1–2 minutes behind the cluster.
 const (
-	usagePollInterval     = 30 * time.Second
-	usageSnapshotInterval = time.Minute
+	usagePollInterval = 30 * time.Second
+
+	// UsageSnapshotInterval is exported for the same reason UsageWindowLength
+	// is: it is the declared cadence of the `usage_snapshot` kind, and a
+	// constant here that merely happened to match the registry's would drift
+	// (ADR 0073 §5).
+	UsageSnapshotInterval = time.Minute
 
 	// UsageWindowLength is exported because it is not only the usage cadence:
 	// the journal aligns its own windows to it so a restart count is read next
@@ -225,7 +230,7 @@ func (p *UsagePoller) attributableFromStart(k rollup.Key) bool {
 func (p *UsagePoller) Run(ctx context.Context) error {
 	poll := time.NewTicker(usagePollInterval)
 	defer poll.Stop()
-	snapshot := time.NewTicker(usageSnapshotInterval)
+	snapshot := time.NewTicker(UsageSnapshotInterval)
 	defer snapshot.Stop()
 
 	p.pollOnce(ctx, time.Now())

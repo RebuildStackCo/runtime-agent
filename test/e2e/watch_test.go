@@ -85,7 +85,7 @@ func TestAPermissionRevokedFromTheRunningAgentReachesThePayload(t *testing.T) {
 	}
 	config := clusterConfig(t)
 	clientset := clusterClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 
 	ns := fmt.Sprintf("runtime-agent-watch-revoke-e2e-%d", os.Getpid())
@@ -100,7 +100,8 @@ func TestAPermissionRevokedFromTheRunningAgentReachesThePayload(t *testing.T) {
 
 	// First the agent must actually read budgets, or the second half proves
 	// nothing: a source that was never available cannot become unavailable.
-	waitForPolicySources(ctx, t, config, clientset, ns, pod, 5*time.Minute,
+	// Long enough for the change-triggered floor this payload is on (ADR 0073).
+	waitForPolicySources(ctx, t, config, clientset, ns, pod, 10*time.Minute,
 		"the budget cache to fill", func(sources []string) bool { return len(sources) == 0 })
 	t.Log("budgets are readable and the payload declares nothing")
 

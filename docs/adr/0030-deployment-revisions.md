@@ -3,7 +3,7 @@
 Date: 2026-08-23
 Status: Accepted
 
-Amended by: 0049
+Amended by: 0049, 0073
 
 Adds the payload kind `deployment_revisions`. Nothing existing changes shape.
 

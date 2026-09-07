@@ -99,12 +99,19 @@ type Spool struct {
 	maxBytes int64
 	maxFiles int
 
+	// When a payload of each kind is written (ADR 0073). The gate holds its own
+	// lock; now is the clock it reads, a field only so a test can drive it
+	// across a floor or a ceiling without waiting.
+	cadence gate
+	now     func() time.Time
+
 	// The spool's own counters, and the only lock it holds. It guards these
 	// numbers and nothing else: writing a payload is still unsynchronized, and
 	// two writers of one key still race for its temp file (ADR 0070 §5).
 	countMu       sync.Mutex
 	written       map[string]int64
 	writeFailures map[string]int64
+	suppressed    map[string]int64
 	evicted       map[string]int64
 	bytes         int64
 	files         int64
@@ -122,8 +129,10 @@ func NewSpool(dir string, maxAge time.Duration) (*Spool, error) {
 	}
 	return &Spool{
 		dir: dir, maxAge: maxAge, maxBytes: DefaultMaxBytes, maxFiles: DefaultMaxFiles,
+		now:           time.Now,
 		written:       newKindCounts(),
 		writeFailures: newKindCounts(),
+		suppressed:    newKindCounts(),
 		evicted:       newReasonCounts(),
 	}, nil
 }
@@ -1106,34 +1115,56 @@ func fileToken(s string) string {
 // so the registry is the one list behind the backend contract and the agent's
 // own per-kind counters alike (ADR 0022, ADR 0070 §3).
 func (s *Spool) write(kind, name string, payload any) error {
-	if _, ok := Lookup(kind); !ok {
+	entry, ok := Lookup(kind)
+	if !ok {
 		return fmt.Errorf("refusing to write payload of kind %q: it has no row in the registry", kind)
 	}
-	if err := s.writePayload(name, payload); err != nil {
+	data, err := encodePayload(name, payload)
+	if err != nil {
 		s.countWrite(kind, true)
 		return err
 	}
+	// The cadence is decided here rather than on the way out, because there is
+	// no way out that could decide it: the spool is the queue, its filenames are
+	// the natural keys, and deletion is acknowledgment (ADR 0003). A payload it
+	// holds is a payload to send (ADR 0073 §4).
+	fp, due := s.cadence.due(name, entry.Cadence, data, s.now())
+	if !due {
+		s.countSuppressed(kind)
+		return nil
+	}
+	if err := s.publish(name, data); err != nil {
+		s.countWrite(kind, true)
+		return err
+	}
+	s.cadence.wrote(name, entry.Cadence, fp, s.now())
 	s.countWrite(kind, false)
 	return nil
 }
 
-// writePayload marshals the payload and lands it atomically: temp file in the
-// same directory, then rename. A crash mid-write leaves a *.tmp file that the
-// sweep collects; readers never observe a partial payload.
+// encodePayload renders the bytes that will land, and refuses a name that is
+// not a plain filename. Callers already build their names from fileToken, so
+// that check catches nothing today — it is here for the next caller, because
+// every path this package writes goes through this one function and that makes
+// it the only place worth checking (ADR 0042).
 //
-// It also refuses a name that is not a plain filename. Callers already build
-// their names from fileToken, so this catches nothing today — it is here for
-// the next caller, because every path this package writes goes through this one
-// function and that makes it the only place worth checking (ADR 0042).
-func (s *Spool) writePayload(name string, payload any) error {
+// Separate from publish because the cadence gate compares these bytes before
+// deciding whether they land (ADR 0073 §4).
+func encodePayload(name string, payload any) ([]byte, error) {
 	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
-		return fmt.Errorf("refusing to write payload under %q: a spool payload name is a plain filename", name)
+		return nil, fmt.Errorf("refusing to write payload under %q: a spool payload name is a plain filename", name)
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encoding payload %s: %w", name, err)
+		return nil, fmt.Errorf("encoding payload %s: %w", name, err)
 	}
-	data = append(data, '\n')
+	return append(data, '\n'), nil
+}
+
+// publish lands the bytes atomically: temp file in the same directory, then
+// rename. A crash mid-write leaves a *.tmp file that the sweep collects; readers
+// never observe a partial payload.
+func (s *Spool) publish(name string, data []byte) error {
 	tmp := filepath.Join(s.dir, name+".tmp")
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("writing payload %s: %w", name, err)
@@ -1166,6 +1197,10 @@ func (s *Spool) Sweep(now time.Time) error {
 	var kept []file
 	var total int64
 	cutoff := now.Add(-s.maxAge)
+	// The cadence gate remembers what the spool holds, so it forgets on the same
+	// cutoff: a key swept out of the spool is one whose next payload is written
+	// whole regardless (ADR 0073).
+	s.cadence.prune(cutoff)
 
 	for _, entry := range entries {
 		if entry.IsDir() {

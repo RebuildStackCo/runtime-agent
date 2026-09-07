@@ -1,6 +1,9 @@
 package sink
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // The payload registry: the one place that says what this agent ships.
 //
@@ -31,8 +34,8 @@ const (
 )
 
 // PayloadKind is one row of the registry: what a kind is keyed by, how its
-// payloads relate under that key, what class of claim its facts are, and which
-// decision put it here.
+// payloads relate under that key, how often it is written, what class of claim
+// its facts are, and which decision put it here.
 type PayloadKind struct {
 	// Kind is the discriminator in the payload's "kind" field.
 	Kind string
@@ -45,10 +48,39 @@ type PayloadKind struct {
 	NaturalKey string
 	// Delivery is how payloads of this kind relate under that key.
 	Delivery Delivery
+	// Cadence is the gap between two writes of one key: a floor, a ceiling, and
+	// what decides the writes in between. It is a protocol constant, so the
+	// backend may rely on it without being told it (ADR 0073).
+	Cadence Cadence
 	// ADR names the decision that introduced or last changed this row, so a
 	// reader of the registry can reach the reasoning without searching.
 	ADR string
 }
+
+// The four cadences the rows below share, named so that changing one changes
+// every kind that holds it rather than a subset someone has to find (ADR 0073).
+var (
+	// everyPass: written unconditionally on the periodic pass. The interval is
+	// the pass's own, and cmd/agent's TestFixedCadenceMatchesItsTicker binds
+	// the two so neither can move alone.
+	everyPass = Cadence{Floor: time.Minute, Ceiling: time.Minute, Trigger: TriggerAlways}
+
+	// onChange: sent at the next pass after it changes, and at most a quarter
+	// of an hour apart regardless. The floor is the debounce — ninety nodes
+	// arriving in twenty seconds are one send — and a minute of it is enough
+	// because these payloads hold still between real changes.
+	onChange = Cadence{Floor: time.Minute, Ceiling: 15 * time.Minute, Trigger: TriggerChanged}
+
+	// onChangeDebounced: the same, with a floor long enough to be worth having
+	// on the kinds whose payload moves on every reschedule and every rollout.
+	// At a minute those would send every minute and the predicate would buy
+	// nothing; at five it is a fivefold floor under the worst case and the
+	// ceiling still governs the quiet one.
+	onChangeDebounced = Cadence{Floor: 5 * time.Minute, Ceiling: 15 * time.Minute, Trigger: TriggerChanged}
+
+	// onEvent: no cadence. The thing happened, or it did not.
+	onEvent = Cadence{Trigger: TriggerEvent}
+)
 
 // registry is the fixed list. Order here is irrelevant — Registry sorts.
 var registry = []PayloadKind{
@@ -60,6 +92,7 @@ var registry = []PayloadKind{
 		Source:     SourceAgent,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
 		ADR:        "0054",
 	},
 	{
@@ -67,6 +100,7 @@ var registry = []PayloadKind{
 		Source:     SourceMeasured,
 		NaturalKey: "(window start, window length)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
 		ADR:        "0006, 0013",
 	},
 	{
@@ -74,6 +108,7 @@ var registry = []PayloadKind{
 		Source:     SourceMeasured,
 		NaturalKey: "(window start, window length)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onEvent,
 		ADR:        "0006, 0013",
 	},
 	{
@@ -85,6 +120,7 @@ var registry = []PayloadKind{
 		Source:     SourceMeasured,
 		NaturalKey: "(window start, window length)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onEvent,
 		ADR:        "0053",
 	},
 	{
@@ -92,6 +128,7 @@ var registry = []PayloadKind{
 		Source:     SourceJournal,
 		NaturalKey: "(finished-at, namespace, pod, container, restart count)",
 		Delivery:   DeliveryAccumulates,
+		Cadence:    onEvent,
 		ADR:        "0006, 0013",
 	},
 	{
@@ -99,6 +136,7 @@ var registry = []PayloadKind{
 		Source:     SourceJournal,
 		NaturalKey: "(window start, window length)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
 		ADR:        "0020",
 	},
 	{
@@ -111,6 +149,7 @@ var registry = []PayloadKind{
 		Source:     SourceJournal,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0034",
 	},
 	{
@@ -118,6 +157,7 @@ var registry = []PayloadKind{
 		Source:     SourceJournal,
 		NaturalKey: "(window start, window length)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
 		ADR:        "0021",
 	},
 	{
@@ -128,6 +168,7 @@ var registry = []PayloadKind{
 		Source:     SourceJournal,
 		NaturalKey: "(window start, window length)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
 		ADR:        "0064",
 	},
 	{
@@ -138,13 +179,18 @@ var registry = []PayloadKind{
 		Source:     SourceJournal,
 		NaturalKey: "(window start, window length)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
 		ADR:        "0029",
 	},
 	{
+		// Its coverage block dates each node's latest report, so the payload
+		// differs on nearly every pass however still the fleet is: here the
+		// floor does the work and the predicate rarely gets to (ADR 0073 §3).
 		Kind:       "go_inventory",
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0010, 0017, 0018",
 	},
 	{
@@ -157,16 +203,21 @@ var registry = []PayloadKind{
 		Source:     SourceMeasured,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0052",
 	},
 	{
 		// Measured, and the one kind whose records are differences rather than
 		// readings: each is what changed since the node's previous pass, with
-		// the interval it covers (ADR 0062).
+		// the interval it covers (ADR 0062). That is also why it is the one
+		// superseding snapshot that is never skipped: a suppressed write is an
+		// interval nothing else carries, where a skipped reading is a reading
+		// that is still true (ADR 0073 §2).
 		Kind:       "process_counters",
 		Source:     SourceMeasured,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
 		ADR:        "0062",
 	},
 	{
@@ -177,6 +228,7 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0056",
 	},
 	{
@@ -184,13 +236,20 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "image digest",
 		Delivery:   DeliveryWriteOnce,
+		Cadence:    onEvent,
 		ADR:        "0017, 0019",
 	},
 	{
+		// The largest payload and the least still one: `pod.phases`, `pod.nodes`
+		// and the replica counts move on every rollout and every reschedule, so
+		// it takes the long floor rather than a projection past them — a field
+		// left out of a comparison is a field whose changes wait for the ceiling
+		// (ADR 0073 §3).
 		Kind:       "workload_metadata",
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0012, 0014, 0021, 0031",
 	},
 	{
@@ -201,6 +260,7 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0030, 0049",
 	},
 	{
@@ -211,6 +271,7 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0032, 0033",
 	},
 	{
@@ -220,13 +281,19 @@ var registry = []PayloadKind{
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChangeDebounced,
 		ADR:        "0032, 0033",
 	},
 	{
+		// The one snapshot on the short floor: a node's conditions carry their
+		// last transition and not the kubelet's heartbeat (internal/model), so
+		// this payload genuinely holds still between real changes and a minute
+		// of debounce costs a steady cluster nothing (ADR 0073 §2).
 		Kind:       "node_metadata",
 		Source:     SourceStructural,
 		NaturalKey: "the kind itself (one per cluster)",
 		Delivery:   DeliverySupersedes,
+		Cadence:    onChange,
 		ADR:        "0012, 0019",
 	},
 	{
@@ -237,6 +304,7 @@ var registry = []PayloadKind{
 		Source:     SourceSampled,
 		NaturalKey: "(namespace, workload, container, image digest, capture start–end)",
 		Delivery:   DeliveryAccumulates,
+		Cadence:    onEvent,
 		ADR:        "0011, 0023",
 	},
 	{
@@ -248,6 +316,7 @@ var registry = []PayloadKind{
 		Source:     SourceSampled,
 		NaturalKey: "(namespace, workload, container, image digest, capture start–end)",
 		Delivery:   DeliveryAccumulates,
+		Cadence:    onEvent,
 		ADR:        "0058",
 	},
 }
