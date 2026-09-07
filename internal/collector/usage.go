@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -80,6 +81,11 @@ type UsagePoller struct {
 	// pod, so there is nothing finer to baseline (ADR 0053 §1).
 	netTracker map[types.UID]*netCounterState
 
+	// The keys whose open window this process inherited from the spool, and
+	// when the last of those windows ends (ADR 0072).
+	resumedKeys  map[rollup.Key]struct{}
+	resumedUntil time.Time
+
 	// Observation state: which kubelet signals this cluster actually exposes
 	// (runtime probing, ADR 0006) and how the polling itself is going. Written
 	// by the poll goroutine, read by whoever ships or logs a payload, so it is
@@ -118,11 +124,12 @@ type trackerKey struct {
 	container string
 }
 
-// counterState is the per-container baseline for cumulative counters. It
-// lives only in memory: after an agent restart the first observation
-// rebaselines from the container's start, so no persistent state is needed
-// (loss-harmless by construction). The PSI stall counters share their
-// parent stats' timestamps.
+// counterState is the per-container baseline for cumulative counters. It lives
+// only in memory and is not recovered: after a restart the first observation
+// either attributes the counter from container start or, where the window it
+// belongs to was resumed, only rebaselines — which costs one poll interval and
+// is the price ADR 0072 names. The PSI stall counters share their parent
+// stats' timestamps.
 type counterState struct {
 	cpuTime    time.Time
 	cpuCounter uint64
@@ -165,18 +172,51 @@ func NewUsagePoller(
 		pods:           pods,
 		requestTimeout: kubeletRequestTimeout,
 
-		onSnapshot: onSnapshot,
-		onClosed:   onClosed,
-		onNetwork:  onNetwork,
-		onError:    onError,
-		acc:        rollup.NewAccumulator(UsageWindowLength),
-		netAcc:     rollup.NewNetworkAccumulator(UsageWindowLength),
-		polls:      map[KubeletPath]*pathCounts{PathStatsSummary: {}, PathMetricsCadvisor: {}},
-		tracker:    make(map[trackerKey]*counterState),
-		throttle:   make(map[trackerKey]*throttleState),
-		netTracker: make(map[types.UID]*netCounterState),
-		signals:    make(map[string]bool),
+		onSnapshot:  onSnapshot,
+		onClosed:    onClosed,
+		onNetwork:   onNetwork,
+		onError:     onError,
+		acc:         rollup.NewAccumulator(UsageWindowLength),
+		netAcc:      rollup.NewNetworkAccumulator(UsageWindowLength),
+		polls:       map[KubeletPath]*pathCounts{PathStatsSummary: {}, PathMetricsCadvisor: {}},
+		tracker:     make(map[trackerKey]*counterState),
+		throttle:    make(map[trackerKey]*throttleState),
+		netTracker:  make(map[types.UID]*netCounterState),
+		signals:     make(map[string]bool),
+		resumedKeys: make(map[rollup.Key]struct{}),
 	}
+}
+
+// Seed adopts open-window records a previous process of this agent left in the
+// spool, so a restart resumes those windows instead of reopening them empty and
+// overwriting the file they are in (ADR 0072). A record the accumulator refuses
+// is reported and skipped; every other record is still adopted.
+//
+// It must be called before Run. The accumulator has one owner and no lock, and
+// until Run starts that owner is whoever constructed the poller.
+func (p *UsagePoller) Seed(records []*rollup.Record) error {
+	var errs []error
+	for _, r := range records {
+		if err := p.acc.Seed(r); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		p.resumedKeys[r.Key] = struct{}{}
+		if end := r.WindowStart.Add(time.Duration(r.WindowSeconds) * time.Second); end.After(p.resumedUntil) {
+			p.resumedUntil = end
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// attributableFromStart reports whether a first observation of a key may be
+// attributed all the way back to container start. It may not for a key whose
+// open window this process resumed: the counter's history up to the restart is
+// already in that record, and smearing the counter over the container's
+// lifetime again would add it a second time (ADR 0072).
+func (p *UsagePoller) attributableFromStart(k rollup.Key) bool {
+	_, resumed := p.resumedKeys[k]
+	return !resumed
 }
 
 // Run polls until ctx is canceled. Closed windows and open-window snapshots
@@ -486,9 +526,12 @@ func (p *UsagePoller) ingestContainer(tk trackerKey, key rollup.Key, c *statsapi
 		switch {
 		case st.cpuTime.IsZero():
 			// First observation: the counters themselves are the deltas
-			// since container start.
-			p.observeCPU(key, c.StartTime.Time, at, counter)
-			p.observeCPUPSI(c.CPU.PSI, key, c.StartTime.Time, at, psi)
+			// since container start — unless this process resumed the key's
+			// window, which already holds them.
+			if p.attributableFromStart(key) {
+				p.observeCPU(key, c.StartTime.Time, at, counter)
+				p.observeCPUPSI(c.CPU.PSI, key, c.StartTime.Time, at, psi)
+			}
 		case !at.After(st.cpuTime):
 			advance = false // re-served or stale snapshot — discard, keep baselines
 		case counter < st.cpuCounter || psi < st.cpuPSI:
@@ -511,17 +554,14 @@ func (p *UsagePoller) ingestContainer(tk trackerKey, key rollup.Key, c *statsapi
 		}
 		if at := c.Memory.Time.Time; at.After(st.memTime) {
 			p.acc.ObserveMemory(key, at, clampToInt64(*c.Memory.WorkingSetBytes))
-			if c.Memory.PSI != nil && psi >= st.memPSI {
-				from := st.memTime
-				if from.IsZero() {
-					from = c.StartTime.Time
+			first := st.memTime.IsZero()
+			if c.Memory.PSI != nil && psi >= st.memPSI && (!first || p.attributableFromStart(key)) {
+				from, delta := st.memTime, psi-st.memPSI
+				if first {
+					from, delta = c.StartTime.Time, psi
 				}
-				delta := psi
-				if !st.memTime.IsZero() {
-					delta = psi - st.memPSI
-				}
-				if to := at; to.After(from) {
-					p.acc.ObserveMemoryPSI(key, from, to, clampToInt64(delta))
+				if at.After(from) {
+					p.acc.ObserveMemoryPSI(key, from, at, clampToInt64(delta))
 				}
 			}
 			st.memTime, st.memPSI = at, psi
@@ -567,6 +607,11 @@ func (p *UsagePoller) sweep(now time.Time) {
 		if st.lastSeen.Before(cutoff) {
 			delete(p.netTracker, uid)
 		}
+	}
+	// The resumed set guards only the windows it filled; once the last of them
+	// has ended there is nothing left to attribute twice into.
+	if len(p.resumedKeys) > 0 && !now.Before(p.resumedUntil) {
+		clear(p.resumedKeys)
 	}
 }
 

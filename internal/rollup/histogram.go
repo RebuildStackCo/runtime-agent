@@ -7,8 +7,10 @@ package rollup
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"math/bits"
 	"sort"
 	"strconv"
@@ -173,4 +175,33 @@ func (h *Histogram) MarshalJSON() ([]byte, error) {
 	}
 	b.WriteByte('}')
 	return b.Bytes(), nil
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON, and it decodes only into a
+// histogram that already carries its grid: which anchor a histogram is on is
+// fixed by the field holding it, never by its contents, so it is not in the
+// bytes. Record.UnmarshalJSON is what supplies it.
+func (h *Histogram) UnmarshalJSON(b []byte) error {
+	var raw map[string]uint64
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if h.counts == nil {
+		return fmt.Errorf("rollup: decoding a histogram that carries no grid")
+	}
+	for bound, count := range raw {
+		v, err := strconv.ParseUint(bound, 10, 64)
+		if err != nil {
+			return fmt.Errorf("rollup: histogram key %q is not a bucket bound", bound)
+		}
+		if v > math.MaxInt64 {
+			return fmt.Errorf("rollup: histogram bucket bound %d is out of range", v)
+		}
+		i := h.Index(int64(v)) // #nosec G115 -- bounded above
+		if h.LowerBound(i) != v {
+			return fmt.Errorf("rollup: %d is not a bucket bound on this grid", v)
+		}
+		h.counts[i] += count
+	}
+	return nil
 }

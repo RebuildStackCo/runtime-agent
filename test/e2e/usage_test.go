@@ -36,50 +36,10 @@ func TestUsagePollerAgainstRealCluster(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
-	ns := fmt.Sprintf("runtime-agent-e2e-usage-%d", os.Getpid())
-	_, err := clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: ns},
-	}, metav1.CreateOptions{})
-	if err != nil {
-		t.Fatalf("creating namespace: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cleanupCancel()
-		_ = clientset.CoreV1().Namespaces().Delete(cleanupCtx, ns, metav1.DeleteOptions{})
-	})
-
-	// A tight shell loop burns CPU up to the 300m limit — enough to
-	// accumulate unambiguous core-nanoseconds within two poll intervals.
-	burner := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "burner"},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr.To(int32(1)),
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "burner"}},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "burner"}},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:    "burn",
-						Image:   busyboxImage,
-						Command: []string{"sh", "-c", "while :; do :; done"},
-						Resources: corev1.ResourceRequirements{
-							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("300m"),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
-							},
-						},
-					}},
-				},
-			},
-		},
-	}
-	if _, err := clientset.AppsV1().Deployments(ns).Create(ctx, burner, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("creating burner deployment: %v", err)
-	}
+	ns := startBurner(ctx, t, clientset, "usage")
 
 	spoolDir := t.TempDir()
-	records, poller := startUsagePipeline(ctx, t, clientset, spoolDir)
+	records, poller, _ := startUsagePipeline(ctx, t, clientset, spoolDir)
 
 	// A snapshot record for the burner must accumulate at least 3 CPU
 	// core-seconds (300m for ~10 s of attributed runtime), real memory
@@ -213,7 +173,7 @@ func assertSpoolHoldsBurner(t *testing.T, spoolDir, ns string) {
 // startUsagePipeline wires pod watcher, node watcher, usage poller, and the
 // local spool the same way the agent's main does, and returns the sink
 // receiving snapshots.
-func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.Interface, spoolDir string) (*recordSink, *collector.UsagePoller) {
+func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.Interface, spoolDir string) (*recordSink, *collector.UsagePoller, func()) {
 	t.Helper()
 	results := &recordSink{latest: make(map[string]*rollup.Record)}
 	spool, err := sink.NewSpool(spoolDir, 0)
@@ -251,15 +211,78 @@ func startUsagePipeline(ctx context.Context, t *testing.T, clientset kubernetes.
 		},
 		func(node string, err error) { t.Logf("kubelet poll failed on %s: %v", node, err) },
 	)
+	// The startup read, before any runner exists — exactly where and when the
+	// agent does it (ADR 0072).
+	recovery, err := spool.RecoverOpenWindows(time.Now())
+	if err != nil {
+		t.Fatalf("recovering open windows: %v", err)
+	}
+	for _, skipped := range recovery.Skipped {
+		t.Errorf("a spool payload was skipped: %v", skipped)
+	}
+	if err := poller.Seed(recovery.Records); err != nil {
+		t.Errorf("seeding the accumulator: %v", err)
+	}
+	t.Logf("resumed %d open windows carrying %d records", recovery.Windows, len(recovery.Records))
 
+	var wg sync.WaitGroup
 	for name, run := range map[string]func(context.Context) error{
 		"pods": podWatcher.Run, "nodes": nodeWatcher.Run, "usage": poller.Run,
 	} {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			if err := run(ctx); err != nil && ctx.Err() == nil {
 				t.Errorf("%s runner failed: %v", name, err)
 			}
 		}()
 	}
-	return results, poller
+	return results, poller, wg.Wait
+}
+
+// startBurner creates a namespace and a deployment whose tight shell loop burns
+// CPU up to a 300m limit — enough to accumulate unambiguous core-nanoseconds
+// within two poll intervals. It returns the namespace, cleaned up with the test.
+func startBurner(ctx context.Context, t *testing.T, clientset kubernetes.Interface, suffix string) string {
+	t.Helper()
+	ns := fmt.Sprintf("runtime-agent-e2e-%s-%d", suffix, os.Getpid())
+	_, err := clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating namespace: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cleanupCancel()
+		_ = clientset.CoreV1().Namespaces().Delete(cleanupCtx, ns, metav1.DeleteOptions{})
+	})
+
+	burner := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "burner"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "burner"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "burner"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:    "burn",
+						Image:   busyboxImage,
+						Command: []string{"sh", "-c", "while :; do :; done"},
+						Resources: corev1.ResourceRequirements{
+							Limits: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("300m"),
+								corev1.ResourceMemory: resource.MustParse("64Mi"),
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+	if _, err := clientset.AppsV1().Deployments(ns).Create(ctx, burner, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating burner deployment: %v", err)
+	}
+	return ns
 }

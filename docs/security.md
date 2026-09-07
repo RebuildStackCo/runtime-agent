@@ -253,29 +253,29 @@ the reasoning is in [ADR 0005](adr/0005-two-tier-identity.md) and
 The controller keeps a small local volume — an `emptyDir`, always. The agent asks
 for no PersistentVolume and offers no setting that would give it one
 ([ADR 0007](adr/0007-optional-durability.md),
-[ADR 0026](adr/0026-no-persistent-volume.md)), so installing it requires no
-StorageClass and no provisioning rights. The volume holds one thing: the spool of
-unshipped payload batches, held until delivery is acknowledged and deleted
-immediately after. Only data that has already passed the filters is written
-there.
+[ADR 0026](adr/0026-no-persistent-volume.md)), so installing it needs no
+StorageClass and no provisioning rights. It holds one thing: unshipped payload
+batches, kept until delivery is acknowledged and deleted immediately after, and
+only data that has already passed the filters is written there.
 
 **It cannot fill your node** (ADR 0042). Three bounds, in order: payloads older
 than 24 hours are deleted even unacknowledged; the spool holds at most 512 MiB
 and 20000 files, dropping the oldest first; and the `emptyDir` declares a 1 GiB
-`sizeLimit`, deliberately above the agent's own budget so the agent's bound is
-the one that acts and the kubelet's is what holds if it fails. This is stated
-because the earlier version did not work: the sweep ran only when a usage record
-was written, so on a cluster where no kubelet could be polled nothing was ever
-swept.
+`sizeLimit` above it, so the agent's bound acts and the kubelet's is a backstop.
 
-Everything else the collector keeps — counter baselines, open windows, profiling
-rotation state — is held **in memory only**. Nothing about your cluster is
-accounted for on disk outside the spool.
-
+- Everything else the collector keeps — counter baselines, the open-window
+  accumulator, profiling rotation state — is **in memory**. Nothing about your
+  cluster is accounted for on disk outside the spool.
 - The volume is for continuity, not truth: everything on it is reconstructible,
   so it needs no backups.
+- **The agent reads it once, at startup** — the snapshots of usage windows still
+  open, so a restart resumes its hour rather than starting it over
+  ([ADR 0072](adr/0072-a-restart-resumes-the-window-the-spool-holds.md)). It is
+  the only read: no other kind, nothing deleted or rewritten, nothing recovered
+  from an empty or unreadable spool.
 - **Configuration is never cached on it.** Filters are read from the ConfigMap at
-  every start; a stale filter set cannot resurrect from disk.
+  every start and never reread while running; a stale filter set cannot resurrect
+  from disk, and a filter change takes a restart.
 - Encryption at rest is your node's. Nothing on the volume is a secret in any
   case — it holds only payloads already approved to leave the cluster.
 - A rescheduled pod loses the unacknowledged spool, bounded by the flush cadence

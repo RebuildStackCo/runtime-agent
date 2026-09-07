@@ -197,8 +197,9 @@ func (p *UsagePoller) ingestCadvisor(samples map[cadvisorKey]*cadvisorSample, no
 		switch {
 		case st.ts.IsZero():
 			// First observation: attributable from container start if the
-			// exposition carries it; otherwise it can only seed the baseline.
-			if !sample.start.IsZero() && at.After(sample.start) {
+			// exposition carries it and this process did not resume the key's
+			// window; otherwise it can only seed the baseline.
+			if !sample.start.IsZero() && at.After(sample.start) && p.attributableFromStart(rk) {
 				p.acc.ObserveThrottling(rk, sample.start, at,
 					clampToInt64(sample.throttled), clampToInt64(sample.periods))
 			}

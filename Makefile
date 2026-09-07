@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint chart-lint vulncheck tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e identity-e2e
+.PHONY: build test lint chart-lint vulncheck tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restart-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e identity-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -58,8 +58,14 @@ cluster-down: ## Delete the e2e kind cluster
 
 e2e: ## Run e2e tests against the kind cluster (see cluster-up); log goes to test/e2e/logs/
 	@mkdir -p test/e2e/logs
-	set -o pipefail; E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ 2>&1 \
+	set -o pipefail; E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) go test -tags e2e -count=1 -timeout 30m -v ./test/e2e/ 2>&1 \
 		| tee test/e2e/logs/e2e-$$(date +%Y%m%d-%H%M%S).log
+
+restart-e2e: ## Run the usage pipeline in kind, stop it mid-window, start it again over the same spool (ADR 0072); log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	set -o pipefail; E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestARestartResumesTheOpenWindowFromTheSpool 2>&1 \
+		| tee test/e2e/logs/restart-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 smoke: build ## Run the agent for SMOKE_SECONDS against the kind cluster (see cluster-up); log goes to test/e2e/logs/
 	@mkdir -p test/e2e/logs

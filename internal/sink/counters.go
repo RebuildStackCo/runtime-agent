@@ -31,6 +31,21 @@ type Counters struct {
 	// DefaultMaxBytes and DefaultMaxFiles. Zero before the first sweep runs.
 	Bytes int64
 	Files int64
+	// Recovered is what the one startup read of the spool found (ADR 0072).
+	Recovered Recovered
+}
+
+// Recovered is the startup read's result, and it does not change afterwards:
+// the read happens once, before anything else runs. Windows at zero on a
+// restart means the open window began again from nothing — which is the whole
+// state this recovery exists to prevent and the only way to see it from
+// outside.
+type Recovered struct {
+	Windows int64
+	Records int64
+	// Skipped counts files the read could not use. They are still in the spool
+	// and still shippable; nothing was deleted on their account.
+	Skipped int64
 }
 
 // countWrite records one payload written, or one write that failed.
@@ -42,6 +57,12 @@ func (s *Spool) countWrite(kind string, failed bool) {
 		return
 	}
 	s.written[kind]++
+}
+
+func (s *Spool) countRecovery(records, windows, skipped int) {
+	s.countMu.Lock()
+	defer s.countMu.Unlock()
+	s.recovered = Recovered{Windows: int64(windows), Records: int64(records), Skipped: int64(skipped)}
 }
 
 func (s *Spool) countEviction(reason string) {
@@ -76,6 +97,7 @@ func (s *Spool) Counters() Counters {
 		Evicted:       copyCounts(s.evicted),
 		Bytes:         s.bytes,
 		Files:         s.files,
+		Recovered:     s.recovered,
 	}
 }
 

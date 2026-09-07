@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -115,6 +116,25 @@ func newRecord(k Key, start time.Time, windowSeconds int64) *Record {
 		CPU:           CPUUsage{Hist: NewCPUHistogram()},
 		Memory:        MemoryUsage{Hist: NewMemoryHistogram()},
 	}
+}
+
+// UnmarshalJSON decodes a record this package wrote. The histograms are
+// constructed first because their grids are a property of the fields and not
+// of the bytes, and restored after because a null decodes to a nil pointer —
+// an absent histogram is an empty one, not a missing grid.
+func (r *Record) UnmarshalJSON(b []byte) error {
+	type plain Record
+	r.CPU.Hist, r.Memory.Hist = NewCPUHistogram(), NewMemoryHistogram()
+	if err := json.Unmarshal(b, (*plain)(r)); err != nil {
+		return err
+	}
+	if r.CPU.Hist == nil {
+		r.CPU.Hist = NewCPUHistogram()
+	}
+	if r.Memory.Hist == nil {
+		r.Memory.Hist = NewMemoryHistogram()
+	}
+	return nil
 }
 
 // Merge folds o into r. Both records must describe the same key and window;
