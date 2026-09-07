@@ -1,0 +1,11 @@
+# The payload schema. `proto/` is the whole module; the generated Go lives in
+# internal/pb and is committed, so nothing in CI needs a code generator.
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

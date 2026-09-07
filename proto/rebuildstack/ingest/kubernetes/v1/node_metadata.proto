@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+// The `node_metadata` payload: the machines the cluster is running on.
+package rebuildstack.ingest.kubernetes.v1;
+
+import "google/protobuf/timestamp.proto";
+import "rebuildstack/ingest/kubernetes/v1/node_device.proto";
+
+option go_package = "github.com/RebuildStackCo/runtime-agent/internal/pb/kubernetesv1;kubernetesv1";
+
+// The nodes the cluster holds, with what each machine is and what it can carry.
+//
+// A superseding snapshot keyed by the payload kind: the newest one replaces its
+// predecessor entirely, and a node absent from it is a node that is no longer
+// in the cluster. What left is recorded in NodeLifecycle instead.
+message NodeMetadata {
+  // The payload kind: "node_metadata".
+  string kind = 1;
+
+  // The class of claim these facts are: "structural" — read from an object's
+  // spec or status, rather than measured from an instrument or sampled.
+  string source = 2;
+
+  // When the snapshot was taken. It dates the assembly, not each fact in it.
+  google.protobuf.Timestamp captured_at = 3;
+
+  // Every node in the cluster at that instant.
+  repeated NodeInfo nodes = 4;
+}
+
+// One node: what kind of machine it is, where it sits, what software runs it,
+// what state it reports and what it refuses to run.
+message NodeInfo {
+  // The node's name in the cluster. Other payloads name nodes by this string.
+  string name = 1;
+
+  // The machine type as the cloud provider labels it, e.g. "m6i.large". Empty
+  // when the node carries no such label.
+  string instance_type = 2;
+
+  // How the machine is bought: "spot", "on-demand", or empty when the node's
+  // labels do not settle it.
+  string capacity_type = 3;
+
+  // The failure domain the node is in, from its own topology label. Empty when
+  // the node carries no such label.
+  string zone = 4;
+
+  // The wider region the zone belongs to, from the node's own topology label.
+  // Empty when the node carries no such label.
+  string region = 5;
+
+  // The kernel the node runs, as the kubelet reports it, e.g. "6.1.0-generic".
+  string kernel_version = 6;
+
+  // The node's CPU architecture, e.g. "amd64", "arm64".
+  string architecture = 7;
+
+  // The kubelet's own version, e.g. "v1.31.4".
+  string kubelet_version = 8;
+
+  // The node's OS image, e.g. "Ubuntu 22.04.5 LTS", and its operating system,
+  // e.g. "linux".
+  string os_image = 9;
+  string operating_system = 10;
+
+  // The container runtime and its version, e.g. "containerd://1.7.22".
+  string container_runtime = 11;
+
+  // The node object's own creation timestamp: when the machine joined, not when
+  // it was read. Absent when the node object stated none.
+  google.protobuf.Timestamp created_at = 12;
+
+  // Capacity is what the machine has; allocatable is what is left for pods once
+  // the node's own reservations are taken out. They are separate claims and
+  // neither implies the other.
+  //
+  // Absent means the size was not stated; zero means the node reported none of
+  // that resource. A sum over absent fields is not a total.
+
+  // Thousandths of a CPU core: 1000 is one core.
+  optional int64 capacity_cpu_milli = 13;
+  optional int64 allocatable_cpu_milli = 14;
+
+  // Bytes of RAM.
+  optional int64 capacity_memory_bytes = 15;
+  optional int64 allocatable_memory_bytes = 16;
+
+  // Bytes of node-local disk, which images, logs and emptyDir volumes share.
+  optional int64 capacity_ephemeral_storage_bytes = 17;
+  optional int64 allocatable_ephemeral_storage_bytes = 18;
+
+  // How many pods the kubelet will run here. A node idle in CPU and memory can
+  // still be full at this bound.
+  optional int64 capacity_pods = 19;
+  optional int64 allocatable_pods = 20;
+
+  // The extended resources the node advertises. Empty means it advertises none
+  // this schema carries; see NodeDevice for what that excludes.
+  repeated NodeDevice devices = 21;
+
+  // The node's conditions, of the five types this schema carries: Ready,
+  // MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable. All five are
+  // carried whenever the node reports them, healthy or not, and conditions of
+  // other types are counted in CollectionCoverage.nodes.conditions_dropped.
+  //
+  // Empty is not a healthy node. It is a node that reported no condition at all.
+  repeated NodeCondition conditions = 22;
+
+  // What the node refuses to run, unless a pod tolerates it. Empty means it
+  // refuses nothing; taints whose strings were too long to carry are counted in
+  // CollectionCoverage.nodes.taints_dropped.
+  repeated NodeTaint taints = 23;
+}
+
+// One condition the node reports about itself. The free-text `message` the
+// kubelet writes beside it is not carried.
+message NodeCondition {
+  // One of Ready, MemoryPressure, DiskPressure, PIDPressure,
+  // NetworkUnavailable.
+  string type = 1;
+
+  // "True", "False" or "Unknown", as the node reports it.
+  string status = 2;
+
+  // The node's own machine-readable reason token, e.g. "KubeletReady". Empty
+  // when the node stated none, or when the token was too long to carry — in
+  // which case it is counted in CollectionCoverage.nodes.values_dropped.
+  string reason = 3;
+
+  // When the condition last changed to this status. It is the transition, not
+  // the kubelet's heartbeat, which moves every few seconds and is not carried.
+  // Absent when the node stated no transition time.
+  google.protobuf.Timestamp since = 4;
+}
+
+// One taint on the node: what it fences off from pods that do not tolerate it.
+message NodeTaint {
+  string key = 1;
+
+  // Empty when the taint carries no value; a taint's value is optional.
+  string value = 2;
+
+  // "NoSchedule", "PreferNoSchedule" or "NoExecute".
+  string effect = 3;
+}

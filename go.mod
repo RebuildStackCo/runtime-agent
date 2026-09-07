@@ -170,6 +170,7 @@ require (
 
 tool (
 	golang.org/x/vuln/cmd/govulncheck
+	google.golang.org/protobuf/cmd/protoc-gen-go
 	helm.sh/helm/v4/cmd/helm
 	sigs.k8s.io/kind
 )

@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+// The `node_lifecycle` payload: machines arriving in and leaving the cluster.
+package rebuildstack.ingest.kubernetes.v1;
+
+import "google/protobuf/timestamp.proto";
+import "rebuildstack/ingest/kubernetes/v1/node_device.proto";
+
+option go_package = "github.com/RebuildStackCo/runtime-agent/internal/pb/kubernetesv1;kubernetesv1";
+
+// The nodes that joined or left the cluster within one window.
+//
+// The window is a delivery boundary and not an aggregation: every record
+// carries its own instant, and nothing here is summed over the window.
+message NodeLifecycle {
+  // The payload kind: "node_lifecycle".
+  string kind = 1;
+
+  // The class of claim these facts are: "journal" — derived from object
+  // metadata that records what happened, rather than from current state.
+  string source = 2;
+
+  // The window this payload covers: when it begins, and how many seconds long
+  // it is. Together they are the payload's key.
+  google.protobuf.Timestamp window_start = 3;
+  int64 window_seconds = 4;
+
+  // One record per node and event within the window. A node that joined and
+  // left in the same window has two.
+  repeated NodeEvent records = 5;
+}
+
+// One node arriving in or leaving the cluster.
+//
+// It carries the machine's own size at the instant of the event rather than
+// pointing at a node inventory: a node that has left is absent from every later
+// NodeMetadata, so this is the only record of how big what left was.
+message NodeEvent {
+  // The node's name in the cluster.
+  string node = 1;
+
+  // "joined" or "left".
+  string event = 2;
+
+  // When it happened. For a join this is the node object's own creation
+  // timestamp; for a departure it is when the agent noticed, because a deleted
+  // object carries no deletion time to read. at_observed says which.
+  google.protobuf.Timestamp at = 3;
+
+  // True when `at` is the instant the agent noticed rather than the instant the
+  // event carries. Absent means the provenance of `at` was not stated; false is
+  // a claim that `at` is the event's own.
+  optional bool at_observed = 4;
+
+  // What the machine was, at the instant of the event. Each is empty when the
+  // node carried no such label.
+  string instance_type = 5;
+  string capacity_type = 6;
+  string zone = 7;
+
+  // What the machine had — capacity, before the node's own reservations, so
+  // this is the size of the machine and not what pods could use.
+  //
+  // Absent means the size was not stated; zero means the node reported none of
+  // that resource. A sum over absent fields is not a total.
+
+  // Thousandths of a CPU core: 1000 is one core.
+  optional int64 capacity_cpu_milli = 8;
+
+  // Bytes of RAM.
+  optional int64 capacity_memory_bytes = 9;
+
+  // The extended resources the node advertised. Empty means it advertised none
+  // this schema carries; see NodeDevice for what that excludes.
+  repeated NodeDevice devices = 10;
+
+  // The window this record is filed in, repeated from the payload carrying it,
+  // so a record read on its own still states which window it belongs to.
+  google.protobuf.Timestamp window_start = 11;
+  int64 window_seconds = 12;
+}

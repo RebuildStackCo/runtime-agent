@@ -1,0 +1,400 @@
+syntax = "proto3";
+
+// The `collection_coverage` payload: what the agent did, not what it found.
+package rebuildstack.ingest.kubernetes.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/RebuildStackCo/runtime-agent/internal/pb/kubernetesv1;kubernetesv1";
+
+// What the agent looked at, what it was configured to skip and under which
+// control, which of its reads worked, and the shape of the configuration in
+// force. Its subject is the agent itself, which is what separates it from every
+// other payload kind.
+//
+// Every number here is an aggregate. No name of an excluded, dropped or
+// refused object appears anywhere in this message.
+message CollectionCoverage {
+  // The payload kind: "collection_coverage".
+  string kind = 1;
+
+  // The class of claim these facts are: "agent" — a fact about the collection
+  // rather than about the cluster.
+  string source = 2;
+
+  // When this report was assembled. It is written on every flush whether or not
+  // anything changed, so a captured_at that stops advancing is a fact about the
+  // agent where silence in any other kind is not.
+  google.protobuf.Timestamp captured_at = 3;
+
+  // The base of every cumulative counter below: when this agent process began
+  // counting. A counter that fell rather than rose means the process restarted,
+  // which a moved `since` is what shows.
+  google.protobuf.Timestamp since = 4;
+
+  // What the agent is and how it is configured.
+  AgentInfo agent = 5;
+
+  // Each watched source as the agent found it: read access as measured, rather
+  // than as granted.
+  repeated SourceHealth sources = 6;
+
+  // What the pod and Job filters admitted and excluded.
+  FilterCoverage filter = 7;
+
+  // What the placement reduction refused to carry from collected workloads.
+  PlacementDrops placement = 8;
+
+  // What the node reductions refused to carry from collected nodes.
+  NodeDrops nodes = 9;
+
+  // The Go inventory's state, and what the on-node process scans did. Both are
+  // present only when the on-node role is deployed.
+  InventoryCounters inventory = 10;
+  ScanCoverage scan = 11;
+
+  // What the on-node profilers did. Present once a node has reported it.
+  ProfileCoverage ebpf = 12;
+
+  // Workload targets by the latest answer about their profiling endpoint.
+  // Present only when endpoint discovery is enabled.
+  PprofCoverage pprof = 13;
+
+  // What the agent's receiver for on-node reports refused. Present only when
+  // that receiver is enabled.
+  IntakeRejections intake_rejections = 14;
+
+  // What fetching profiles from confirmed endpoints did. Present only when
+  // profiles are pulled.
+  PprofPullCoverage pprof_pull = 15;
+}
+
+// What the agent is and how it is set up, so a reader knows what the counts
+// beside it rest on.
+message AgentInfo {
+  // The agent build. "dev" means an unstamped binary.
+  string version = 1;
+
+  // The shape of the configuration in force.
+  ConfigShape config = 2;
+
+  // Which kubelet signals this cluster exposes, e.g. "cpu", "memory",
+  // "network", "throttling". Empty means the agent found none.
+  repeated string usage_signals = 3;
+}
+
+// The shape of the agent's configuration: how many entries each filter list
+// holds, and which switches are on.
+//
+// It carries no entry from any list — no namespace name, no module prefix, and
+// no hash of either, since a digest of a handful of short names is reversible
+// by trying the plausible ones.
+message ConfigShape {
+  // When the configuration in force took effect.
+  google.protobuf.Timestamp since = 1;
+
+  // How many entries the namespace allow and deny lists hold. An empty allow
+  // list admits every namespace, so zero and three are different postures
+  // rather than more and less of one. Absent means the count was not stated.
+  optional int64 namespaces_allowed = 2;
+  optional int64 namespaces_denied = 3;
+
+  // Whether profiling is enabled at all. Absent means the switch was not
+  // stated; false is a claim that it is off.
+  optional bool profiling_enabled = 4;
+
+  // How many workloads a profiling answer may name. Absent when no such limit
+  // is configured.
+  int64 profiling_top_n = 5;
+
+  // Whether the agent may connect to a collected workload to confirm a
+  // profiling endpoint, and whether it may then fetch a profile from one.
+  // Absent means the switch was not stated; false is a claim that it is off.
+  optional bool pprof_discovery_enabled = 6;
+  optional bool pprof_pull_enabled = 7;
+
+  // How many module prefixes the operator added to the symbol allow-list. A
+  // count, never a prefix. Absent means the count was not stated.
+  optional int64 symbol_prefixes_allowed = 8;
+
+  // Whether the receiver for on-node reports is open. Absent means the switch
+  // was not stated; false is a claim that it is closed.
+  optional bool node_intake_enabled = 9;
+
+  // How many hours an unacknowledged payload may wait locally before it is
+  // dropped. Absent when the agent's own built-in bound is what applies.
+  int64 spool_max_age_hours = 10;
+}
+
+// One watched source as the agent found it.
+message SourceHealth {
+  // The resource class watched, e.g. "services", "endpoint_slices". Never the
+  // name of an object in the cluster.
+  string name = 1;
+
+  // Whether the agent's cache of that source ever filled. Absent means it was
+  // not stated; false is a claim that the cache never filled.
+  optional bool synced = 2;
+
+  // Whether the watch has been failing recently enough to treat the cache as no
+  // longer fed. Absent means it was not stated; false is a claim that the cache
+  // is still being fed.
+  optional bool failing = 3;
+}
+
+// How many pods and Jobs the filter looked at and excluded, counted once per
+// appearance, and under which control.
+//
+// Counts only: the identity of an excluded object never appears. Absent means
+// the counter was not stated; zero is a claim that nothing was excluded under
+// that control.
+message FilterCoverage {
+  // Every pod the filter looked at.
+  optional int64 pods_observed = 1;
+
+  // Pods excluded by the configured namespace lists.
+  optional int64 excluded_namespace_filter = 2;
+
+  // Pods excluded by an opt-out annotation, by the object that carried it.
+  optional int64 excluded_namespace_annotation = 3;
+  optional int64 excluded_workload_annotation = 4;
+  optional int64 excluded_pod_annotation = 5;
+
+  // Pods that were collected and not profiled: the opt-out that removes a
+  // workload from profiling while leaving everything else about it collected.
+  optional int64 excluded_profiling_annotation = 6;
+
+  // Pods admitted without their workload's opt-out being checked: the workload
+  // is of a kind the agent does not read, or it was not in the agent's cache.
+  // They are separate counters because the first is a standing property of a
+  // cluster and the second is not.
+  optional int64 workload_unknown_kind = 7;
+  optional int64 workload_not_cached = 8;
+
+  // Every Job the filter looked at.
+  //
+  // The Job counters are kept apart from the pod ones because one Job produces
+  // many pods, and a shared counter would answer neither question.
+  optional int64 jobs_observed = 9;
+
+  // Jobs excluded by the configured namespace lists.
+  optional int64 jobs_excluded_namespace_filter = 10;
+
+  // Jobs excluded by an opt-out annotation on the namespace, on the workload
+  // that owns the Job, and on the Job itself.
+  optional int64 jobs_excluded_namespace_annotation = 11;
+  optional int64 jobs_excluded_workload_annotation = 12;
+  optional int64 jobs_excluded_annotation = 13;
+}
+
+// What the placement reduction refused to carry from a workload's scheduling
+// constraints. The workload is collected; part of what its manifest states is
+// not represented.
+//
+// Absent means the counter was not stated; zero is a claim that nothing was
+// dropped.
+message PlacementDrops {
+  // Terms dropped because an operator-written string in them was over the
+  // length this schema carries; the term is dropped rather than truncated.
+  optional int64 values_dropped = 1;
+
+  // Terms dropped past the bound on how many of one kind are carried from one
+  // pod.
+  optional int64 terms_dropped = 2;
+}
+
+// What the node reductions refused to carry, cumulative since the agent
+// started. The node is collected; part of what it reports is not represented.
+//
+// Absent means the counter was not stated; zero is a claim that nothing was
+// dropped.
+message NodeDrops {
+  // Conditions dropped for being of a type this schema does not carry.
+  optional int64 conditions_dropped = 1;
+
+  // Extended resources dropped for their vendor prefix, or past the bound on
+  // how many are carried from one node.
+  optional int64 devices_dropped = 2;
+
+  // Taints dropped for a key or value over the length this schema carries, or
+  // past the same bound.
+  optional int64 taints_dropped = 3;
+
+  // Single values dropped for their length, where the record around them was
+  // kept — a condition reason, and the scalar fields of a node.
+  optional int64 values_dropped = 4;
+}
+
+// The state of the cluster's Go inventory, and how much of what nodes sent
+// joined to a workload.
+//
+// Absent means the counter was not stated; zero is a number that was counted.
+message InventoryCounters {
+  // Distinct (namespace, workload, container) records currently held.
+  optional int64 records = 1;
+
+  // Distinct Go versions across those records.
+  optional int64 go_versions = 2;
+
+  // How many of those records were built with profile-guided optimization.
+  optional int64 pgo_builds = 3;
+
+  // Distinct image digests whose build facts are held.
+  optional int64 builds = 4;
+
+  // Facts arriving from nodes since `since`: how many were received, how many
+  // joined to a pod, how many did not, and how many arrived with no image
+  // digest to key them by.
+  optional int64 facts_received = 5;
+  optional int64 facts_joined = 6;
+  optional int64 facts_unjoined = 7;
+  optional int64 facts_undigested = 8;
+
+  // Distinct nodes that have delivered an inventory report.
+  //
+  // Not interchangeable with ScanCoverage.nodes or ProfileCoverage.nodes: the
+  // three count participation in three different subsystems, and a node can be
+  // in one and not the others.
+  optional int64 nodes_reported = 9;
+}
+
+// What the on-node process scans did, summed over the nodes that reported.
+//
+// Absent means the counter was not stated; zero is a number that was counted.
+message ScanCoverage {
+  // How many nodes contributed the counters in this message.
+  //
+  // Not interchangeable with InventoryCounters.nodes_reported or
+  // ProfileCoverage.nodes: the three count participation in three different
+  // subsystems, and a node can be in one and not the others.
+  optional int64 nodes = 1;
+
+  // The earliest of those nodes' latest reports: the sums below are as current
+  // as their stalest contributor, and a node that stopped reporting keeps
+  // contributing its last pass. Absent when no node has reported.
+  google.protobuf.Timestamp oldest_asserted_at = 2;
+
+  // Every process the scans attempted, and the ones found to be Go binaries.
+  optional int64 processes_scanned = 3;
+  optional int64 go_found = 4;
+
+  // What the scans did not report, by reason: the process's pod is outside the
+  // collected scope, the process is cluster infrastructure or the agent itself,
+  // or its executable carried no Go build information. Together with go_found
+  // these account for processes_scanned.
+  optional int64 filtered_scope = 5;
+  optional int64 filtered_infra = 6;
+  optional int64 unreadable = 7;
+}
+
+// What the on-node profilers did, summed over the nodes that reported, plus the
+// two counts only the receiving side can make. Cumulative since each node
+// started, so a node restarting resets its contribution.
+//
+// Absent means the counter was not stated; zero is a number that was counted.
+message ProfileCoverage {
+  // How many nodes reported profiling coverage at all.
+  //
+  // Not interchangeable with InventoryCounters.nodes_reported or
+  // ScanCoverage.nodes: the three count participation in three different
+  // subsystems, and a node can be in one and not the others.
+  optional int64 nodes = 1;
+
+  // How many of those nodes are in each profiler state, e.g. "supported",
+  // "disabled", or the reason a node's profiler did not start. One node is in
+  // exactly one state. Empty when no node reported a state.
+  map<string, int64> states = 2;
+
+  // Every capture window the profilers cut.
+  optional int64 windows = 3;
+
+  // The windows that produced nothing, by reason: no collected scope to profile
+  // against, no target from that scope running on the node, or no sample
+  // captured in the window at all.
+  optional int64 windows_no_scope = 4;
+  optional int64 windows_no_targets = 5;
+  optional int64 windows_no_samples = 6;
+
+  // Profiles the nodes built and what became of them: delivered, refused as
+  // holding nothing but runtime and redacted frames, or lost to a delivery that
+  // failed.
+  optional int64 profiles_shipped = 7;
+  optional int64 profiles_invalid = 8;
+  optional int64 profiles_unshipped = 9;
+
+  // Samples discarded because the process they came from is outside the
+  // collected scope.
+  optional int64 samples_out_of_scope = 10;
+
+  // What the symbol filter replaced on the nodes: frames of code outside the
+  // allow-list, frames that could not be symbolized, and samples that lost at
+  // least one frame. Counts only — nothing replaced is named.
+  optional uint64 third_party_dropped = 11;
+  optional uint64 unsymbolized_dropped = 12;
+  optional uint64 samples_filtered = 13;
+
+  // Profiles that arrived from nodes, and those dropped because the pod they
+  // belong to could not be found. Counted after a node did the work of
+  // capturing them, which is why they are not among the node-side counts above.
+  optional uint64 profiles_received = 14;
+  optional uint64 profiles_unjoined = 15;
+}
+
+// Workload targets by the latest answer to whether they serve a profiling
+// endpoint. These are gauges: a number falls when a target leaves the set.
+//
+// Absent means the counter was not stated; zero is a number that was counted.
+message PprofCoverage {
+  // Targets whose endpoint was confirmed to exist.
+  optional int64 confirmed = 1;
+
+  // Targets that answered, and have no such endpoint.
+  optional int64 absent = 2;
+
+  // Targets that could not be reached to be asked.
+  optional int64 unreachable = 3;
+
+  // Targets the profiling opt-out removed before they were asked. No attempt
+  // was made for these, and the number falls when the opt-out is removed.
+  optional int64 excluded_by_annotation = 4;
+}
+
+// What the agent's receiver for on-node reports refused, by reason, cumulative
+// since `since`. It is why a node has gone quiet, where the age of that node's
+// last contribution says only that it has.
+//
+// Aggregate only: no refused caller is identified, and no number here names a
+// node. Absent means the counter was not stated; zero is a claim that nothing
+// was refused for that reason.
+message IntakeRejections {
+  // Reports whose caller did not authenticate as the node it spoke for.
+  optional uint64 unauthorized = 1;
+
+  // Reports over the receiver's size bound. Re-sending one does not help.
+  optional uint64 too_large = 2;
+
+  // Reports the receiver could not decode, including one carrying a field this
+  // build does not know.
+  optional uint64 malformed = 3;
+}
+
+// What fetching profiles from confirmed endpoints did, cumulative since
+// `since`.
+//
+// Absent means the counter was not stated; zero is a number that was counted.
+message PprofPullCoverage {
+  // Filtered profiles handed to the sink.
+  optional int64 shipped = 1;
+
+  // Attempts the target's own runtime would not start a profiler for, which is
+  // what a process already running one of its own does. Not a failure of the
+  // agent.
+  optional int64 refused = 2;
+
+  // Targets whose connection failed.
+  optional int64 unreachable = 3;
+
+  // Profiles that arrived and were not shippable: unparseable, or with nothing
+  // left once the symbol allow-list had been applied.
+  optional int64 invalid = 4;
+}
