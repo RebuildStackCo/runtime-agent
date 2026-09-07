@@ -1,0 +1,9 @@
+version: v2
+managed:
+  enabled: false
+plugins:
+  # protoc-gen-go is a Go tool of this module, so `make proto` needs only buf.
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: .
+    opt:
+      - module=github.com/RebuildStackCo/runtime-agent

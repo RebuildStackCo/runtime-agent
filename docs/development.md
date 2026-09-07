@@ -61,6 +61,14 @@ A PR is mergeable when:
   goldens in both directions: a kind that ships without a row fails, and a row
   describing nothing that ships fails. The list lived in a document for nine
   slices and drifted in three rows with nothing failing (ADR 0022).
+- **The corpus proves the payload schema.** The `.proto` files are not on the
+  wire yet, so nothing but a test exercises them.
+  `internal/pb/kubernetesv1` parses each covered golden into its generated
+  message with `DiscardUnknown` off, so a field the corpus carries and the
+  schema does not fails; a second walk fails on any value that did not survive
+  as a *set* field, which is what holds the presence declarations honest
+  ([ADR 0074](adr/0074-the-schema-declares-presence-field-by-field.md)).
+  Regenerate with `make proto`; the generated Go is committed.
 - **Property tests for rollup math.** Rollup merging must be associative and
   commutative, and merging N partial rollups must equal computing one rollup
   over the union. These properties are tested with generated inputs, not
@@ -113,9 +121,10 @@ Every push and PR runs (`.github/workflows/ci.yml`):
   distinction is the point — Dependabot walks the module graph and cannot see
   the standard library, where all sixteen findings were the first time this ran
   ([ADR 0038](adr/0038-reachability-is-the-gate.md)).
-- With the protobuf schema: `buf lint` and **`buf breaking`** against `main` —
-  the N-2 compatibility promise in `backend-requirements.md` §6 is enforced
-  mechanically, not by review vigilance.
+- **`buf lint`** and **`buf breaking`** against `main`, over the payload schema
+  in [`proto/`](../proto) — the N-2 compatibility promise in
+  `backend-requirements.md` §6 is enforced mechanically, not by review
+  vigilance.
 
 ## Releases
 

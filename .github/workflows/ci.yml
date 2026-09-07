@@ -57,5 +57,25 @@ jobs:
         with:
           version: v2.11.4
 
-  # Added together with the protobuf schema:
-  #   proto:         buf lint && buf breaking --against main
+  proto:
+    name: Payload schema (buf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # buf compares against main out of this checkout, so it needs one.
+          fetch-depth: 0
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.72.0
+      - run: buf lint
+      # Field numbers are never reused and removed ones stay reserved. This is
+      # what enforces that, and with it the N-2 compatibility window in
+      # `backend-requirements.md` §6 — not review vigilance (ADR 0074).
+      - name: Check the schema against main
+        run: |
+          if git ls-tree -r --name-only origin/main -- proto | grep -q .; then
+            buf breaking --against '.git#ref=origin/main'
+          else
+            echo "main carries no schema: this change is the one introducing it."
+          fi

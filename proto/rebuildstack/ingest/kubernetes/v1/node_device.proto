@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+// An extended resource a node advertises, shared by the payloads that describe
+// a node and the ones that record its arrival and departure.
+package rebuildstack.ingest.kubernetes.v1;
+
+option go_package = "github.com/RebuildStackCo/runtime-agent/internal/pb/kubernetesv1;kubernetesv1";
+
+// One extended resource a node advertises, as the node reports it.
+//
+// Only resources whose name begins with a hardware-vendor prefix are carried.
+// Others are counted in CollectionCoverage.nodes.devices_dropped and appear
+// nowhere else, so this list is not the node's full set of extended resources.
+message NodeDevice {
+  // The resource name, e.g. "nvidia.com/gpu".
+  string name = 1;
+
+  // How many the node advertises. Absent means the count was not stated; zero
+  // means the node advertises the resource and none of it.
+  optional int64 capacity = 2;
+
+  // How many the scheduler may still hand out. Absent means the count was not
+  // stated; zero means the hardware is on the node and none of it is
+  // schedulable.
+  optional int64 allocatable = 3;
+}

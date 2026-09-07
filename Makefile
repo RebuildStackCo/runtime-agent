@@ -13,7 +13,7 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
 
-.PHONY: build test lint chart-lint vulncheck tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restart-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e identity-e2e
+.PHONY: build test lint chart-lint proto proto-lint vulncheck tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restart-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e identity-e2e
 
 build: ## Build the agent binary into bin/
 	go build -ldflags '$(LDFLAGS)' -o bin/agent ./cmd/agent
@@ -40,6 +40,19 @@ vulncheck: ## Scan for known vulnerabilities reachable from this code, standard 
 	# shipped image, and could not see sixteen standard-library vulnerabilities
 	# that were (ADR 0038).
 	go tool govulncheck ./...
+
+proto: ## Regenerate the Go types from the payload schema (needs buf on PATH)
+	buf generate
+
+proto-lint: ## Lint the payload schema and check it against main for breaking changes
+	buf lint
+	# Field numbers are never reused and removed ones are reserved; this is what
+	# enforces it, and with it the N-2 window in backend-requirements.md §6.
+	@if git ls-tree -r --name-only origin/main -- proto | grep -q .; then \
+		buf breaking --against '.git#ref=origin/main'; \
+	else \
+		echo "main carries no schema: this change is the one introducing it."; \
+	fi
 
 chart-lint: ## Lint the Helm chart with the helm CLI, once per install profile
 	go tool helm lint charts/runtime-agent --set profile=metrics-only
