@@ -96,6 +96,11 @@ profiling:
     # holds the single slot Go allows — is left alone for six hours rather than
     # competed with. Turning this off keeps the discovery above and everything
     # that rests on it.
+    #
+    # To exclude one workload rather than all of them, annotate the object with
+    # `rebuildstack.co/profile: "false"` — it stops both profiling paths and
+    # every connection to that workload, and changes nothing else collected
+    # about it (docs/security.md §10.3).
     pull: true
 
   # Extra Go module-path prefixes of your own code whose stack frames may leave.

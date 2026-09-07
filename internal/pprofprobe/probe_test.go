@@ -243,6 +243,37 @@ func TestCandidatesAreTheFunnelsOutput(t *testing.T) {
 	}
 }
 
+// The opt-out is applied at the mouth of the funnel, so the target is neither
+// confirmed nor pulled, and the count is of distinct targets rather than of the
+// candidates naming them (ADR 0071).
+func TestAdmittedDropsOptedOutWorkloadsAndCountsTargets(t *testing.T) {
+	web := Candidate{
+		Target:       Target{ImageDigest: "sha256:linked", Port: 8080},
+		Namespace:    "shop",
+		WorkloadKind: "Deployment",
+		WorkloadName: "web",
+		Container:    "app",
+	}
+	// The same build serving the same port under a second workload: one target,
+	// two candidates, and both of them opted out.
+	mirror := web
+	mirror.WorkloadName = "web-canary"
+	db := web
+	db.WorkloadName, db.Port = "db", 5432
+
+	kept, excluded := Admitted([]Candidate{web, mirror, db},
+		func(namespace, _, name string) bool {
+			return namespace == "shop" && (name == "web" || name == "web-canary")
+		})
+
+	if !reflect.DeepEqual(kept, []Candidate{db}) {
+		t.Errorf("kept = %+v, want only the workload that did not opt out", kept)
+	}
+	if excluded != 1 {
+		t.Errorf("excluded = %d, want 1: two candidates of one target are one target", excluded)
+	}
+}
+
 // hostOf strips the scheme from an httptest URL, leaving the host:port the
 // Address contract returns.
 func hostOf(t *testing.T, url string) string {

@@ -19,6 +19,13 @@ import (
 // replica; opting out of telemetry must not restart production (ADR 0028).
 const CollectAnnotation = "rebuildstack.co/collect"
 
+// ProfileAnnotation set to "false" on a namespace, a workload, or a pod opts it
+// out of profiling while leaving the rest of what is collected about it
+// untouched. Read at the same three levels as CollectAnnotation and on the
+// workload object for the same reason; strictly the narrower control, since an
+// opt-out of collection is already an opt-out of profiling (ADR 0071).
+const ProfileAnnotation = "rebuildstack.co/profile"
+
 // ExclusionReason names the filter that rejected a pod. Reasons are the only
 // thing ever reported about excluded pods — their identities stay in the
 // cluster; only aggregate counts per reason leave it.
@@ -81,6 +88,12 @@ type Filter struct {
 	excludedWorkloadAnnotation  atomic.Int64
 	excludedPodAnnotation       atomic.Int64
 
+	// excludedProfilingAnnotation counts admitted pods the profiling opt-out
+	// excluded. One number rather than one per level: every level of this
+	// control has the same outcome, and which object carries the annotation is
+	// a question about an identity this payload does not ship (ADR 0071).
+	excludedProfilingAnnotation atomic.Int64
+
 	workloadUnknownKind atomic.Int64
 	workloadNotCached   atomic.Int64
 
@@ -123,6 +136,19 @@ func (f *Filter) AdmitPod(pod *corev1.Pod, nsAnnotations map[string]string, work
 		return false, ExcludedByPodAnnotation
 	}
 	return true, ""
+}
+
+// AdmitProfiling reports whether an admitted pod may be profiled. It is asked
+// only of pods AdmitPod admitted, which is what makes this control the narrower
+// one rather than a second one beside it.
+//
+// The workload step fails open exactly as AdmitPod's does, and is counted by
+// the same two numbers: an unreadable controller is not evidence that anyone
+// opted out, whichever of the two annotations is being looked for (ADR 0071).
+func (f *Filter) AdmitProfiling(pod *corev1.Pod, nsAnnotations map[string]string, workload WorkloadLookup) bool {
+	return nsAnnotations[ProfileAnnotation] != "false" &&
+		workload.Annotations[ProfileAnnotation] != "false" &&
+		pod.Annotations[ProfileAnnotation] != "false"
 }
 
 // AdmitJob reports whether a finished Job's facts may be collected.
@@ -174,6 +200,10 @@ func (f *Filter) countExcluded(reason ExclusionReason) {
 	}
 }
 
+func (f *Filter) countExcludedProfiling() {
+	f.excludedProfilingAnnotation.Add(1)
+}
+
 func (f *Filter) countJobObserved() {
 	f.jobsObserved.Add(1)
 }
@@ -212,6 +242,7 @@ func (f *Filter) Snapshot() model.Coverage {
 		ExcludedNamespaceAnnotation: f.excludedNamespaceAnnotation.Load(),
 		ExcludedWorkloadAnnotation:  f.excludedWorkloadAnnotation.Load(),
 		ExcludedPodAnnotation:       f.excludedPodAnnotation.Load(),
+		ExcludedProfilingAnnotation: f.excludedProfilingAnnotation.Load(),
 		WorkloadUnknownKind:         f.workloadUnknownKind.Load(),
 		WorkloadNotCached:           f.workloadNotCached.Load(),
 

@@ -10,6 +10,10 @@ type Coverage struct {
 	ExcludedNamespaceAnnotation int64 `json:"excluded_namespace_annotation"`
 	ExcludedWorkloadAnnotation  int64 `json:"excluded_workload_annotation"`
 	ExcludedPodAnnotation       int64 `json:"excluded_pod_annotation"`
+	// ExcludedProfilingAnnotation is pods that were collected and not profiled,
+	// which is the one control that excludes without removing anything from the
+	// data beside it (ADR 0071).
+	ExcludedProfilingAnnotation int64 `json:"excluded_profiling_annotation"`
 	// WorkloadUnknownKind and WorkloadNotCached are the blind spot: pods
 	// admitted without their workload-level opt-out being checked. They are
 	// kept apart because they mean different things — the first is a standing

@@ -160,6 +160,18 @@ type podIndexEntry struct {
 	// snapshot is built from the same index that gates every other pod-derived
 	// signal: one admission decision, one lifetime, no second source of truth.
 	info model.PodInfo
+	// profilable is the profiling opt-out, decided beside the admission
+	// decision and from the same three annotation sources (ADR 0071). It is
+	// held here so the two places that hand a pod to a profiler read it without
+	// walking the owner chain again.
+	profilable bool
+}
+
+// WorkloadKey identifies a workload within its namespace, for callers that
+// index by workload rather than by pod.
+type WorkloadKey struct {
+	Namespace string
+	Workload  model.WorkloadRef
 }
 
 // containerIdentity is what a container ID resolves to within its pod.
@@ -429,9 +441,13 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 	// cache as an Add, then receives genuinely new pods as they appear.
 	reg, err := podsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
-			if pod, ok := obj.(*corev1.Pod); ok && w.admit(pod, true) {
+			pod, ok := obj.(*corev1.Pod)
+			if !ok {
+				return
+			}
+			if d := w.admit(pod, true); d.collect {
 				info := w.describe(pod)
-				w.indexPod(pod, info)
+				w.indexPod(pod, info, d.profile)
 				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
 				w.reportRestarts(pod)
@@ -449,9 +465,9 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 			if !ok {
 				return
 			}
-			if w.admit(pod, false) {
+			if d := w.admit(pod, false); d.collect {
 				info := w.describe(pod)
-				w.indexPod(pod, info)
+				w.indexPod(pod, info, d.profile)
 				w.reportPodIfChanged(pod.UID, info)
 				w.reportOOMKills(pod)
 				w.reportRestarts(pod)
@@ -518,7 +534,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 // already-described collected view, which the index also keeps: it is the
 // source of the workload-metadata snapshot, so the snapshot covers exactly the
 // pods that passed the filter and drops a pod the moment the index does.
-func (w *PodWatcher) indexPod(pod *corev1.Pod, info model.PodInfo) {
+func (w *PodWatcher) indexPod(pod *corev1.Pod, info model.PodInfo, profilable bool) {
 	entry := podIndexEntry{
 		namespace:  info.Namespace,
 		name:       info.Name,
@@ -526,6 +542,7 @@ func (w *PodWatcher) indexPod(pod *corev1.Pod, info model.PodInfo) {
 		workload:   info.Workload,
 		containers: containerIndex(pod),
 		info:       info,
+		profilable: profilable,
 	}
 	w.indexMu.Lock()
 	w.index[pod.UID] = entry
@@ -627,9 +644,9 @@ func (w *PodWatcher) HostNetwork(uid types.UID) bool {
 	return ok && entry.info.Placement.HostNetwork
 }
 
-// PodAddress returns the IP of one admitted, running pod of the given workload
-// whose named container runs the given image digest, for a caller that needs to
-// open a connection to it.
+// PodAddress returns the IP of one admitted, running, profilable pod of the
+// given workload whose named container runs the given image digest, for a
+// caller that needs to open a connection to it.
 //
 // It is the only place a pod IP is read, and the value is a connection
 // parameter rather than a fact: it is not indexed, not reported and not carried
@@ -640,6 +657,11 @@ func (w *PodWatcher) PodAddress(namespace string, workload model.WorkloadRef, co
 	var names []string
 	for _, entry := range w.index {
 		if entry.namespace != namespace || entry.workload != workload {
+			continue
+		}
+		// Every caller of this connects in order to profile, so a pod the
+		// profiling opt-out excluded is never offered as one to ask (ADR 0071).
+		if !entry.profilable {
 			continue
 		}
 		if entry.info.Phase != string(corev1.PodRunning) {
@@ -734,12 +756,16 @@ type ContainerOnNode struct {
 // ContainersOnNode returns every indexed container whose pod is scheduled on
 // node. It is how the controller answers a node's targets query with container
 // IDs the node can act on.
+//
+// A pod the profiling opt-out excluded contributes nothing here, which is the
+// whole of that control on the eBPF path: the node profiles the container IDs
+// this answer names and no others (ADR 0071).
 func (w *PodWatcher) ContainersOnNode(node string) []ContainerOnNode {
 	w.indexMu.RLock()
 	defer w.indexMu.RUnlock()
 	var out []ContainerOnNode
 	for _, entry := range w.index {
-		if entry.node != node {
+		if entry.node != node || !entry.profilable {
 			continue
 		}
 		for cid := range entry.containers {
@@ -748,6 +774,30 @@ func (w *PodWatcher) ContainersOnNode(node string) []ContainerOnNode {
 				Workload:    entry.workload,
 				ContainerID: cid,
 			})
+		}
+	}
+	return out
+}
+
+// ProfilingOptOuts returns the workloads whose every indexed pod carries a
+// profiling opt-out. It is what removes a workload from a ranking or a probe
+// funnel, where the per-pod flag beside it is what removes a single replica.
+//
+// A workload with no indexed pod is absent rather than opted out: scaled to
+// zero, it has said nothing, and reporting it here would credit the customer's
+// annotation for an absence they did not ask for.
+func (w *PodWatcher) ProfilingOptOuts() map[WorkloadKey]struct{} {
+	seen := map[WorkloadKey]bool{}
+	w.indexMu.RLock()
+	for _, entry := range w.index {
+		key := WorkloadKey{Namespace: entry.namespace, Workload: entry.workload}
+		seen[key] = seen[key] || entry.profilable
+	}
+	w.indexMu.RUnlock()
+	out := map[WorkloadKey]struct{}{}
+	for key, profilable := range seen {
+		if !profilable {
+			out[key] = struct{}{}
 		}
 	}
 	return out
@@ -773,28 +823,43 @@ func (w *PodWatcher) AdmittedPodsOnNode(node string) []string {
 	return out
 }
 
+// admission is what the two opt-out controls decided about one pod: whether it
+// is collected at all, and whether what is collected may include a profile.
+type admission struct {
+	collect bool
+	profile bool
+}
+
 // admit runs the pod through the filter, consulting the namespace's
 // annotations from the cache (a cache miss reads as no annotations).
 // Exclusions are counted only when count is set — once per pod appearance
 // on Add, never again on the many status updates that follow.
-func (w *PodWatcher) admit(pod *corev1.Pod, count bool) bool {
+//
+// Both controls are decided from the one owner-chain walk: the profiling
+// opt-out reads the same three objects, and asking twice would double the
+// lookups for a question the first pass already has the answers to.
+func (w *PodWatcher) admit(pod *corev1.Pod, count bool) admission {
 	var nsAnnotations map[string]string
 	if ns, err := w.nsLister.Get(pod.Namespace); err == nil {
 		nsAnnotations = ns.Annotations
 	}
 	workload := w.workloadAnnotations(pod)
 	allowed, reason := w.filter.AdmitPod(pod, nsAnnotations, workload)
+	profilable := allowed && w.filter.AdmitProfiling(pod, nsAnnotations, workload)
 	if count {
-		if allowed {
-			w.filter.countObserved()
-		} else {
+		if !allowed {
 			w.filter.countExcluded(reason)
+		} else {
+			w.filter.countObserved()
+			if !profilable {
+				w.filter.countExcludedProfiling()
+			}
 		}
 		if workload.Unresolved != "" {
 			w.filter.countUnresolvedWorkload(workload.Unresolved)
 		}
 	}
-	return allowed
+	return admission{collect: allowed, profile: profilable}
 }
 
 // workloadAnnotations reads the annotations of the controller that ultimately

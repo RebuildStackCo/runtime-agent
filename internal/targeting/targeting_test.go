@@ -23,7 +23,7 @@ func names(ts []Target) string {
 }
 
 func TestPublisherRanksTopN(t *testing.T) {
-	p := NewPublisher(2)
+	p := NewPublisher(2, nil)
 	p.Publish([]*rollup.Record{
 		rec("shop", "api", 100),
 		rec("shop", "web", 300),
@@ -38,7 +38,7 @@ func TestPublisherRanksTopN(t *testing.T) {
 // reach Publish only for pods the collection filters admitted, so a workload the
 // customer excluded was never measured and cannot appear here (ADR 0025).
 func TestPublisherRanksWhateverWasCollected(t *testing.T) {
-	p := NewPublisher(5)
+	p := NewPublisher(5, nil)
 	p.Publish([]*rollup.Record{
 		rec("shop", "api", 100),
 		rec("infra", "proxy", 999),
@@ -49,7 +49,7 @@ func TestPublisherRanksWhateverWasCollected(t *testing.T) {
 }
 
 func TestPublisherSumsPerWorkload(t *testing.T) {
-	p := NewPublisher(1)
+	p := NewPublisher(1, nil)
 	p.Publish([]*rollup.Record{
 		rec("shop", "api", 100),
 		rec("shop", "api", 100), // same workload -> 200
@@ -61,7 +61,26 @@ func TestPublisherSumsPerWorkload(t *testing.T) {
 }
 
 func TestPublisherSnapshotBeforePublish(t *testing.T) {
-	if s := NewPublisher(3).Snapshot(); s != nil {
+	if s := NewPublisher(3, nil).Snapshot(); s != nil {
 		t.Errorf("Snapshot before Publish = %q, want nil", names(s))
+	}
+}
+
+// A workload every replica of which opted out of profiling is dropped before the
+// ranking, not after it: leaving it in would spend one of the topN places on a
+// workload the answer cannot name (ADR 0071).
+func TestPublisherDropsWorkloadsThatOptedOutOfProfiling(t *testing.T) {
+	p := NewPublisher(2, func() map[Target]struct{} {
+		return map[Target]struct{}{
+			{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web"}: {},
+		}
+	})
+	p.Publish([]*rollup.Record{
+		rec("shop", "api", 100),
+		rec("shop", "web", 300),
+		rec("shop", "worker", 200),
+	})
+	if got := names(p.Snapshot()); got != "worker,api" {
+		t.Errorf("targets = %q, want worker,api — the excluded top consumer takes no place", got)
 	}
 }

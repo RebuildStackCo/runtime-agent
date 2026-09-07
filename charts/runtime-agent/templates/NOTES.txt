@@ -35,6 +35,45 @@ probes come from your kubelet at the node's address, which no pod selector can
 name. What it admits is two read-only paths that answer about the agent and name
 nothing in your cluster (ADR 0069).
 {{- end }}
+{{- if and (include "runtime-agent.nodeEnabled" .) .Values.profiling.pprof.enabled }}
+
+READ THIS ONE: the agent will connect to your workloads.
+
+Every other access this agent has is a read of the API server or of /proc. This
+one is not. For each collected workload whose binary links net/http/pprof, the
+controller fetches the /debug/pprof/ index page once per image and port, from a
+pod's own address. No other path is ever requested.
+{{- if .Values.profiling.pprof.pull }}
+
+Where that page answers, the controller then fetches a ten-second CPU profile,
+which runs your process's own profiler for those ten seconds. It is the one
+thing this agent does that your workload can notice. What it costs is bounded by
+construction, not by a setting: one capture at a time and at most ten per
+five-minute round, so a hundred seconds of profiling per five minutes across the
+whole cluster. A workload that refuses — because its own continuous profiler
+holds the single slot Go allows — is left alone for six hours, not competed with.
+
+Every attempt appears in the controller's log, one line each, naming the
+workload and what came of it:
+
+  kubectl -n {{ .Release.Namespace }} logs deployment/{{ include "runtime-agent.controllerName" . }} | grep 'pprof profile pull'
+{{- end }}
+
+To switch it off entirely, set profiling.pprof.enabled=false.
+{{- if .Values.profiling.pprof.pull }}
+To keep the discovery and drop only the captures, set profiling.pprof.pull=false.
+{{- end }}
+
+To exclude one workload while keeping everything else collected about it,
+annotate the object itself — never its pod template, which would roll every
+replica:
+
+  kubectl -n YOUR_NAMESPACE annotate deployment/YOUR_WORKLOAD rebuildstack.co/profile=false
+
+The same annotation works on a Namespace and on a Pod, and
+rebuildstack.co/collect=false still excludes both profiling and everything else.
+Section 10.3 of docs/security.md states the whole of it.
+{{- end }}
 {{- if or (eq .Values.profile "inventory") (eq .Values.profile "ebpf") }}
 
 This profile installs the node DaemonSet, which runs as root with hostPID and

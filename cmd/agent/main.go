@@ -332,7 +332,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	var targetsPublisher *targeting.Publisher
 	if cfg.Profiling.Enabled {
 		pc := cfg.Profiling.Normalized()
-		targetsPublisher = targeting.NewPublisher(pc.TopN)
+		targetsPublisher = targeting.NewPublisher(pc.TopN, func() map[targeting.Target]struct{} {
+			out := map[targeting.Target]struct{}{}
+			for k := range podWatcher.ProfilingOptOuts() {
+				out[targeting.Target{Namespace: k.Namespace,
+					WorkloadKind: k.Workload.Kind, WorkloadName: k.Workload.Name}] = struct{}{}
+			}
+			return out
+		})
 	}
 	// Declared before construction so the callbacks can read the poller's own
 	// observation state; they run on the poll goroutine, and Observation() is
@@ -382,6 +389,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	if cfg.NodeIntake.Enabled {
 		goStore = inventory.NewStore(time.Now())
 	}
+
+	// Targets the profiling opt-out removed from the funnel, restated on every
+	// round rather than accumulated: it is how many there are now, not how many
+	// times we noticed (ADR 0071).
+	var pprofExcluded atomic.Int64
 
 	// Endpoint discovery, which exists only where the node role does: the two
 	// facts it funnels on — the linked package and the bound port — are read on
@@ -706,6 +718,9 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		var probeCoverage *pprofprobe.Coverage
 		if prober != nil {
 			pc := prober.Snapshot()
+			// Added on this side because the opt-out removes a target before the
+			// prober is told it exists (ADR 0071).
+			pc.ExcludedByAnnotation = int(pprofExcluded.Load())
 			probeCoverage = &pc
 		}
 		var pullCoverage *pprofpull.Coverage
@@ -734,7 +749,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 
 	if prober != nil {
 		candidates := func() []pprofprobe.Candidate {
-			return pprofprobe.Candidates(goStore.PortSnapshot(), goStore.PprofBuilds())
+			optedOut := podWatcher.ProfilingOptOuts()
+			kept, excluded := pprofprobe.Admitted(
+				pprofprobe.Candidates(goStore.PortSnapshot(), goStore.PprofBuilds()),
+				func(namespace, kind, name string) bool {
+					_, ok := optedOut[collector.WorkloadKey{Namespace: namespace,
+						Workload: model.WorkloadRef{Kind: kind, Name: name}}]
+					return ok
+				})
+			pprofExcluded.Store(int64(excluded))
+			return kept
 		}
 		go prober.Run(ctx, pprofProbeInterval, candidates)
 		if puller != nil {

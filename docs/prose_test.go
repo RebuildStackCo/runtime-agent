@@ -34,8 +34,10 @@ var ceilings = []struct {
 	lines   int
 	section int
 }{
-	{"security.md", 1045, 360},
-	{"backend-requirements.md", 679, 536},
+	// Both moved for one obligation: a fifth customer control, and the log trail
+	// a capture now leaves in the customer's own cluster (ADR 0071).
+	{"security.md", 1064, 360},
+	{"backend-requirements.md", 688, 545},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

@@ -40,6 +40,7 @@
     "excluded_namespace_annotation": 0,
     "excluded_workload_annotation": 2,
     "excluded_pod_annotation": 0,
+    "excluded_profiling_annotation": 9,
     "workload_unknown_kind": 6,
     "workload_not_cached": 0,
     "jobs_observed": 18,
@@ -101,7 +102,8 @@
   "pprof": {
     "confirmed": 6,
     "absent": 11,
-    "unreachable": 2
+    "unreachable": 2,
+    "excluded_by_annotation": 3
   },
   "intake_rejections": {
     "unauthorized": 1,

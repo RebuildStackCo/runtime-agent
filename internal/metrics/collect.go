@@ -110,6 +110,9 @@ func CollectController(c Controller) *Set {
 	s.Counter("pods_excluded_total", excluded, float64(f.ExcludedNamespaceAnnotation), L(LabelReason, "namespace_annotation"))
 	s.Counter("pods_excluded_total", excluded, float64(f.ExcludedWorkloadAnnotation), L(LabelReason, "workload_annotation"))
 	s.Counter("pods_excluded_total", excluded, float64(f.ExcludedPodAnnotation), L(LabelReason, "pod_annotation"))
+	s.Counter("pods_excluded_from_profiling_total",
+		"Collected pods the profiling opt-out excluded (ADR 0071).",
+		float64(f.ExcludedProfilingAnnotation))
 	unchecked := "Pods collected without their workload's opt-out being checked (ADR 0028)."
 	s.Counter("pods_optout_unchecked_total", unchecked, float64(f.WorkloadUnknownKind), L(LabelReason, "unknown_kind"))
 	s.Counter("pods_optout_unchecked_total", unchecked, float64(f.WorkloadNotCached), L(LabelReason, "not_cached"))
@@ -193,10 +196,12 @@ func CollectController(c Controller) *Set {
 	}
 
 	if p := c.Probe; p != nil {
-		targets := "Workload endpoints by their latest answer to the pprof question (ADR 0057)."
+		targets := "Workload endpoints by their state in the pprof funnel (ADR 0057, ADR 0071)."
 		s.Gauge("pprof_targets", targets, float64(p.Confirmed), L(LabelState, "confirmed"))
 		s.Gauge("pprof_targets", targets, float64(p.Absent), L(LabelState, "absent"))
 		s.Gauge("pprof_targets", targets, float64(p.Unreachable), L(LabelState, "unreachable"))
+		s.Gauge("pprof_targets", targets, float64(p.ExcludedByAnnotation),
+			L(LabelState, "excluded_by_annotation"))
 	}
 
 	if p := c.Pull; p != nil {
