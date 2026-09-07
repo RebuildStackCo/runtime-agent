@@ -54,7 +54,7 @@ func TestPolicyAndJournalsEndToEnd(t *testing.T) {
 	}
 	config := clusterConfig(t)
 	clientset := clusterClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Minute)
 	defer cancel()
 
 	ns := fmt.Sprintf("runtime-agent-policy-e2e-%d", os.Getpid())
@@ -640,7 +640,10 @@ func checkJobRunReported(ctx context.Context, t *testing.T, config *rest.Config,
 // what decides the wait is over.
 func waitForSpoolJSON(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, path string, into any, ready func() bool, what string) {
 	t.Helper()
-	deadline := time.Now().Add(6 * time.Minute)
+	// Long enough for the five-minute floor of a change-triggered kind: the
+	// first pass wrote the payload, so a change made now waits one floor to
+	// reach the spool (ADR 0073).
+	deadline := time.Now().Add(11 * time.Minute)
 	for time.Now().Before(deadline) {
 		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, path)
 		if ok && strings.TrimSpace(raw) != "" {

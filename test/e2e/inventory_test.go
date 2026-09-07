@@ -95,7 +95,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	}
 	config := clusterConfig(t)
 	clientset := clusterClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	ns := fmt.Sprintf("runtime-agent-inv-e2e-%d", os.Getpid())
@@ -132,7 +132,10 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	// Poll the controller's spool until the go_inventory payload carries the
 	// sample workload. Delivery is periodic (the node's scan interval and the
 	// controller's flush cadence), so allow generous time.
-	deadline := time.Now().Add(6 * time.Minute)
+	// Long enough for the five-minute floor of a change-triggered kind: the
+	// first pass wrote the payload, so a change made now waits one floor to
+	// reach the spool (ADR 0073).
+	deadline := time.Now().Add(11 * time.Minute)
 	for {
 		if rec, cov, ok := findSampleRecord(ctx, t, config, clientset, ns, controllerPod); ok {
 			// The payload says how complete it is: the node that scanned this
@@ -205,7 +208,8 @@ func checkOptOutRemovesTheRecord(ctx context.Context, t *testing.T, config *rest
 	t.Logf("opted %s/%s out; waiting for its record to leave the payload", ns, name)
 
 	// Eviction happens on the controller's flush, so allow several cadences.
-	deadline := time.Now().Add(4 * time.Minute)
+	// Long enough for the change-triggered floor this payload is on (ADR 0073).
+	deadline := time.Now().Add(9 * time.Minute)
 	for {
 		if _, _, ok := findSampleRecord(ctx, t, config, cs, ns, controllerPod); !ok {
 			return
@@ -396,7 +400,8 @@ func checkEndpointConfirmed(ctx context.Context, t *testing.T, config *rest.Conf
 // race, exactly as the build payload does.
 func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
+	// Long enough for the change-triggered floor this payload is on (ADR 0073).
+	deadline := time.Now().Add(8 * time.Minute)
 	for {
 		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, processPeaksSpoolPath)
 		if ok {
@@ -565,7 +570,8 @@ func checkSampleCounters(ctx context.Context, t *testing.T, config *rest.Config,
 // is of the process and not of `containerPorts` (ADR 0056 §2).
 func checkSamplePorts(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
+	// Long enough for the change-triggered floor this payload is on (ADR 0073).
+	deadline := time.Now().Add(8 * time.Minute)
 	for {
 		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, listeningPortsSpoolPath)
 		if ok {

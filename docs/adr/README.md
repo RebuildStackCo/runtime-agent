@@ -130,3 +130,4 @@ line to paste.
 - [0070. The agent says what it did, in the format the cluster already reads](0070-the-agent-says-what-it-did-in-the-format-the-cluster-already-reads.md)
 - [0071. A workload can refuse the profiler without refusing everything else](0071-refusing-the-profiler-without-refusing-the-rest.md)
 - [0072. A restart resumes the open window the spool already holds](0072-a-restart-resumes-the-window-the-spool-holds.md)
+- [0073. A payload kind declares how often it is sent, and the ceiling is what makes that safe](0073-a-kind-declares-how-often-it-is-sent.md)

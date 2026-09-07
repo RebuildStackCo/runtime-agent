@@ -116,7 +116,7 @@ func TestRestartCountersCarryTheHistoryTheAgentDidNotWatch(t *testing.T) {
 	}
 	config := clusterConfig(t)
 	clientset := clusterClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 16*time.Minute)
 	defer cancel()
 
 	ns := fmt.Sprintf("runtime-agent-counter-e2e-%d", os.Getpid())
@@ -140,7 +140,8 @@ func TestRestartCountersCarryTheHistoryTheAgentDidNotWatch(t *testing.T) {
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
 
-	deadline := time.Now().Add(5 * time.Minute)
+	// Long enough for the change-triggered floor this payload is on (ADR 0073).
+	deadline := time.Now().Add(10 * time.Minute)
 	for {
 		if rec, ok := findCounterRecord(ctx, t, config, clientset, ns, controllerPod); ok {
 			t.Logf("counter reading: %+v", rec)

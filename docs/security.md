@@ -507,6 +507,13 @@ classes with different sensitivity and different default policies:
 This is the complete list — there is no other channel and no other shape, and a
 test fails if a kind ships without appearing here (ADR 0022).
 
+Each kind also leaves on a fixed cadence. The ones describing your cluster's
+shape leave only when they change, and never less often than once every fifteen
+minutes; the rest leave every minute, or when the event they record happens
+([ADR 0073](adr/0073-a-kind-declares-how-often-it-is-sent.md)). Those numbers
+belong to the agent version you installed — nothing outside your cluster can
+raise them, and nothing can ask for data sooner.
+
 | Payload | What it carries | Names pods? |
 |---|---|---|
 | `collection_coverage` | What the agent did rather than what it found: how many pods and Jobs it observed, how many each of your four controls excluded, how many placement terms the reduction dropped, what the node scanners walked and skipped, which of the agent's reads worked, how many node reports it refused and for which of three reasons, how many pprof endpoints it confirmed and how many it could not, how many profiles it pulled and how many workloads declined to start one, how many capture windows the node profilers cut and what became of them — including how many of your nodes are not profiling at all and why ([ADR 0060](adr/0060-the-node-says-what-its-profiler-did.md)) — its version, and the shape of your configuration. **Aggregate counts only — no name of anything you excluded appears here or anywhere else** ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)) | no |

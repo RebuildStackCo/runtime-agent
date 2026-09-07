@@ -25,6 +25,11 @@ type Counters struct {
 	// the reading that matters, and it needs the series to exist.
 	Written       map[string]int64
 	WriteFailures map[string]int64
+	// Suppressed is per kind too: passes that assembled a payload the cadence
+	// did not write, because its floor had not passed or nothing in it had
+	// changed (ADR 0073). It is the only place the saving is visible, and a kind
+	// that never suppresses anything is a predicate that is not working.
+	Suppressed map[string]int64
 	// Evicted is per reason, with a zero entry for each.
 	Evicted map[string]int64
 	// Bytes and Files are what the last sweep counted after evicting, against
@@ -46,6 +51,13 @@ type Recovered struct {
 	// Skipped counts files the read could not use. They are still in the spool
 	// and still shippable; nothing was deleted on their account.
 	Skipped int64
+}
+
+// countSuppressed records one payload the cadence held back.
+func (s *Spool) countSuppressed(kind string) {
+	s.countMu.Lock()
+	defer s.countMu.Unlock()
+	s.suppressed[kind]++
 }
 
 // countWrite records one payload written, or one write that failed.
@@ -86,6 +98,7 @@ func (s *Spool) Counters() Counters {
 		return Counters{
 			Written:       newKindCounts(),
 			WriteFailures: newKindCounts(),
+			Suppressed:    newKindCounts(),
 			Evicted:       newReasonCounts(),
 		}
 	}
@@ -94,6 +107,7 @@ func (s *Spool) Counters() Counters {
 	return Counters{
 		Written:       copyCounts(s.written),
 		WriteFailures: copyCounts(s.writeFailures),
+		Suppressed:    copyCounts(s.suppressed),
 		Evicted:       copyCounts(s.evicted),
 		Bytes:         s.bytes,
 		Files:         s.files,

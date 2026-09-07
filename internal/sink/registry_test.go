@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -161,6 +162,74 @@ func TestNoPayloadCarriesAnOrderingField(t *testing.T) {
 					"needed, it takes its own ADR — a counter cannot survive a restart.",
 					filepath.Base(path), name)
 			}
+		}
+	}
+}
+
+// A cadence must be coherent with its own trigger, or the gate reads a number
+// that means nothing: a floor above its ceiling is a kind that is written on
+// every pass and claims not to be, and a change-triggered kind with no ceiling
+// is one whose missed change stands forever (ADR 0073 §2).
+func TestEveryRegistryRowDeclaresACoherentCadence(t *testing.T) {
+	for _, entry := range Registry() {
+		c := entry.Cadence
+		switch c.Trigger {
+		case TriggerAlways:
+			if c.Floor <= 0 || c.Floor != c.Ceiling {
+				t.Errorf("kind %q is written on every pass, so its floor and ceiling are that "+
+					"pass's interval; got floor %s, ceiling %s", entry.Kind, c.Floor, c.Ceiling)
+			}
+		case TriggerChanged:
+			if c.Floor <= 0 || c.Ceiling < c.Floor {
+				t.Errorf("kind %q has floor %s and ceiling %s; a change-triggered kind needs a "+
+					"positive floor to debounce with and a ceiling no shorter than it",
+					entry.Kind, c.Floor, c.Ceiling)
+			}
+		case TriggerEvent:
+			if c.Floor != 0 || c.Ceiling != 0 {
+				t.Errorf("kind %q is written when its event happens, so it has no floor and no "+
+					"ceiling; got %s and %s", entry.Kind, c.Floor, c.Ceiling)
+			}
+		default:
+			t.Errorf("kind %q has trigger %q, which is not one the spool implements",
+				entry.Kind, c.Trigger)
+		}
+	}
+}
+
+// A change-triggered kind is compared by its own bytes with `captured_at`
+// elided, and the elision matches a top-level field only. A kind without one
+// would compare its write instant and never hold still; a kind with two would
+// have one of them silently dropped from the comparison (ADR 0073 §3).
+func TestEveryChangedKindCarriesOneTopLevelCaptureInstant(t *testing.T) {
+	goldens := map[string]string{}
+	paths, err := filepath.Glob(filepath.Join("testdata", "*.golden.json"))
+	if err != nil {
+		t.Fatalf("globbing goldens: %v", err)
+	}
+	for _, path := range paths {
+		raw, err := os.ReadFile(path) // #nosec G304 -- test-controlled path
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		var env goldenEnvelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
+		}
+		goldens[env.Kind] = string(raw)
+	}
+
+	for _, entry := range Registry() {
+		if entry.Cadence.Trigger != TriggerChanged {
+			continue
+		}
+		golden, ok := goldens[entry.Kind]
+		if !ok {
+			continue // TestEveryRegisteredKindShips reports the missing golden
+		}
+		if n := strings.Count(golden, "\n"+string(capturedAtField)); n != 1 {
+			t.Errorf("kind %q is written on change and its payload has %d top-level "+
+				"`captured_at` fields, want exactly 1", entry.Kind, n)
 		}
 	}
 }
