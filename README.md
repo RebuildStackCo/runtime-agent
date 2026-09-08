@@ -6,9 +6,13 @@ ships them — strictly one-way — to the RebuildStack backend for efficiency
 analysis. All analysis happens outside the cluster: the agent's intelligence is
 data reduction, not judgment.
 
-> **Status: early development.** No releases yet, and one designed piece is not
-> built — the backend transport, so payloads are written to a local spool and go
-> no further. Installation is a Helm chart
+> **Status: early development.** No releases yet. Payloads now ship to a backend
+> address you configure, and to no other — but over **plain HTTP, with no TLS,
+> no credential and no identity**: the secured transport (mTLS to a pinned
+> domain) is designed and not built, so this is a first-contact stage for a
+> backend you control. Configure no address and the agent writes to its local
+> spool and sends nothing, which is what it did before. Installation is a Helm
+> chart
 > ([`charts/runtime-agent`](charts/runtime-agent)), which is what the end-to-end
 > tests install. [`docs/security.md`](docs/security.md) marks every claim
 > that is not yet built `[planned]`, so a reader can tell a promise from a
@@ -18,7 +22,7 @@ data reduction, not judgment.
 
 - **Controller** — a single replica. It holds every Kubernetes API grant in the
   product, polls the kubelets through the API server, and is the only component
-  that will talk to the backend.
+  that talks to the backend.
 - **Node DaemonSet** — optional, and the only privileged part. It reads Go build
   information from on-node executables (`hostPID`, `CAP_SYS_PTRACE`) and, when
   you enable the `ebpf` profile, captures CPU profiles (`CAP_BPF`,
