@@ -44,6 +44,7 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/pprofpull"
 	"github.com/RebuildStackCo/runtime-agent/internal/revisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
+	"github.com/RebuildStackCo/runtime-agent/internal/shipper"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 	"github.com/RebuildStackCo/runtime-agent/internal/targeting"
 )
@@ -196,6 +197,21 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			return fmt.Errorf("opening spool: %w", err)
 		}
 		logger.Info("spool open", "dir", cfg.Spool.Dir)
+	}
+
+	// Shipping is optional and independent: an agent with no backend configured
+	// collects and spools exactly as it did before there was a shipper, and one
+	// whose backend is unreachable does the same (ADR 0075). New returns nil for
+	// an empty base URL, and there is no default — a backend is somewhere the
+	// operator named or nowhere at all.
+	var ship *shipper.Shipper
+	if spool != nil {
+		ship = shipper.New(cfg.Backend.BaseURL, cfg.Spool.Dir, logger)
+	} else if cfg.Backend.BaseURL != "" {
+		// The spool is the queue, so there is nothing to ship from. Said once
+		// here rather than left as a backend that never hears from this agent.
+		logger.Warn("a backend is configured and no spool is; nothing will be shipped",
+			"backend", cfg.Backend.BaseURL)
 	}
 
 	filter := collector.NewFilter(cfg.Filters.Namespaces.Allow, cfg.Filters.Namespaces.Deny)
@@ -755,9 +771,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			r := intakeRejections()
 			rejections = &r
 		}
+		// What became of everything written before this report, when there is
+		// somewhere to write it to (ADR 0075).
+		var shipping *model.Shipping
+		if ship != nil {
+			sc := ship.Coverage()
+			shipping = &sc
+		}
 		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
 			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), nodeWatcher.Drops(), inv, scan,
-			ebpf, probeCoverage, pullCoverage, rejections); err != nil {
+			ebpf, probeCoverage, pullCoverage, rejections, shipping); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
 		}
 	}
@@ -848,6 +871,15 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		"usage": usagePoller.Run,
 	}
 
+	// Shipping is a lifecycle task like the watchers, and unlike them its
+	// failure is not the agent's. Run returns only on cancellation, so a backend
+	// that is down, hostile or absent never reaches the `cancel()` below
+	// (ADR 0075). The payloads written by the shutdown flush stay in the spool
+	// for the next process, which is what the spool is for.
+	if ship != nil {
+		tasks["ship"] = ship.Run
+	}
+
 	// The health listener, when the installation configured one. It is a
 	// lifecycle task like the watchers: a port that cannot be bound is a startup
 	// failure with a reason in the log, rather than probes that fail with none.
@@ -904,6 +936,9 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		if puller != nil {
 			sources.pull = puller.Snapshot
+		}
+		if ship != nil {
+			sources.shipping = ship.Coverage
 		}
 		tasks["health"] = health.New(addr, live, ready,
 			metrics.Handler(sources.gather, logger), logger).Run

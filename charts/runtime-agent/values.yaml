@@ -56,6 +56,22 @@ spool:
   # spool path yourself — that is your decision, not a knob the agent carries.
   maxAgeHours: 0
 
+# Where payloads are shipped. Empty ships nothing, which is what every
+# installation does today: the controller writes to its local spool and the
+# spool's own bounds remove what is never delivered.
+#
+# **This stage is plain HTTP with no TLS, no credential and no identity.** The
+# backend attributes everything that arrives to one configured source and knows
+# it. Set this only for a backend you control on a network you trust; the
+# transport — mTLS to a pinned domain, and an identity that is a property of the
+# connection — arrives as its own change (docs/security.md §6, ADR 0075).
+#
+# Nothing the backend answers changes what this agent does. Only the status code
+# of a reply is read, and a payload is removed from the spool only for a 2xx
+# (ADR 0001).
+backend:
+  baseURL: ""
+
 nodeIntake:
   # The audience the node's projected token requests and the controller
   # requires. One value: the chart writes it into both the DaemonSet's token

@@ -40,6 +40,14 @@ type Shape struct {
 	SymbolPrefixesAllowed int `json:"symbol_prefixes_allowed"`
 	// NodeIntakeEnabled is whether the receiver for node reports is open.
 	NodeIntakeEnabled bool `json:"node_intake_enabled"`
+	// BackendConfigured is whether this agent has somewhere to ship. A switch,
+	// never the address: where the payloads go is the operator's, and the shape
+	// carries no string from the file (ADR 0054 §2).
+	//
+	// It is what separates "nothing delivered because there is no backend" from
+	// "nothing delivered because the backend is refusing", which the shipping
+	// counters alone cannot.
+	BackendConfigured bool `json:"backend_configured"`
 	// SpoolMaxAgeHours is 0 when the agent's own default applies.
 	SpoolMaxAgeHours int `json:"spool_max_age_hours,omitempty"`
 }
@@ -58,6 +66,7 @@ func (c Config) Describe(path string, started time.Time) Shape {
 		PprofPullEnabled:      c.Profiling.Pprof.Pull,
 		SymbolPrefixesAllowed: len(c.Profiling.AllowedModulePrefixes),
 		NodeIntakeEnabled:     c.NodeIntake.Enabled,
+		BackendConfigured:     c.Backend.BaseURL != "",
 		SpoolMaxAgeHours:      c.Spool.MaxAgeHours,
 	}
 }

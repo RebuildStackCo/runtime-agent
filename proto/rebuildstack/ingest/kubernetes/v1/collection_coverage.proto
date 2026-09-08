@@ -67,6 +67,10 @@ message CollectionCoverage {
   // What fetching profiles from confirmed endpoints did. Present only when
   // profiles are pulled.
   PprofPullCoverage pprof_pull = 15;
+
+  // What became of the payloads this one travelled with. Present only when the
+  // agent is configured to ship at all.
+  ShippingCoverage shipping = 16;
 }
 
 // What the agent is and how it is set up, so a reader knows what the counts
@@ -120,6 +124,12 @@ message ConfigShape {
   // Whether the receiver for on-node reports is open. Absent means the switch
   // was not stated; false is a claim that it is closed.
   optional bool node_intake_enabled = 9;
+
+  // Whether the agent has a backend to ship to. A switch, never the address.
+  // Absent means the switch was not stated; false is a claim that this agent
+  // was configured to ship nowhere, which is what separates a delivered count
+  // of zero from a backend that is refusing.
+  optional bool backend_configured = 11;
 
   // How many hours an unacknowledged payload may wait locally before it is
   // dropped. Absent when the agent's own built-in bound is what applies.
@@ -375,6 +385,57 @@ message IntakeRejections {
 
   // Reports the receiver could not decode, including one carrying a field this
   // build does not know.
+  optional uint64 malformed = 3;
+}
+
+// What became of the payloads the agent's spool held, cumulative since
+// `since`.
+//
+// Its subject is this ingest itself, which bounds what it can say: a report
+// that arrived was shipped, so it carries the history of the payloads before
+// it and never the delivery that brought it.
+//
+// Absent means the counter was not stated; zero is a claim that it was counted.
+message ShippingCoverage {
+  // Payloads the backend acknowledged with a 2xx. The only answer that removes
+  // a payload from the agent's spool.
+  optional uint64 delivered = 1;
+
+  // Attempts that left the payload with the agent: a refused connection, a
+  // timeout, a 429, a 5xx, or a status the agent has no rule for. Not loss —
+  // every one of these is retried.
+  optional uint64 deferred = 2;
+
+  // Spool files the agent could not read, or whose kind is not one it ships.
+  // They were left where they were.
+  optional uint64 unreadable = 3;
+
+  // Whether shipping has stopped on an identity failure. A halted agent sends
+  // nothing at all, so this field arriving true describes a halt that came
+  // after this payload was written, never the one in force now.
+  optional bool halted = 4;
+
+  // What the backend refused permanently, by reason.
+  ShippingRejections rejected = 5;
+}
+
+// What the backend refused to accept from the agent, by reason. A payload
+// counted here is not offered again by the process that counted it.
+//
+// The same three reasons as IntakeRejections and the opposite direction: there,
+// what the agent's own receiver refused from a node inside the cluster.
+//
+// Absent means the counter was not stated; zero is a claim that nothing was
+// refused for that reason.
+message ShippingRejections {
+  // A 401 or 403: the backend does not accept this sender. Shipping stops.
+  optional uint64 unauthorized = 1;
+
+  // A 413, or a payload the agent refused to send because it was past its own
+  // ceiling. Both are the same fact about the same bytes.
+  optional uint64 too_large = 2;
+
+  // A 400: the payload will never be accepted in this form.
   optional uint64 malformed = 3;
 }
 

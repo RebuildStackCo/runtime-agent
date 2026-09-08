@@ -64,6 +64,13 @@ The full lifecycle is described in `security.md` §6; the backend obligations:
 - The domain and its addressing MUST be stable enough for enterprise egress
   allowlists. Changing the domain is a breaking change to every installed
   agent and requires a migration plan.
+- **The current stage is plain HTTP with no client identity** and none of the
+  above is built: the agent posts to one address its operator configured, and
+  the backend attributes everything that arrives to that one configured source.
+  A backend MUST NOT read a sender identity out of a payload — there is none to
+  read, and adding one would have to be removed again when mTLS makes identity a
+  property of the connection
+  ([ADR 0075](adr/0075-a-payload-leaves-the-spool-only-when-the-backend-has-it.md)).
 - **Wire format: protobuf payloads over plain HTTPS POST** (Connect-style
   RPC is acceptable; bare gRPC is not part of the contract). The data plane
   MUST work over HTTP/1.1 through enterprise proxies — no dependency on
@@ -623,7 +630,10 @@ report one.
   [ADR 0073](adr/0073-a-kind-declares-how-often-it-is-sent.md)). A backend that
   needs a bound MUST derive it from the cadence below and the per-record sizes,
   and MUST accept what a cluster of the size it admits will produce. Chunking, if
-  it is ever required, is a protocol change on both sides.
+  it is ever required, is a protocol change on both sides. Until a limit is
+  stated, the agent applies a conservative ceiling of its own and refuses to
+  offer a payload past it, so a backend that accepts more than the agent will
+  send does not see everything a cluster produces (ADR 0075).
 
 ### Cadence
 
@@ -674,6 +684,15 @@ MUST make the classes distinguishable:
 | Transient | unavailability, rate limiting, timeouts | Back off, buffer locally, retry. Backend MUST tolerate the resulting catch-up bursts |
 | Identity | expired / revoked certificate, unknown cluster | Stop sending, attempt re-enroll if a valid token is present, otherwise degrade to local-only. MUST be clearly distinct from transient errors — misclassification causes retry storms or false local-only degradation |
 | Permanent | malformed payload, unsupported schema version | Drop-and-log or hold-and-alert; never blind retry |
+
+The agent maps these onto status codes as follows, and a backend that means one
+class MUST NOT answer with the code of another (ADR 0075). `429` and `5xx` are
+transient and retried. `400` and `413` are permanent for those bytes: the
+payload is held, not offered again, and lost when its local retention expires —
+so a backend MUST NOT use either to mean "try later". `401` and `403` are
+identity: **the agent stops shipping entirely** and does not resume without a
+restart, while continuing to collect. Any other status is treated as transient,
+which is what keeps a misconfigured address from emptying an agent's buffer.
 
 ## 6. Compatibility
 

@@ -34,6 +34,7 @@ type controllerSources struct {
 	ebpf      func() (inventory.ProfileCoverage, uint64, uint64)
 	probe     func() pprofprobe.Coverage
 	pull      func() pprofpull.Coverage
+	shipping  func() model.Shipping
 }
 
 func (c controllerSources) gather() ([]*dto.MetricFamily, error) {
@@ -74,6 +75,10 @@ func (c controllerSources) gather() ([]*dto.MetricFamily, error) {
 	if c.pull != nil {
 		p := c.pull()
 		m.Pull = &p
+	}
+	if c.shipping != nil {
+		sc := c.shipping()
+		m.Shipping = &sc
 	}
 	return metrics.CollectController(m).Families()
 }

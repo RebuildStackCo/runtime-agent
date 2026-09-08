@@ -34,10 +34,13 @@ var ceilings = []struct {
 	lines   int
 	section int
 }{
-	// Both moved for one obligation: a payload kind now declares how often it is
-	// sent, which the backend may rely on and the customer is promised (ADR 0073).
-	{"security.md", 1071, 360},
-	{"backend-requirements.md", 733, 591},
+	// Both moved again for one obligation, and the largest one either document
+	// has taken on: payloads now leave the cluster. What the customer is
+	// promised about an egress that exists is not what was promised about one
+	// that did not, and the backend's implementer needs the status codes the
+	// agent acts on (ADR 0075).
+	{"security.md", 1088, 360},
+	{"backend-requirements.md", 752, 593},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

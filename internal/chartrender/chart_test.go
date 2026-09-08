@@ -1002,3 +1002,46 @@ func resourceFieldRef(container corev1.Container, name string) *corev1.ResourceF
 	}
 	return nil
 }
+
+// A backend is somewhere the operator named or nowhere at all. The chart writes
+// nothing when the value is empty, so a default install renders a controller
+// with no way to ship — which is the behaviour every install had before there
+// was a shipper (ADR 0075).
+func TestNoBackendIsRenderedUntilOneIsNamed(t *testing.T) {
+	for name, values := range profiles() {
+		t.Run(name, func(t *testing.T) {
+			if cfg := controllerConfig(t, render(t, values)); cfg.Backend.BaseURL != "" {
+				t.Errorf("a default install renders backend.baseURL = %q", cfg.Backend.BaseURL)
+			}
+		})
+	}
+
+	values := profiles()["metrics-only"]
+	values["backend"] = map[string]any{"baseURL": "http://ingest.example:8080"}
+	cfg := controllerConfig(t, render(t, values))
+	if cfg.Backend.BaseURL != "http://ingest.example:8080" {
+		t.Errorf("baseURL = %q; the value did not reach the agent's own parser", cfg.Backend.BaseURL)
+	}
+}
+
+// controllerConfig renders the controller ConfigMap through the agent's own
+// parser, which is what makes a chart that would fail at startup fail here.
+func controllerConfig(t *testing.T, docs []string) config.Config {
+	t.Helper()
+	for _, cm := range decode[corev1.ConfigMap](t, docs, "ConfigMap") {
+		if strings.HasSuffix(cm.Name, "-node") {
+			continue
+		}
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(cm.Data["config.yaml"]), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("the rendered controller config does not parse: %v", err)
+		}
+		return cfg
+	}
+	t.Fatal("no controller ConfigMap was rendered")
+	return config.Config{}
+}

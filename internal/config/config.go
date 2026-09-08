@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 
 	"sigs.k8s.io/yaml"
@@ -19,6 +20,7 @@ import (
 type Config struct {
 	Filters    Filters             `json:"filters"`
 	Spool      Spool               `json:"spool"`
+	Backend    Backend             `json:"backend"`
 	NodeIntake NodeIntake          `json:"nodeIntake"`
 	Profiling  ControllerProfiling `json:"profiling"`
 	Health     Health              `json:"health"`
@@ -211,6 +213,20 @@ type Spool struct {
 	MaxAgeHours int `json:"maxAgeHours"`
 }
 
+// Backend is where the spool's payloads are sent. One setting, and no default:
+// an absent base URL ships nothing, which is what every installation did before
+// there was a shipper at all.
+//
+// There is deliberately nothing else here — no credential, no certificate, no
+// enrollment token. Identity is a property of the connection and arrives with
+// mTLS (ADR 0005, ADR 0008); a field standing in for it now would have to be
+// removed from the schema, the handlers and the stored keys later.
+type Backend struct {
+	// BaseURL is the scheme, host and any path prefix the payload endpoints hang
+	// off, e.g. "http://ingest.example:8080". Empty disables shipping.
+	BaseURL string `json:"baseURL"`
+}
+
 // Filters controls what the agent collects. Everything not excluded here can
 // still opt out per namespace or pod with the collect annotation.
 type Filters struct {
@@ -273,7 +289,31 @@ func load[T validated](path string) (T, error) {
 
 // Validate checks the controller's enumerated values.
 func (c Config) Validate() error {
-	return validThirdPartySymbols(c.Profiling.ThirdPartySymbols)
+	if err := validThirdPartySymbols(c.Profiling.ThirdPartySymbols); err != nil {
+		return err
+	}
+	return validBackendBaseURL(c.Backend.BaseURL)
+}
+
+// validBackendBaseURL accepts an empty value, which ships nothing, and
+// otherwise an absolute http or https URL. A relative or scheme-less address is
+// a startup failure rather than a shipper that builds unsendable requests every
+// round: an agent that cannot ship should be told so once, at the top.
+func validBackendBaseURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("backend.baseURL %q is not a URL: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("backend.baseURL %q must be an http or https URL", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("backend.baseURL %q names no host", raw)
+	}
+	return nil
 }
 
 // Validate checks the node's enumerated values.

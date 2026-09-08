@@ -80,6 +80,7 @@ type Controller struct {
 	EBPF             *inventory.ProfileCoverage
 	Probe            *pprofprobe.Coverage
 	Pull             *pprofpull.Coverage
+	Shipping         *model.Shipping
 	ProfilesReceived uint64
 	ProfilesUnjoined uint64
 }
@@ -210,6 +211,22 @@ func CollectController(c Controller) *Set {
 		s.Counter("pprof_pulls_total", pulls, float64(p.Refused), L(LabelOutcome, "refused"))
 		s.Counter("pprof_pulls_total", pulls, float64(p.Unreachable), L(LabelOutcome, "unreachable"))
 		s.Counter("pprof_pulls_total", pulls, float64(p.Invalid), L(LabelOutcome, "invalid"))
+	}
+
+	if sh := c.Shipping; sh != nil {
+		shipments := "Payloads offered to the backend, by what became of each (ADR 0075)."
+		s.Counter("shipments_total", shipments, float64(sh.Delivered), L(LabelOutcome, "delivered"))
+		s.Counter("shipments_total", shipments, float64(sh.Deferred), L(LabelOutcome, "deferred"))
+		s.Counter("shipments_total", shipments, float64(sh.Unreadable), L(LabelOutcome, "unreadable"))
+		refused := "Payloads the backend refused permanently, by reason. None is offered again."
+		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.Unauthorized), L(LabelReason, "unauthorized"))
+		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.TooLarge), L(LabelReason, "too_large"))
+		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.Malformed), L(LabelReason, "malformed"))
+		// The one number a halted agent can still deliver: it ships nothing, so
+		// the coverage payload carrying the same fact never arrives (ADR 0075).
+		s.Gauge("shipping_halted",
+			"Whether shipping has stopped on an identity failure the agent will not retry into.",
+			b2f(sh.Halted))
 	}
 	return s
 }
