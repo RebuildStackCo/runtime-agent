@@ -130,6 +130,7 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 			ProfilingEnabled:  true,
 			ProfilingTopN:     5,
 			NodeIntakeEnabled: true,
+			BackendConfigured: true,
 		},
 		UsageSignals: []string{"cpu", "memory", "network", "throttling"},
 	}
@@ -180,10 +181,17 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	// scan block's oldest_asserted_at describes: together they are whether and
 	// why (ADR 0067).
 	rejected := model.IntakeRejections{TooLarge: 3, Unauthorized: 1}
+	// A backend that is taking payloads and has refused two of them for good.
+	// `deferred` beside a rising `delivered` is an outage that cost nothing;
+	// `rejected` is the only column that is not coming back (ADR 0075).
+	shipping := model.Shipping{
+		Delivered: 1204, Deferred: 17, Unreadable: 0, Halted: false,
+		Rejected: model.ShippingRejections{TooLarge: 2, Malformed: 1},
+	}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
 		sources, filter, model.PlacementDrops{Values: 3, Terms: 1},
 		model.NodeDrops{Conditions: 4, Devices: 1, Taints: 0, Values: 2},
-		&inv, &scan, &ebpf, &probe, &pull, &rejected); err != nil {
+		&inv, &scan, &ebpf, &probe, &pull, &rejected, &shipping); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -1960,7 +1968,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]model.SourceHealth{{Name: "services", Synced: true}},
 		model.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil, nil)
+		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

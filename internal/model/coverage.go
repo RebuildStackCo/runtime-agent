@@ -106,3 +106,51 @@ func (r IntakeRejections) Plus(o IntakeRejections) IntakeRejections {
 		Malformed:    r.Malformed + o.Malformed,
 	}
 }
+
+// Shipping is what became of the payloads the spool held, cumulative since the
+// process started (ADR 0075).
+//
+// It is the only block whose subject is outside the cluster, and that is what
+// makes it worth carrying: `delivered` flat while the spool's file count rises
+// separates an agent that stopped collecting from one whose backend stopped
+// listening.
+type Shipping struct {
+	// Delivered is payloads the backend acknowledged with a 2xx. It is the only
+	// answer that removes a spool file.
+	Delivered uint64 `json:"delivered"`
+	// Deferred is attempts that ended with the payload still the agent's to
+	// keep: a refused connection, a timeout, a 429, a 5xx, a status the agent
+	// does not recognize. Rising against a flat Delivered is an unreachable or
+	// unhealthy backend, and neither is data loss.
+	Deferred uint64 `json:"deferred"`
+	// Unreadable is spool files the shipper could not read, or whose kind is not
+	// in the registry. They are left where they are; nothing is deleted on the
+	// strength of a failed read.
+	Unreadable uint64 `json:"unreadable"`
+	// Halted is whether shipping has stopped on an identity failure. Nothing
+	// retries into a rejected credential, so the agent stops rather than turning
+	// a fleet's spools into a retry storm against it.
+	//
+	// A halted agent ships nothing, this payload included, so its readers are
+	// whoever holds the spool or scrapes the metrics endpoint.
+	Halted bool `json:"halted"`
+	// Rejected is what the backend refused permanently, by reason.
+	Rejected ShippingRejections `json:"rejected"`
+}
+
+// ShippingRejections is what the backend refused to accept, by reason. A
+// payload counted here is never offered again by this process: it is held where
+// it is, and leaves on the spool's own age bound (ADR 0075).
+//
+// The same three reasons as IntakeRejections, and the other direction — there,
+// what this agent's receiver refused from a node.
+type ShippingRejections struct {
+	// Unauthorized is a 401 or 403: the backend does not accept this sender.
+	Unauthorized uint64 `json:"unauthorized"`
+	// TooLarge is a 413, or a payload the agent refused to send because it is
+	// past its own ceiling. Both are the same fact about the same bytes, and
+	// which of the two ceilings acted is in the log.
+	TooLarge uint64 `json:"too_large"`
+	// Malformed is a 400: the payload will never be accepted in this form.
+	Malformed uint64 `json:"malformed"`
+}

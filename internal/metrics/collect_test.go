@@ -33,6 +33,8 @@ func fullController() Controller {
 	}
 	probe := pprofprobe.Coverage{Confirmed: 3, Absent: 2, Unreachable: 1, ExcludedByAnnotation: 4}
 	pull := pprofpull.Coverage{Shipped: 2, Refused: 1, Unreachable: 1, Invalid: 1}
+	shipping := model.Shipping{Delivered: 40, Deferred: 3, Unreadable: 1, Halted: true,
+		Rejected: model.ShippingRejections{Unauthorized: 1, TooLarge: 2, Malformed: 3}}
 	spool := sink.Counters{
 		Written:       map[string]int64{},
 		WriteFailures: map[string]int64{},
@@ -64,6 +66,7 @@ func fullController() Controller {
 		EBPF:             &ebpf,
 		Probe:            &probe,
 		Pull:             &pull,
+		Shipping:         &shipping,
 		ProfilesReceived: 6,
 		ProfilesUnjoined: 1,
 	}
@@ -146,6 +149,7 @@ func TestNoLabelValueNamesAnythingFromTheCluster(t *testing.T) {
 		"no_scope", "no_targets", "no_samples", "shipped", "invalid", "unshipped",
 		"out_of_scope", "third_party", "unsymbolized", "filtered",
 		"confirmed", "absent", "unreachable", "refused", "excluded_by_annotation",
+		"delivered", "deferred",
 	} {
 		permitted[v] = true
 	}
@@ -222,6 +226,9 @@ func TestAnUnconfiguredControllerOmitsWhatItDoesNotHave(t *testing.T) {
 		"node_reports_rejected_total", "nodes_reporting", "inventory_records",
 		"inventory_facts_total", "scan_processes", "ebpf_nodes", "ebpf_windows",
 		"pprof_targets", "pprof_pulls_total", "node_report_oldest_timestamp_seconds",
+		// An agent with no backend has not failed to ship: it was told to ship
+		// nowhere, and a delivered count of zero would claim otherwise.
+		"shipments_total", "shipments_rejected_total", "shipping_halted",
 	} {
 		if present[Prefix+absent] {
 			t.Errorf("%s%s is exposed by an installation that has no such component", Prefix, absent)

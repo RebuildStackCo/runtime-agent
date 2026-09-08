@@ -48,6 +48,14 @@
         "maxAgeHours": {"type": "integer", "minimum": 0}
       }
     },
+    "backend": {
+      "description": "Where payloads are shipped; empty ships nothing. Plain HTTP at this stage — no TLS, no credential, no identity (ADR 0075).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseURL": {"type": "string"}
+      }
+    },
     "nodeIntake": {
       "type": "object",
       "additionalProperties": false,

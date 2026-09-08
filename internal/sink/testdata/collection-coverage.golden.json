@@ -14,7 +14,8 @@
       "pprof_discovery_enabled": false,
       "pprof_pull_enabled": false,
       "symbol_prefixes_allowed": 0,
-      "node_intake_enabled": true
+      "node_intake_enabled": true,
+      "backend_configured": true
     },
     "usage_signals": [
       "cpu",
@@ -115,5 +116,16 @@
     "refused": 1,
     "unreachable": 0,
     "invalid": 1
+  },
+  "shipping": {
+    "delivered": 1204,
+    "deferred": 17,
+    "unreadable": 0,
+    "halted": false,
+    "rejected": {
+      "unauthorized": 0,
+      "too_large": 2,
+      "malformed": 1
+    }
   }
 }

@@ -1,10 +1,12 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, content string) string {
@@ -289,5 +291,61 @@ health:
 		t.Fatal("LoadNode accepted a health block; the node's listener is a flag")
 	} else if !strings.Contains(err.Error(), "health") {
 		t.Errorf("the refusal does not name the offending field: %v", err)
+	}
+}
+
+func TestLoadsTheBackendBaseURL(t *testing.T) {
+	path := write(t, `
+backend:
+  baseURL: http://ingest.example:8080/agent
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Backend.BaseURL; got != "http://ingest.example:8080/agent" {
+		t.Errorf("baseURL = %q", got)
+	}
+	if !cfg.Describe(path, time.Now()).BackendConfigured {
+		t.Error("the shape does not say this agent has a backend")
+	}
+}
+
+// No default and no invention: an agent told nothing about a backend ships
+// nothing, which is what every installation did before there was a shipper
+// (ADR 0075).
+func TestNoBackendIsTheDefaultAndTheShapeSaysSo(t *testing.T) {
+	cfg, err := Load(write(t, "filters: {}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Backend.BaseURL != "" {
+		t.Errorf("baseURL = %q, want empty", cfg.Backend.BaseURL)
+	}
+	if cfg.Describe("", time.Now()).BackendConfigured {
+		t.Error("the shape claims a backend that was never configured")
+	}
+}
+
+// A base URL the shipper cannot use is a startup failure with a reason, not a
+// round that builds unsendable requests forever.
+func TestABackendURLTheShipperCannotUseIsAStartupFailure(t *testing.T) {
+	for _, raw := range []string{"ingest.example:8080", "/v1/kubernetes", "ftp://ingest.example", "http://"} {
+		if _, err := Load(write(t, "backend:\n  baseURL: "+raw+"\n")); err == nil {
+			t.Errorf("Load accepted baseURL %q", raw)
+		}
+	}
+}
+
+// The address goes nowhere near a payload: the coverage report carries a
+// switch, and never a string from the operator's file (ADR 0054 §2).
+func TestTheShapeCarriesNoAddress(t *testing.T) {
+	cfg := Config{Backend: Backend{BaseURL: "https://ingest.acme-internal.example:8443"}}
+	encoded, err := json.Marshal(cfg.Describe("", time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "acme-internal") {
+		t.Errorf("the configuration shape carries the backend address: %s", encoded)
 	}
 }

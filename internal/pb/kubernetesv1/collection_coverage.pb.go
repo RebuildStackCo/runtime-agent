@@ -71,7 +71,10 @@ type CollectionCoverage struct {
 	IntakeRejections *IntakeRejections `protobuf:"bytes,14,opt,name=intake_rejections,json=intakeRejections,proto3" json:"intake_rejections,omitempty"`
 	// What fetching profiles from confirmed endpoints did. Present only when
 	// profiles are pulled.
-	PprofPull     *PprofPullCoverage `protobuf:"bytes,15,opt,name=pprof_pull,json=pprofPull,proto3" json:"pprof_pull,omitempty"`
+	PprofPull *PprofPullCoverage `protobuf:"bytes,15,opt,name=pprof_pull,json=pprofPull,proto3" json:"pprof_pull,omitempty"`
+	// What became of the payloads this one travelled with. Present only when the
+	// agent is configured to ship at all.
+	Shipping      *ShippingCoverage `protobuf:"bytes,16,opt,name=shipping,proto3" json:"shipping,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -211,6 +214,13 @@ func (x *CollectionCoverage) GetPprofPull() *PprofPullCoverage {
 	return nil
 }
 
+func (x *CollectionCoverage) GetShipping() *ShippingCoverage {
+	if x != nil {
+		return x.Shipping
+	}
+	return nil
+}
+
 // What the agent is and how it is set up, so a reader knows what the counts
 // beside it rest on.
 type AgentInfo struct {
@@ -309,6 +319,11 @@ type ConfigShape struct {
 	// Whether the receiver for on-node reports is open. Absent means the switch
 	// was not stated; false is a claim that it is closed.
 	NodeIntakeEnabled *bool `protobuf:"varint,9,opt,name=node_intake_enabled,json=nodeIntakeEnabled,proto3,oneof" json:"node_intake_enabled,omitempty"`
+	// Whether the agent has a backend to ship to. A switch, never the address.
+	// Absent means the switch was not stated; false is a claim that this agent
+	// was configured to ship nowhere, which is what separates a delivered count
+	// of zero from a backend that is refusing.
+	BackendConfigured *bool `protobuf:"varint,11,opt,name=backend_configured,json=backendConfigured,proto3,oneof" json:"backend_configured,omitempty"`
 	// How many hours an unacknowledged payload may wait locally before it is
 	// dropped. Absent when the agent's own built-in bound is what applies.
 	SpoolMaxAgeHours int64 `protobuf:"varint,10,opt,name=spool_max_age_hours,json=spoolMaxAgeHours,proto3" json:"spool_max_age_hours,omitempty"`
@@ -405,6 +420,13 @@ func (x *ConfigShape) GetSymbolPrefixesAllowed() int64 {
 func (x *ConfigShape) GetNodeIntakeEnabled() bool {
 	if x != nil && x.NodeIntakeEnabled != nil {
 		return *x.NodeIntakeEnabled
+	}
+	return false
+}
+
+func (x *ConfigShape) GetBackendConfigured() bool {
+	if x != nil && x.BackendConfigured != nil {
+		return *x.BackendConfigured
 	}
 	return false
 }
@@ -1352,6 +1374,173 @@ func (x *IntakeRejections) GetMalformed() uint64 {
 	return 0
 }
 
+// What became of the payloads the agent's spool held, cumulative since
+// `since`.
+//
+// Its subject is this ingest itself, which bounds what it can say: a report
+// that arrived was shipped, so it carries the history of the payloads before
+// it and never the delivery that brought it.
+//
+// Absent means the counter was not stated; zero is a claim that it was counted.
+type ShippingCoverage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Payloads the backend acknowledged with a 2xx. The only answer that removes
+	// a payload from the agent's spool.
+	Delivered *uint64 `protobuf:"varint,1,opt,name=delivered,proto3,oneof" json:"delivered,omitempty"`
+	// Attempts that left the payload with the agent: a refused connection, a
+	// timeout, a 429, a 5xx, or a status the agent has no rule for. Not loss —
+	// every one of these is retried.
+	Deferred *uint64 `protobuf:"varint,2,opt,name=deferred,proto3,oneof" json:"deferred,omitempty"`
+	// Spool files the agent could not read, or whose kind is not one it ships.
+	// They were left where they were.
+	Unreadable *uint64 `protobuf:"varint,3,opt,name=unreadable,proto3,oneof" json:"unreadable,omitempty"`
+	// Whether shipping has stopped on an identity failure. A halted agent sends
+	// nothing at all, so this field arriving true describes a halt that came
+	// after this payload was written, never the one in force now.
+	Halted *bool `protobuf:"varint,4,opt,name=halted,proto3,oneof" json:"halted,omitempty"`
+	// What the backend refused permanently, by reason.
+	Rejected      *ShippingRejections `protobuf:"bytes,5,opt,name=rejected,proto3" json:"rejected,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShippingCoverage) Reset() {
+	*x = ShippingCoverage{}
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShippingCoverage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShippingCoverage) ProtoMessage() {}
+
+func (x *ShippingCoverage) ProtoReflect() protoreflect.Message {
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShippingCoverage.ProtoReflect.Descriptor instead.
+func (*ShippingCoverage) Descriptor() ([]byte, []int) {
+	return file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ShippingCoverage) GetDelivered() uint64 {
+	if x != nil && x.Delivered != nil {
+		return *x.Delivered
+	}
+	return 0
+}
+
+func (x *ShippingCoverage) GetDeferred() uint64 {
+	if x != nil && x.Deferred != nil {
+		return *x.Deferred
+	}
+	return 0
+}
+
+func (x *ShippingCoverage) GetUnreadable() uint64 {
+	if x != nil && x.Unreadable != nil {
+		return *x.Unreadable
+	}
+	return 0
+}
+
+func (x *ShippingCoverage) GetHalted() bool {
+	if x != nil && x.Halted != nil {
+		return *x.Halted
+	}
+	return false
+}
+
+func (x *ShippingCoverage) GetRejected() *ShippingRejections {
+	if x != nil {
+		return x.Rejected
+	}
+	return nil
+}
+
+// What the backend refused to accept from the agent, by reason. A payload
+// counted here is not offered again by the process that counted it.
+//
+// The same three reasons as IntakeRejections and the opposite direction: there,
+// what the agent's own receiver refused from a node inside the cluster.
+//
+// Absent means the counter was not stated; zero is a claim that nothing was
+// refused for that reason.
+type ShippingRejections struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A 401 or 403: the backend does not accept this sender. Shipping stops.
+	Unauthorized *uint64 `protobuf:"varint,1,opt,name=unauthorized,proto3,oneof" json:"unauthorized,omitempty"`
+	// A 413, or a payload the agent refused to send because it was past its own
+	// ceiling. Both are the same fact about the same bytes.
+	TooLarge *uint64 `protobuf:"varint,2,opt,name=too_large,json=tooLarge,proto3,oneof" json:"too_large,omitempty"`
+	// A 400: the payload will never be accepted in this form.
+	Malformed     *uint64 `protobuf:"varint,3,opt,name=malformed,proto3,oneof" json:"malformed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShippingRejections) Reset() {
+	*x = ShippingRejections{}
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShippingRejections) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShippingRejections) ProtoMessage() {}
+
+func (x *ShippingRejections) ProtoReflect() protoreflect.Message {
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShippingRejections.ProtoReflect.Descriptor instead.
+func (*ShippingRejections) Descriptor() ([]byte, []int) {
+	return file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ShippingRejections) GetUnauthorized() uint64 {
+	if x != nil && x.Unauthorized != nil {
+		return *x.Unauthorized
+	}
+	return 0
+}
+
+func (x *ShippingRejections) GetTooLarge() uint64 {
+	if x != nil && x.TooLarge != nil {
+		return *x.TooLarge
+	}
+	return 0
+}
+
+func (x *ShippingRejections) GetMalformed() uint64 {
+	if x != nil && x.Malformed != nil {
+		return *x.Malformed
+	}
+	return 0
+}
+
 // What fetching profiles from confirmed endpoints did, cumulative since
 // `since`.
 //
@@ -1375,7 +1564,7 @@ type PprofPullCoverage struct {
 
 func (x *PprofPullCoverage) Reset() {
 	*x = PprofPullCoverage{}
-	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[12]
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1387,7 +1576,7 @@ func (x *PprofPullCoverage) String() string {
 func (*PprofPullCoverage) ProtoMessage() {}
 
 func (x *PprofPullCoverage) ProtoReflect() protoreflect.Message {
-	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[12]
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1400,7 +1589,7 @@ func (x *PprofPullCoverage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PprofPullCoverage.ProtoReflect.Descriptor instead.
 func (*PprofPullCoverage) Descriptor() ([]byte, []int) {
-	return file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescGZIP(), []int{12}
+	return file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PprofPullCoverage) GetShipped() int64 {
@@ -1435,7 +1624,7 @@ var File_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto protoreflec
 
 const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc = "" +
 	"\n" +
-	";rebuildstack/ingest/kubernetes/v1/collection_coverage.proto\x12!rebuildstack.ingest.kubernetes.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfe\a\n" +
+	";rebuildstack/ingest/kubernetes/v1/collection_coverage.proto\x12!rebuildstack.ingest.kubernetes.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcf\b\n" +
 	"\x12CollectionCoverage\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12;\n" +
@@ -1454,11 +1643,12 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\x05pprof\x18\r \x01(\v20.rebuildstack.ingest.kubernetes.v1.PprofCoverageR\x05pprof\x12`\n" +
 	"\x11intake_rejections\x18\x0e \x01(\v23.rebuildstack.ingest.kubernetes.v1.IntakeRejectionsR\x10intakeRejections\x12S\n" +
 	"\n" +
-	"pprof_pull\x18\x0f \x01(\v24.rebuildstack.ingest.kubernetes.v1.PprofPullCoverageR\tpprofPull\"\x92\x01\n" +
+	"pprof_pull\x18\x0f \x01(\v24.rebuildstack.ingest.kubernetes.v1.PprofPullCoverageR\tpprofPull\x12O\n" +
+	"\bshipping\x18\x10 \x01(\v23.rebuildstack.ingest.kubernetes.v1.ShippingCoverageR\bshipping\"\x92\x01\n" +
 	"\tAgentInfo\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12F\n" +
 	"\x06config\x18\x02 \x01(\v2..rebuildstack.ingest.kubernetes.v1.ConfigShapeR\x06config\x12#\n" +
-	"\rusage_signals\x18\x03 \x03(\tR\fusageSignals\"\xba\x05\n" +
+	"\rusage_signals\x18\x03 \x03(\tR\fusageSignals\"\x85\x06\n" +
 	"\vConfigShape\x120\n" +
 	"\x05since\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\x122\n" +
 	"\x12namespaces_allowed\x18\x02 \x01(\x03H\x00R\x11namespacesAllowed\x88\x01\x01\x120\n" +
@@ -1468,7 +1658,8 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\x17pprof_discovery_enabled\x18\x06 \x01(\bH\x03R\x15pprofDiscoveryEnabled\x88\x01\x01\x121\n" +
 	"\x12pprof_pull_enabled\x18\a \x01(\bH\x04R\x10pprofPullEnabled\x88\x01\x01\x12;\n" +
 	"\x17symbol_prefixes_allowed\x18\b \x01(\x03H\x05R\x15symbolPrefixesAllowed\x88\x01\x01\x123\n" +
-	"\x13node_intake_enabled\x18\t \x01(\bH\x06R\x11nodeIntakeEnabled\x88\x01\x01\x12-\n" +
+	"\x13node_intake_enabled\x18\t \x01(\bH\x06R\x11nodeIntakeEnabled\x88\x01\x01\x122\n" +
+	"\x12backend_configured\x18\v \x01(\bH\aR\x11backendConfigured\x88\x01\x01\x12-\n" +
 	"\x13spool_max_age_hours\x18\n" +
 	" \x01(\x03R\x10spoolMaxAgeHoursB\x15\n" +
 	"\x13_namespaces_allowedB\x14\n" +
@@ -1477,7 +1668,8 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\x18_pprof_discovery_enabledB\x15\n" +
 	"\x13_pprof_pull_enabledB\x1a\n" +
 	"\x18_symbol_prefixes_allowedB\x16\n" +
-	"\x14_node_intake_enabled\"u\n" +
+	"\x14_node_intake_enabledB\x15\n" +
+	"\x13_backend_configured\"u\n" +
 	"\fSourceHealth\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\x06synced\x18\x02 \x01(\bH\x00R\x06synced\x88\x01\x01\x12\x1d\n" +
@@ -1620,6 +1812,28 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\n" +
 	"_too_largeB\f\n" +
 	"\n" +
+	"_malformed\"\xa0\x02\n" +
+	"\x10ShippingCoverage\x12!\n" +
+	"\tdelivered\x18\x01 \x01(\x04H\x00R\tdelivered\x88\x01\x01\x12\x1f\n" +
+	"\bdeferred\x18\x02 \x01(\x04H\x01R\bdeferred\x88\x01\x01\x12#\n" +
+	"\n" +
+	"unreadable\x18\x03 \x01(\x04H\x02R\n" +
+	"unreadable\x88\x01\x01\x12\x1b\n" +
+	"\x06halted\x18\x04 \x01(\bH\x03R\x06halted\x88\x01\x01\x12Q\n" +
+	"\brejected\x18\x05 \x01(\v25.rebuildstack.ingest.kubernetes.v1.ShippingRejectionsR\brejectedB\f\n" +
+	"\n" +
+	"_deliveredB\v\n" +
+	"\t_deferredB\r\n" +
+	"\v_unreadableB\t\n" +
+	"\a_halted\"\xaf\x01\n" +
+	"\x12ShippingRejections\x12'\n" +
+	"\funauthorized\x18\x01 \x01(\x04H\x00R\funauthorized\x88\x01\x01\x12 \n" +
+	"\ttoo_large\x18\x02 \x01(\x04H\x01R\btooLarge\x88\x01\x01\x12!\n" +
+	"\tmalformed\x18\x03 \x01(\x04H\x02R\tmalformed\x88\x01\x01B\x0f\n" +
+	"\r_unauthorizedB\f\n" +
+	"\n" +
+	"_too_largeB\f\n" +
+	"\n" +
 	"_malformed\"\xcb\x01\n" +
 	"\x11PprofPullCoverage\x12\x1d\n" +
 	"\ashipped\x18\x01 \x01(\x03H\x00R\ashipped\x88\x01\x01\x12\x1d\n" +
@@ -1646,7 +1860,7 @@ func file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescGZI
 	return file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescData
 }
 
-var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_goTypes = []any{
 	(*CollectionCoverage)(nil),    // 0: rebuildstack.ingest.kubernetes.v1.CollectionCoverage
 	(*AgentInfo)(nil),             // 1: rebuildstack.ingest.kubernetes.v1.AgentInfo
@@ -1660,13 +1874,15 @@ var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_goTypes = [
 	(*ProfileCoverage)(nil),       // 9: rebuildstack.ingest.kubernetes.v1.ProfileCoverage
 	(*PprofCoverage)(nil),         // 10: rebuildstack.ingest.kubernetes.v1.PprofCoverage
 	(*IntakeRejections)(nil),      // 11: rebuildstack.ingest.kubernetes.v1.IntakeRejections
-	(*PprofPullCoverage)(nil),     // 12: rebuildstack.ingest.kubernetes.v1.PprofPullCoverage
-	nil,                           // 13: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
-	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(*ShippingCoverage)(nil),      // 12: rebuildstack.ingest.kubernetes.v1.ShippingCoverage
+	(*ShippingRejections)(nil),    // 13: rebuildstack.ingest.kubernetes.v1.ShippingRejections
+	(*PprofPullCoverage)(nil),     // 14: rebuildstack.ingest.kubernetes.v1.PprofPullCoverage
+	nil,                           // 15: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
+	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
 }
 var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_depIdxs = []int32{
-	14, // 0: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.captured_at:type_name -> google.protobuf.Timestamp
-	14, // 1: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.since:type_name -> google.protobuf.Timestamp
+	16, // 0: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.captured_at:type_name -> google.protobuf.Timestamp
+	16, // 1: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.since:type_name -> google.protobuf.Timestamp
 	1,  // 2: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.agent:type_name -> rebuildstack.ingest.kubernetes.v1.AgentInfo
 	3,  // 3: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.sources:type_name -> rebuildstack.ingest.kubernetes.v1.SourceHealth
 	4,  // 4: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.filter:type_name -> rebuildstack.ingest.kubernetes.v1.FilterCoverage
@@ -1677,16 +1893,18 @@ var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_depIdxs = [
 	9,  // 9: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.ebpf:type_name -> rebuildstack.ingest.kubernetes.v1.ProfileCoverage
 	10, // 10: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.pprof:type_name -> rebuildstack.ingest.kubernetes.v1.PprofCoverage
 	11, // 11: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.intake_rejections:type_name -> rebuildstack.ingest.kubernetes.v1.IntakeRejections
-	12, // 12: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.pprof_pull:type_name -> rebuildstack.ingest.kubernetes.v1.PprofPullCoverage
-	2,  // 13: rebuildstack.ingest.kubernetes.v1.AgentInfo.config:type_name -> rebuildstack.ingest.kubernetes.v1.ConfigShape
-	14, // 14: rebuildstack.ingest.kubernetes.v1.ConfigShape.since:type_name -> google.protobuf.Timestamp
-	14, // 15: rebuildstack.ingest.kubernetes.v1.ScanCoverage.oldest_asserted_at:type_name -> google.protobuf.Timestamp
-	13, // 16: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.states:type_name -> rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	14, // 12: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.pprof_pull:type_name -> rebuildstack.ingest.kubernetes.v1.PprofPullCoverage
+	12, // 13: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.shipping:type_name -> rebuildstack.ingest.kubernetes.v1.ShippingCoverage
+	2,  // 14: rebuildstack.ingest.kubernetes.v1.AgentInfo.config:type_name -> rebuildstack.ingest.kubernetes.v1.ConfigShape
+	16, // 15: rebuildstack.ingest.kubernetes.v1.ConfigShape.since:type_name -> google.protobuf.Timestamp
+	16, // 16: rebuildstack.ingest.kubernetes.v1.ScanCoverage.oldest_asserted_at:type_name -> google.protobuf.Timestamp
+	15, // 17: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.states:type_name -> rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
+	13, // 18: rebuildstack.ingest.kubernetes.v1.ShippingCoverage.rejected:type_name -> rebuildstack.ingest.kubernetes.v1.ShippingRejections
+	19, // [19:19] is the sub-list for method output_type
+	19, // [19:19] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_init() }
@@ -1705,13 +1923,15 @@ func file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_init() {
 	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[10].OneofWrappers = []any{}
 	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[11].OneofWrappers = []any{}
 	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[12].OneofWrappers = []any{}
+	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[13].OneofWrappers = []any{}
+	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[14].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc), len(file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

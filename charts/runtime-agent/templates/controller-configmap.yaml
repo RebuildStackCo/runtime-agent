@@ -38,6 +38,10 @@ data:
       {{- if .Values.spool.maxAgeHours }}
       maxAgeHours: {{ .Values.spool.maxAgeHours }}
       {{- end }}
+    {{- with .Values.backend.baseURL }}
+    backend:
+      baseURL: {{ . | quote }}
+    {{- end }}
     health:
       # The port the probes ask on. Rendered in every profile: the two questions
       # a kubelet asks are not a feature of one (ADR 0069).

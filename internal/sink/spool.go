@@ -219,6 +219,12 @@ type collectionCoveragePayload struct {
 	// to read first: it is a workload whose own profiler holds the single CPU
 	// profile Go allows, not a workload the agent failed on (ADR 0058 §3).
 	PprofPull *pprofpull.Coverage `json:"pprof_pull,omitempty"`
+	// Shipping is what became of the payloads this one travelled with, present
+	// only when a backend is configured. It is the one block whose subject is
+	// outside the cluster, and the only one whose absence from an arriving
+	// payload is a contradiction — a report that got here was shipped
+	// (ADR 0075).
+	Shipping *model.Shipping `json:"shipping,omitempty"`
 }
 
 // AgentInfo is what the agent is and how it is set up, for a report that needs
@@ -646,7 +652,7 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs model.O
 // predecessor. It is written on every flush, including one that found nothing:
 // an empty report and a broken agent are the same bytes without it (ADR 0054).
 func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []model.SourceHealth, filter model.Coverage, placement model.PlacementDrops, nodes model.NodeDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage,
-	intake *model.IntakeRejections) error {
+	intake *model.IntakeRejections, shipping *model.Shipping) error {
 	payload := collectionCoveragePayload{
 		Kind:       "collection_coverage",
 		Source:     SourceAgent,
@@ -663,6 +669,7 @@ func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent Agent
 		Pprof:      probe,
 		Intake:     intake,
 		PprofPull:  pull,
+		Shipping:   shipping,
 	}
 	return s.write(payload.Kind, "collection-coverage.json", payload)
 }
