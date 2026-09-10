@@ -1,6 +1,7 @@
 {
   "kind": "container_restarts",
   "source": "journal",
+  "captured_at": "2026-08-06T10:12:00Z",
   "window_start": "2026-08-06T10:00:00Z",
   "window_seconds": 3600,
   "records": [

@@ -318,7 +318,7 @@ func fixedRestarts() []journal.RestartRecord {
 
 func TestGoldenContainerRestartsPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteContainerRestarts(fixedRestarts()); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, fixedRestarts()); err != nil {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("restarts-%d-3600.json", windowStart.Unix())
@@ -407,13 +407,60 @@ func TestRestartCountersWriteEvenWhenNothingRestarted(t *testing.T) {
 
 // One file per window, not per restart: the crash loop must not decide how many
 // files the spool holds (ADR 0020).
+// The watermark is what the field is for: the same window written twice differs
+// in exactly one way, and that way says which of the two was final (ADR 0078).
+//
+// A journal window has one filename open or closed, so this is the only thing
+// that tells them apart — the bytes are otherwise identical.
+func TestAJournalWindowSaysWhetherItIsFinal(t *testing.T) {
+	s, dir := newTestSpool(t)
+	end := windowStart.Add(time.Hour)
+
+	if err := s.WriteContainerRestarts(windowStart.Add(20*time.Minute), fixedRestarts()); err != nil {
+		t.Fatal(err)
+	}
+	if capturedAtOfWindow(t, dir).After(end) {
+		t.Error("a slice taken inside the window claimed to be past its end")
+	}
+	if !capturedAtOfWindow(t, dir).Before(end) {
+		t.Error("a slice taken inside the window did not say the window was still open")
+	}
+
+	if err := s.WriteContainerRestarts(end, fixedRestarts()); err != nil {
+		t.Fatal(err)
+	}
+	if capturedAtOfWindow(t, dir).Before(end) {
+		t.Error("the last write of a window that had ended still claimed to be open")
+	}
+}
+
+// capturedAtOfWindow reads the watermark out of the restart window's file.
+func capturedAtOfWindow(t *testing.T, dir string) time.Time {
+	t.Helper()
+	name := journalWindowName(restartsNamePrefix, windowKey{start: windowStart, seconds: 3600})
+	raw, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		CapturedAt time.Time `json:"captured_at"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.CapturedAt.IsZero() {
+		t.Fatal("the window carried no capture instant at all")
+	}
+	return payload.CapturedAt
+}
+
 func TestContainerRestartsAreOneFilePerWindow(t *testing.T) {
 	s, dir := newTestSpool(t)
 	records := fixedRestarts()
 	next := records[0]
 	next.WindowStart = windowStart.Add(time.Hour)
 	records = append(records, next)
-	if err := s.WriteContainerRestarts(records); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, records); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -430,12 +477,12 @@ func TestContainerRestartsAreOneFilePerWindow(t *testing.T) {
 // closes is its final value.
 func TestContainerRestartsSupersedeWithinTheirWindow(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteContainerRestarts(fixedRestarts()); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, fixedRestarts()); err != nil {
 		t.Fatal(err)
 	}
 	grown := fixedRestarts()
 	grown[0].Restarts = 9
-	if err := s.WriteContainerRestarts(grown); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, grown); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -547,7 +594,7 @@ func ptrTo[T any](v T) *T { return &v }
 
 func TestGoldenJobRunsPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteJobRuns(fixedJobRuns()); err != nil {
+	if err := s.WriteJobRuns(capturedAt, fixedJobRuns()); err != nil {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("job-runs-%d-3600.json", windowStart.Unix())
@@ -559,7 +606,7 @@ func TestGoldenJobRunsPayload(t *testing.T) {
 // (ADR 0029, the reasoning ADR 0021 established for disruptions).
 func TestJobRunsOfOneWindowShareAFile(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteJobRuns(fixedJobRuns()); err != nil {
+	if err := s.WriteJobRuns(capturedAt, fixedJobRuns()); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -573,7 +620,7 @@ func TestJobRunsOfOneWindowShareAFile(t *testing.T) {
 
 func TestGoldenPodDisruptionsPayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WritePodDisruptions(fixedDisruptions()); err != nil {
+	if err := s.WritePodDisruptions(capturedAt, fixedDisruptions()); err != nil {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("disruptions-%d-3600.json", windowStart.Unix())
@@ -591,7 +638,7 @@ func TestPodDisruptionsAreOneFilePerWindow(t *testing.T) {
 		extra.Pod = fmt.Sprintf("index-%d", i+1)
 		records = append(records, extra)
 	}
-	if err := s.WritePodDisruptions(records); err != nil {
+	if err := s.WritePodDisruptions(capturedAt, records); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -1138,7 +1185,7 @@ func fixedNodeEvents() []journal.NodeEventRecord {
 
 func TestGoldenNodeLifecyclePayload(t *testing.T) {
 	s, dir := newTestSpool(t)
-	if err := s.WriteNodeLifecycle(fixedNodeEvents()); err != nil {
+	if err := s.WriteNodeLifecycle(capturedAt, fixedNodeEvents()); err != nil {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("node-lifecycle-%d-3600.json", windowStart.Unix())
@@ -1155,7 +1202,7 @@ func TestNodeLifecycleOfOneWindowSharesAFile(t *testing.T) {
 		extra.Node = fmt.Sprintf("node-churn-%d", i)
 		records = append(records, extra)
 	}
-	if err := s.WriteNodeLifecycle(records); err != nil {
+	if err := s.WriteNodeLifecycle(capturedAt, records); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)

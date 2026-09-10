@@ -39,11 +39,16 @@ var ceilings = []struct {
 	// promised about an egress that exists is not what was promised about one
 	// that did not, and the backend's implementer needs the status codes the
 	// agent acts on (ADR 0075).
-	{"security.md", 1088, 360},
-	// One obligation the contract did not carry: the request body is encoded,
+	// One obligation: a windowed journal payload now states when it was written,
+	// which is a field leaving the cluster that was not leaving before
+	// (ADR 0078).
+	{"security.md", 1094, 360},
+	// Two obligations the contract did not carry. The request body is encoded,
 	// so its implementer must decode it and must stop reading a payload's size
-	// off the request that carried it (ADR 0076).
-	{"backend-requirements.md", 764, 593},
+	// off the request that carried it (ADR 0076). And a journal window now
+	// states whether it is finished, which the backend must read from the
+	// payload instead of deciding from its clock (ADR 0078).
+	{"backend-requirements.md", 775, 604},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

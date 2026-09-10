@@ -621,6 +621,17 @@ report one.
   re-reads the current version and is therefore the same or newer, never older.
   Snapshots have the same aggregate shape as any rollup; they do not relax §9
   (no raw time series).
+- **A journal window says whether it is finished.** `container_restarts`,
+  `pod_disruptions`, `node_lifecycle` and `job_runs` have one payload shape open
+  or closed and no separate closed-window kind, so each carries `captured_at`,
+  the instant the agent wrote it. `captured_at` **at or after**
+  `window_start + window_seconds` means the window is final; earlier means it is
+  a slice of a window still open and a later delivery will replace it
+  ([ADR 0078](adr/0078-a-journal-window-says-whether-it-is-finished.md)). The
+  backend MUST take finality from this field, MUST NOT infer it from its own
+  clock, and MUST read an absent `captured_at` as "still open". It MUST NOT
+  derive an order from it: supersession stays last write wins under the natural
+  key ([ADR 0027](adr/0027-no-payload-ordering-field.md)).
 - **Acknowledgment is a durability promise.** The backend MUST NOT
   acknowledge data it can still lose. The agent trims its local buffers only
   after acknowledgment.

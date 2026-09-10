@@ -644,6 +644,12 @@ object, a generated per-run name such as `rollup-29123456`, and the CronJob that
 scheduled it; a run whose Job, CronJob, namespace or pod template carries the
 opt-out annotation produces no record ([ADR 0029](adr/0029-job-runs.md)).
 
+Every windowed journal payload — `container_restarts`, `pod_disruptions`,
+`node_lifecycle`, `job_runs` — carries `captured_at`, the instant the agent wrote
+it, so a window that is finished can be told from one still filling
+([ADR 0078](adr/0078-a-journal-window-says-whether-it-is-finished.md)). It is a
+fact about the agent and names nothing in your cluster.
+
 `oom_kill`, `container_restarts`, `restart_counters` and `pod_disruptions` report
 what object status records about a container's history. All four are `journal`
 provenance and all four name the **pod**. `pod_disruptions` is what the *cluster*

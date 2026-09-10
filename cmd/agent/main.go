@@ -611,11 +611,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if spool == nil {
 			return
 		}
-		records := append(restartJournal.CloseBefore(time.Now()), restartJournal.Snapshots()...)
+		// One reading of the clock decides which windows closed and stamps
+		// what it wrote, so the two can never disagree (ADR 0078).
+		now := time.Now()
+		records := append(restartJournal.CloseBefore(now), restartJournal.Snapshots()...)
 		if len(records) == 0 {
 			return // a cluster where nothing restarted writes nothing
 		}
-		if err := spool.WriteContainerRestarts(records); err != nil {
+		if err := spool.WriteContainerRestarts(now, records); err != nil {
 			logger.Error("spooling container restarts", "error", err)
 			return
 		}
@@ -626,11 +629,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if spool == nil {
 			return
 		}
-		records := append(disruptionJournal.CloseBefore(time.Now()), disruptionJournal.Snapshots()...)
+		// One reading of the clock decides which windows closed and stamps
+		// what it wrote, so the two can never disagree (ADR 0078).
+		now := time.Now()
+		records := append(disruptionJournal.CloseBefore(now), disruptionJournal.Snapshots()...)
 		if len(records) == 0 {
 			return // a cluster where nothing was preempted or evicted writes nothing
 		}
-		if err := spool.WritePodDisruptions(records); err != nil {
+		if err := spool.WritePodDisruptions(now, records); err != nil {
 			logger.Error("spooling pod disruptions", "error", err)
 			return
 		}
@@ -641,11 +647,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if spool == nil {
 			return
 		}
-		records := append(nodeJournal.CloseBefore(time.Now()), nodeJournal.Snapshots()...)
+		// One reading of the clock decides which windows closed and stamps
+		// what it wrote, so the two can never disagree (ADR 0078).
+		now := time.Now()
+		records := append(nodeJournal.CloseBefore(now), nodeJournal.Snapshots()...)
 		if len(records) == 0 {
 			return // a fleet that did not change writes nothing
 		}
-		if err := spool.WriteNodeLifecycle(records); err != nil {
+		if err := spool.WriteNodeLifecycle(now, records); err != nil {
 			logger.Error("spooling node lifecycle", "error", err)
 			return
 		}
@@ -656,11 +665,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if spool == nil {
 			return
 		}
-		records := append(jobJournal.CloseBefore(time.Now()), jobJournal.Snapshots()...)
+		// One reading of the clock decides which windows closed and stamps
+		// what it wrote, so the two can never disagree (ADR 0078).
+		now := time.Now()
+		records := append(jobJournal.CloseBefore(now), jobJournal.Snapshots()...)
 		if len(records) == 0 {
 			return // a cluster with no batch workloads writes nothing
 		}
-		if err := spool.WriteJobRuns(records); err != nil {
+		if err := spool.WriteJobRuns(now, records); err != nil {
 			logger.Error("spooling job runs", "error", err)
 			return
 		}

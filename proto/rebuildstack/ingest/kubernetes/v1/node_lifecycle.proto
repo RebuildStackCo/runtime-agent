@@ -28,6 +28,15 @@ message NodeLifecycle {
   // One record per node and event within the window. A node that joined and
   // left in the same window has two.
   repeated NodeEvent records = 5;
+
+  // When the agent captured this payload, and with it whether the window is
+  // done: at or after window_start + window_seconds means nothing more will be
+  // added to it, and earlier means this is a slice of a window still open.
+  //
+  // Absent means the agent did not state it, which is what every version before
+  // this field sent — treat that window as open, because a claim of finality is
+  // the one thing an absent field must never be read as.
+  optional google.protobuf.Timestamp captured_at = 6;
 }
 
 // One node arriving in or leaving the cluster.

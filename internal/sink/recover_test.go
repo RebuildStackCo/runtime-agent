@@ -273,7 +273,7 @@ func restartRecords(pods ...string) []journal.RestartRecord {
 
 func TestAnOpenJournalWindowIsRecovered(t *testing.T) {
 	s, _ := recoverSpool(t)
-	if err := s.WriteContainerRestarts(restartRecords("web-a", "web-b")); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, restartRecords("web-a", "web-b")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -295,7 +295,7 @@ func TestAnOpenJournalWindowIsRecovered(t *testing.T) {
 // this whole read exists to prevent (ADR 0077).
 func TestAJournalWindowThatHasEndedIsNotReopened(t *testing.T) {
 	s, _ := recoverSpool(t)
-	if err := s.WriteContainerRestarts(restartRecords("web-a")); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, restartRecords("web-a")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -318,7 +318,7 @@ func TestAJournalWindowThatHasEndedIsNotReopened(t *testing.T) {
 // natural key, which the contract tells the backend is the complete state.
 func TestARestartInsideAnOpenWindowKeepsWhatTheWindowAlreadyHeld(t *testing.T) {
 	s, dir := recoverSpool(t)
-	if err := s.WriteContainerRestarts(restartRecords("web-a", "web-b")); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, restartRecords("web-a", "web-b")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -340,7 +340,7 @@ func TestARestartInsideAnOpenWindowKeepsWhatTheWindowAlreadyHeld(t *testing.T) {
 		ObservedAt: midWindow, Restarts: 1, Reason: "Error",
 	})
 	records := append(resumed.CloseBefore(midWindow), resumed.Snapshots()...)
-	if err := s.WriteContainerRestarts(records); err != nil {
+	if err := s.WriteContainerRestarts(capturedAt, records); err != nil {
 		t.Fatal(err)
 	}
 

@@ -365,13 +365,14 @@ type goBuildPayload struct {
 // one window: one file per window holding many records (ADR 0020).
 //
 // Grouping by window is the decision the shape encodes — a payload per restart
-// would put the spool's file count under the control of a crash loop — and the
-// question a restart answers ("how often, and why") is a property of the window.
-// It supersedes within its window, and there is no separate closed-window kind,
-// because a restart count only grows.
+// would put the spool's file count under the control of a crash loop. It
+// supersedes within its window and has no separate closed-window kind; what
+// tells a final window from a slice of an open one is CapturedAt, carried by
+// all four journal windows and read against the window's end (ADR 0078).
 type containerRestartsPayload struct {
 	Kind          string                  `json:"kind"`
 	Source        string                  `json:"source"`
+	CapturedAt    time.Time               `json:"captured_at"`
 	WindowStart   time.Time               `json:"window_start"`
 	WindowSeconds int64                   `json:"window_seconds"`
 	Records       []journal.RestartRecord `json:"records"`
@@ -402,6 +403,7 @@ type restartCountersPayload struct {
 type podDisruptionsPayload struct {
 	Kind          string                     `json:"kind"`
 	Source        string                     `json:"source"`
+	CapturedAt    time.Time                  `json:"captured_at"`
 	WindowStart   time.Time                  `json:"window_start"`
 	WindowSeconds int64                      `json:"window_seconds"`
 	Records       []journal.DisruptionRecord `json:"records"`
@@ -413,6 +415,7 @@ type podDisruptionsPayload struct {
 type nodeLifecyclePayload struct {
 	Kind          string                    `json:"kind"`
 	Source        string                    `json:"source"`
+	CapturedAt    time.Time                 `json:"captured_at"`
 	WindowStart   time.Time                 `json:"window_start"`
 	WindowSeconds int64                     `json:"window_seconds"`
 	Records       []journal.NodeEventRecord `json:"records"`
@@ -427,6 +430,7 @@ type nodeLifecyclePayload struct {
 type jobRunsPayload struct {
 	Kind          string                 `json:"kind"`
 	Source        string                 `json:"source"`
+	CapturedAt    time.Time              `json:"captured_at"`
 	WindowStart   time.Time              `json:"window_start"`
 	WindowSeconds int64                  `json:"window_seconds"`
 	Records       []journal.JobRunRecord `json:"records"`
@@ -704,7 +708,7 @@ func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent Agent
 // A window with no restarts writes nothing: the accumulator only holds records
 // for containers that actually restarted, and an empty payload would say
 // "observed and none" for every window of every quiet cluster.
-func (s *Spool) WriteContainerRestarts(records []journal.RestartRecord) error {
+func (s *Spool) WriteContainerRestarts(capturedAt time.Time, records []journal.RestartRecord) error {
 	grouped := make(map[windowKey][]journal.RestartRecord)
 	for _, r := range records {
 		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
@@ -714,6 +718,7 @@ func (s *Spool) WriteContainerRestarts(records []journal.RestartRecord) error {
 		payload := containerRestartsPayload{
 			Kind:          kindContainerRestarts,
 			Source:        SourceJournal,
+			CapturedAt:    capturedAt,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
@@ -733,7 +738,7 @@ func (s *Spool) WriteContainerRestarts(records []journal.RestartRecord) error {
 // A window with no disruptions writes nothing. A cluster where nothing was
 // preempted or evicted has nothing to say, and an empty payload would claim
 // otherwise for every quiet hour of every cluster.
-func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
+func (s *Spool) WritePodDisruptions(capturedAt time.Time, records []journal.DisruptionRecord) error {
 	grouped := make(map[windowKey][]journal.DisruptionRecord)
 	for _, r := range records {
 		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
@@ -743,6 +748,7 @@ func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
 		payload := podDisruptionsPayload{
 			Kind:          kindPodDisruptions,
 			Source:        SourceJournal,
+			CapturedAt:    capturedAt,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
@@ -762,7 +768,7 @@ func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
 // A window in which the fleet did not change writes nothing, like the other
 // journals: a stable fleet has nothing to report, and `node_metadata` already
 // says what it currently is.
-func (s *Spool) WriteNodeLifecycle(records []journal.NodeEventRecord) error {
+func (s *Spool) WriteNodeLifecycle(capturedAt time.Time, records []journal.NodeEventRecord) error {
 	grouped := make(map[windowKey][]journal.NodeEventRecord)
 	for _, r := range records {
 		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
@@ -772,6 +778,7 @@ func (s *Spool) WriteNodeLifecycle(records []journal.NodeEventRecord) error {
 		payload := nodeLifecyclePayload{
 			Kind:          kindNodeLifecycle,
 			Source:        SourceJournal,
+			CapturedAt:    capturedAt,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
@@ -821,7 +828,7 @@ func (s *Spool) WriteRestartCounters(capturedAt time.Time, records []model.Resta
 // A window in which no Job finished writes nothing. A cluster with no batch
 // workloads has nothing to say, and an empty payload would claim otherwise for
 // every quiet hour of every cluster.
-func (s *Spool) WriteJobRuns(records []journal.JobRunRecord) error {
+func (s *Spool) WriteJobRuns(capturedAt time.Time, records []journal.JobRunRecord) error {
 	grouped := make(map[windowKey][]journal.JobRunRecord)
 	for _, r := range records {
 		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
@@ -831,6 +838,7 @@ func (s *Spool) WriteJobRuns(records []journal.JobRunRecord) error {
 		payload := jobRunsPayload{
 			Kind:          kindJobRuns,
 			Source:        SourceJournal,
+			CapturedAt:    capturedAt,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
