@@ -187,6 +187,9 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 	shipping := model.Shipping{
 		Delivered: 1204, Deferred: 17, Unreadable: 0, Halted: false,
 		Rejected: model.ShippingRejections{TooLarge: 2, Malformed: 1},
+		// The ratio of the two is what the transport encoding achieved on this
+		// cluster's own data, which no other number reports (ADR 0076).
+		PayloadBytes: 1418657280, TransmittedBytes: 132871680,
 	}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
 		sources, filter, model.PlacementDrops{Values: 3, Terms: 1},

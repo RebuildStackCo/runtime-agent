@@ -136,6 +136,16 @@ type Shipping struct {
 	Halted bool `json:"halted"`
 	// Rejected is what the backend refused permanently, by reason.
 	Rejected ShippingRejections `json:"rejected"`
+	// PayloadBytes and TransmittedBytes are the same deliveries measured on
+	// both sides of the transport encoding: the spool bytes offered, and what
+	// went on the wire after gzip (ADR 0076). Both count every attempt, so a
+	// retried payload is counted each time it cost a request.
+	//
+	// Their ratio is the compression this agent actually achieved on this
+	// cluster's data, which is the one number that decides whether the encoding
+	// earns its CPU.
+	PayloadBytes     uint64 `json:"payload_bytes"`
+	TransmittedBytes uint64 `json:"transmitted_bytes"`
 }
 
 // ShippingRejections is what the backend refused to accept, by reason. A

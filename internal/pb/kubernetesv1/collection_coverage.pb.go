@@ -1399,9 +1399,14 @@ type ShippingCoverage struct {
 	// after this payload was written, never the one in force now.
 	Halted *bool `protobuf:"varint,4,opt,name=halted,proto3,oneof" json:"halted,omitempty"`
 	// What the backend refused permanently, by reason.
-	Rejected      *ShippingRejections `protobuf:"bytes,5,opt,name=rejected,proto3" json:"rejected,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Rejected *ShippingRejections `protobuf:"bytes,5,opt,name=rejected,proto3" json:"rejected,omitempty"`
+	// The same deliveries measured on both sides of the transport encoding: the
+	// payload bytes offered, and what went on the wire after gzip. Both count
+	// every attempt, so a retried payload is counted each time it cost a request.
+	PayloadBytes     *uint64 `protobuf:"varint,6,opt,name=payload_bytes,json=payloadBytes,proto3,oneof" json:"payload_bytes,omitempty"`
+	TransmittedBytes *uint64 `protobuf:"varint,7,opt,name=transmitted_bytes,json=transmittedBytes,proto3,oneof" json:"transmitted_bytes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ShippingCoverage) Reset() {
@@ -1467,6 +1472,20 @@ func (x *ShippingCoverage) GetRejected() *ShippingRejections {
 		return x.Rejected
 	}
 	return nil
+}
+
+func (x *ShippingCoverage) GetPayloadBytes() uint64 {
+	if x != nil && x.PayloadBytes != nil {
+		return *x.PayloadBytes
+	}
+	return 0
+}
+
+func (x *ShippingCoverage) GetTransmittedBytes() uint64 {
+	if x != nil && x.TransmittedBytes != nil {
+		return *x.TransmittedBytes
+	}
+	return 0
 }
 
 // What the backend refused to accept from the agent, by reason. A payload
@@ -1812,7 +1831,7 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\n" +
 	"_too_largeB\f\n" +
 	"\n" +
-	"_malformed\"\xa0\x02\n" +
+	"_malformed\"\xa4\x03\n" +
 	"\x10ShippingCoverage\x12!\n" +
 	"\tdelivered\x18\x01 \x01(\x04H\x00R\tdelivered\x88\x01\x01\x12\x1f\n" +
 	"\bdeferred\x18\x02 \x01(\x04H\x01R\bdeferred\x88\x01\x01\x12#\n" +
@@ -1820,12 +1839,16 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"unreadable\x18\x03 \x01(\x04H\x02R\n" +
 	"unreadable\x88\x01\x01\x12\x1b\n" +
 	"\x06halted\x18\x04 \x01(\bH\x03R\x06halted\x88\x01\x01\x12Q\n" +
-	"\brejected\x18\x05 \x01(\v25.rebuildstack.ingest.kubernetes.v1.ShippingRejectionsR\brejectedB\f\n" +
+	"\brejected\x18\x05 \x01(\v25.rebuildstack.ingest.kubernetes.v1.ShippingRejectionsR\brejected\x12(\n" +
+	"\rpayload_bytes\x18\x06 \x01(\x04H\x04R\fpayloadBytes\x88\x01\x01\x120\n" +
+	"\x11transmitted_bytes\x18\a \x01(\x04H\x05R\x10transmittedBytes\x88\x01\x01B\f\n" +
 	"\n" +
 	"_deliveredB\v\n" +
 	"\t_deferredB\r\n" +
 	"\v_unreadableB\t\n" +
-	"\a_halted\"\xaf\x01\n" +
+	"\a_haltedB\x10\n" +
+	"\x0e_payload_bytesB\x14\n" +
+	"\x12_transmitted_bytes\"\xaf\x01\n" +
 	"\x12ShippingRejections\x12'\n" +
 	"\funauthorized\x18\x01 \x01(\x04H\x00R\funauthorized\x88\x01\x01\x12 \n" +
 	"\ttoo_large\x18\x02 \x01(\x04H\x01R\btooLarge\x88\x01\x01\x12!\n" +

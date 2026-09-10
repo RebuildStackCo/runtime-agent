@@ -222,6 +222,14 @@ func CollectController(c Controller) *Set {
 		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.Unauthorized), L(LabelReason, "unauthorized"))
 		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.TooLarge), L(LabelReason, "too_large"))
 		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.Malformed), L(LabelReason, "malformed"))
+		// Two names rather than one name with a stage label: the label set is
+		// closed and every value in it is already promised (security.md §11).
+		s.Counter("shipment_payload_bytes_total",
+			"Payload bytes offered to the backend, before the transport encoding (ADR 0076).",
+			float64(sh.PayloadBytes))
+		s.Counter("shipment_transmitted_bytes_total",
+			"Bytes actually sent to the backend, after the transport encoding (ADR 0076).",
+			float64(sh.TransmittedBytes))
 		// The one number a halted agent can still deliver: it ships nothing, so
 		// the coverage payload carrying the same fact never arrives (ADR 0075).
 		s.Gauge("shipping_halted",

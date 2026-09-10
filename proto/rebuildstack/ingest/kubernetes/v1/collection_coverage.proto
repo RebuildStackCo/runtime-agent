@@ -417,6 +417,12 @@ message ShippingCoverage {
 
   // What the backend refused permanently, by reason.
   ShippingRejections rejected = 5;
+
+  // The same deliveries measured on both sides of the transport encoding: the
+  // payload bytes offered, and what went on the wire after gzip. Both count
+  // every attempt, so a retried payload is counted each time it cost a request.
+  optional uint64 payload_bytes = 6;
+  optional uint64 transmitted_bytes = 7;
 }
 
 // What the backend refused to accept from the agent, by reason. A payload

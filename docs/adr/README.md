@@ -133,3 +133,4 @@ line to paste.
 - [0073. A payload kind declares how often it is sent, and the ceiling is what makes that safe](0073-a-kind-declares-how-often-it-is-sent.md)
 - [0074. The payload schema is written for three kinds, and presence is declared field by field](0074-the-schema-declares-presence-field-by-field.md)
 - [0075. A payload leaves the spool only when the backend has it](0075-a-payload-leaves-the-spool-only-when-the-backend-has-it.md)
+- [0076. The payload travels encoded, and the encoding is not what it is](0076-the-payload-travels-encoded.md)

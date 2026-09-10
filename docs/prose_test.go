@@ -40,7 +40,10 @@ var ceilings = []struct {
 	// that did not, and the backend's implementer needs the status codes the
 	// agent acts on (ADR 0075).
 	{"security.md", 1088, 360},
-	{"backend-requirements.md", 752, 593},
+	// One obligation the contract did not carry: the request body is encoded,
+	// so its implementer must decode it and must stop reading a payload's size
+	// off the request that carried it (ADR 0076).
+	{"backend-requirements.md", 764, 593},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

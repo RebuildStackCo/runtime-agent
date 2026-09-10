@@ -79,6 +79,18 @@ The full lifecycle is described in `security.md` §6; the backend obligations:
   environment this system lives in.
 - Enrollment endpoints MUST be reachable over plain HTTPS (server-auth TLS
   only) — by definition they are used before a client certificate exists.
+- **Every request body is gzip-encoded and says so.** The agent sends
+  `Content-Type: application/json` with `Content-Encoding: gzip`, on every
+  payload of every kind, and the backend MUST decode it. This is not negotiated
+  and there is no uncompressed mode: the agent cannot ask what the backend
+  accepts, because nothing the backend sends may change what the agent does
+  ([ADR 0001](adr/0001-one-way-protocol.md)), so the encoding is a property of
+  the protocol version in §6 exactly as the cadences in §4 are
+  ([ADR 0076](adr/0076-the-payload-travels-encoded.md)).
+- **The payload is what is encoded, not what is sent.** Everything else in this
+  document — sizes, natural keys, supersession, the size ceiling in §5 —
+  describes the decoded bytes. A backend MUST apply its own size limits after
+  decoding, and MUST NOT infer a payload's size from the request's.
 
 ## 4. Ingest
 
