@@ -559,6 +559,28 @@ const (
 	usageSnapshotSuffix = ".snapshot.json"
 )
 
+// The same pairing for the four journal windows, which the startup read
+// resumes for the same reason (ADR 0077). A journal window has one filename
+// whether it is open or final, so the name says nothing about which it is and
+// the read decides from the window's end alone.
+const (
+	kindContainerRestarts = "container_restarts"
+	kindPodDisruptions    = "pod_disruptions"
+	kindNodeLifecycle     = "node_lifecycle"
+	kindJobRuns           = "job_runs"
+
+	restartsNamePrefix      = "restarts-"
+	disruptionsNamePrefix   = "disruptions-"
+	nodeLifecycleNamePrefix = "node-lifecycle-"
+	jobRunsNamePrefix       = "job-runs-"
+)
+
+// journalWindowName is the filename of one journal window, and the inverse of
+// parseWindowName under the same prefix.
+func journalWindowName(prefix string, k windowKey) string {
+	return fmt.Sprintf("%s%d-%d.json", prefix, k.start.Unix(), k.seconds)
+}
+
 func (w windowKey) end() time.Time {
 	return w.start.Add(time.Duration(w.seconds) * time.Second)
 }
@@ -690,13 +712,13 @@ func (s *Spool) WriteContainerRestarts(records []journal.RestartRecord) error {
 	}
 	for k, group := range grouped {
 		payload := containerRestartsPayload{
-			Kind:          "container_restarts",
+			Kind:          kindContainerRestarts,
 			Source:        SourceJournal,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(payload.Kind, fmt.Sprintf("restarts-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, journalWindowName(restartsNamePrefix, k), payload); err != nil {
 			return err
 		}
 	}
@@ -719,13 +741,13 @@ func (s *Spool) WritePodDisruptions(records []journal.DisruptionRecord) error {
 	}
 	for k, group := range grouped {
 		payload := podDisruptionsPayload{
-			Kind:          "pod_disruptions",
+			Kind:          kindPodDisruptions,
 			Source:        SourceJournal,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(payload.Kind, fmt.Sprintf("disruptions-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, journalWindowName(disruptionsNamePrefix, k), payload); err != nil {
 			return err
 		}
 	}
@@ -748,13 +770,13 @@ func (s *Spool) WriteNodeLifecycle(records []journal.NodeEventRecord) error {
 	}
 	for k, group := range grouped {
 		payload := nodeLifecyclePayload{
-			Kind:          "node_lifecycle",
+			Kind:          kindNodeLifecycle,
 			Source:        SourceJournal,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(payload.Kind, fmt.Sprintf("node-lifecycle-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, journalWindowName(nodeLifecycleNamePrefix, k), payload); err != nil {
 			return err
 		}
 	}
@@ -807,13 +829,13 @@ func (s *Spool) WriteJobRuns(records []journal.JobRunRecord) error {
 	}
 	for k, group := range grouped {
 		payload := jobRunsPayload{
-			Kind:          "job_runs",
+			Kind:          kindJobRuns,
 			Source:        SourceJournal,
 			WindowStart:   k.start,
 			WindowSeconds: k.seconds,
 			Records:       group,
 		}
-		if err := s.write(payload.Kind, fmt.Sprintf("job-runs-%d-%d.json", k.start.Unix(), k.seconds), payload); err != nil {
+		if err := s.write(payload.Kind, journalWindowName(jobRunsNamePrefix, k), payload); err != nil {
 			return err
 		}
 	}

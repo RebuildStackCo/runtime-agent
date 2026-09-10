@@ -1,6 +1,7 @@
 package sink
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RebuildStackCo/runtime-agent/internal/journal"
 	"github.com/RebuildStackCo/runtime-agent/internal/model"
 	"github.com/RebuildStackCo/runtime-agent/internal/rollup"
 )
@@ -226,12 +228,13 @@ func TestAFilePastTheCeilingIsNotDecoded(t *testing.T) {
 
 // Every other kind in the spool is invisible to this read. It looks for its own
 // snapshots by name and opens nothing else.
-func TestNoOtherPayloadInTheSpoolIsOpened(t *testing.T) {
+func TestNoPayloadOutsideTheResumingKindsIsOpened(t *testing.T) {
 	s, dir := recoverSpool(t)
 	writeOpenWindow(t, s)
 	for _, name := range []string{
 		"workload-metadata.json",
 		"collection-coverage.json",
+		"restart-counters.json",
 		windowKey{start: recoverWindow, seconds: 3600}.name() + ".json.tmp",
 		"usage-not-a-number-3600.snapshot.json",
 		"usage-" + strconv.FormatInt(recoverWindow.Unix(), 10) + "-0.snapshot.json",
@@ -245,8 +248,117 @@ func TestNoOtherPayloadInTheSpoolIsOpened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Windows != 1 || len(rec.Skipped) != 0 {
-		t.Fatalf("recovered %d windows with %d complaints, want 1 and none: "+
-			"nothing but a usage snapshot of an open window is read", rec.Windows, len(rec.Skipped))
+	if rec.Windows != 1 || rec.JournalWindows != 0 || len(rec.Skipped) != 0 {
+		t.Fatalf("recovered %d usage and %d journal windows with %d complaints, want 1, 0 and none: "+
+			"only an open window of a kind that resumes is read", rec.Windows, rec.JournalWindows, len(rec.Skipped))
+	}
+}
+
+// restartRecords is one window's worth of restarts, distinct enough that losing
+// any of them shows up in a count.
+func restartRecords(pods ...string) []journal.RestartRecord {
+	out := make([]journal.RestartRecord, 0, len(pods))
+	for i, pod := range pods {
+		out = append(out, journal.RestartRecord{
+			Key:           journal.Key{Namespace: "shop", Pod: pod, Container: "app"},
+			Workload:      model.WorkloadRef{Kind: "Deployment", Name: "web"},
+			WindowStart:   recoverWindow,
+			WindowSeconds: 3600,
+			Restarts:      int64(i + 1),
+			Reasons:       map[string]int64{"OOMKilled": int64(i + 1)},
+		})
+	}
+	return out
+}
+
+func TestAnOpenJournalWindowIsRecovered(t *testing.T) {
+	s, _ := recoverSpool(t)
+	if err := s.WriteContainerRestarts(restartRecords("web-a", "web-b")); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := s.RecoverOpenWindows(midWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.JournalWindows != 1 || len(rec.Restarts) != 2 {
+		t.Fatalf("recovered %d journal windows carrying %d records, want 1 and 2",
+			rec.JournalWindows, len(rec.Restarts))
+	}
+	if rec.Restarts[0].Reasons["OOMKilled"] == 0 || rec.Restarts[1].Restarts != 2 {
+		t.Errorf("a recovered record lost its contents: %+v", rec.Restarts)
+	}
+}
+
+// A window that has ended is already its own final record. Reopening it would
+// let this process write a subset of it back over itself, which is the failure
+// this whole read exists to prevent (ADR 0077).
+func TestAJournalWindowThatHasEndedIsNotReopened(t *testing.T) {
+	s, _ := recoverSpool(t)
+	if err := s.WriteContainerRestarts(restartRecords("web-a")); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := s.RecoverOpenWindows(recoverWindow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.JournalWindows != 0 || len(rec.Restarts) != 0 {
+		t.Fatalf("an ended window was reopened: %d windows, %d records",
+			rec.JournalWindows, len(rec.Restarts))
+	}
+}
+
+// The failure this commit exists for, end to end.
+//
+// A restart empties the accumulator, and the collector rebaselines on first
+// sight without re-emitting what it already counted. So a container restarting
+// later in the same window used to make the flush write a window holding only
+// that one — over a file that held every restart before it, under the same
+// natural key, which the contract tells the backend is the complete state.
+func TestARestartInsideAnOpenWindowKeepsWhatTheWindowAlreadyHeld(t *testing.T) {
+	s, dir := recoverSpool(t)
+	if err := s.WriteContainerRestarts(restartRecords("web-a", "web-b")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The process restarts: a fresh accumulator, seeded from the spool.
+	resumed := journal.NewRestarts(time.Hour)
+	rec, err := s.RecoverOpenWindows(midWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded := resumed.Resume(rec.Restarts); seeded != 2 {
+		t.Fatalf("seeded %d records into the accumulator, want 2", seeded)
+	}
+
+	// A third container restarts inside the same still-open window, and the
+	// flush writes what the accumulator holds, exactly as cmd/agent does.
+	resumed.Observe(model.ContainerRestart{
+		Namespace: "shop", Pod: "web-c", Container: "app",
+		Workload:   model.WorkloadRef{Kind: "Deployment", Name: "web"},
+		ObservedAt: midWindow, Restarts: 1, Reason: "Error",
+	})
+	records := append(resumed.CloseBefore(midWindow), resumed.Snapshots()...)
+	if err := s.WriteContainerRestarts(records); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, journalWindowName(restartsNamePrefix, windowKey{start: recoverWindow, seconds: 3600}))) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload journalWindow[journal.RestartRecord]
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	pods := map[string]bool{}
+	for _, r := range payload.Records {
+		pods[r.Pod] = true
+	}
+	for _, want := range []string{"web-a", "web-b", "web-c"} {
+		if !pods[want] {
+			t.Errorf("the window written after the restart lost %s; it holds %v", want, pods)
+		}
 	}
 }

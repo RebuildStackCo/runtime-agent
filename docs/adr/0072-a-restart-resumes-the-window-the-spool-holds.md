@@ -3,6 +3,7 @@
 Date: 2026-09-07
 Status: Accepted
 Amends: 0003, 0007, 0013 §2, 0026
+Amended by: 0077
 
 Makes the spool readable by the agent that wrote it, which ADR 0003's layout
 allowed and no code had ever done. Prices the restart that ADR 0007 and ADR 0026

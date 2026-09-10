@@ -268,11 +268,11 @@ and 20000 files, dropping the oldest first; and the `emptyDir` declares a 1 GiB
   cluster is accounted for on disk outside the spool.
 - The volume is for continuity, not truth: everything on it is reconstructible,
   so it needs no backups.
-- **The agent reads it once, at startup** — the snapshots of usage windows still
-  open, so a restart resumes its hour rather than starting it over
-  ([ADR 0072](adr/0072-a-restart-resumes-the-window-the-spool-holds.md)). It is
-  the only read: no other kind, nothing deleted or rewritten, nothing recovered
-  from an empty or unreadable spool.
+- **The agent reads it once, at startup**, so a restart resumes its open windows
+  rather than starting them over ([ADR 0072](adr/0072-a-restart-resumes-the-window-the-spool-holds.md),
+  [ADR 0077](adr/0077-a-restart-resumes-every-open-window.md)). It is a pure read
+  of five kinds and no others — `usage_snapshot`, `container_restarts`,
+  `pod_disruptions`, `node_lifecycle`, `job_runs` — and it deletes nothing.
 - **Configuration is never cached on it.** Filters are read from the ConfigMap at
   every start and never reread while running; a stale filter set cannot resurrect
   from disk, and a filter change takes a restart.

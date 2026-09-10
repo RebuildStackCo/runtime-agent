@@ -406,7 +406,12 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// another goroutine is the one where there is no other goroutine
 	// (ADR 0072). An empty spool seeds nothing and behaves as it always did.
 	if spool != nil {
-		seedOpenWindows(logger, spool, usagePoller, time.Now())
+		seedOpenWindows(logger, spool, usagePoller, journals{
+			restarts:    restartJournal,
+			disruptions: disruptionJournal,
+			nodes:       nodeJournal,
+			jobs:        jobJournal,
+		}, time.Now())
 	}
 
 	// The Go inventory joins node-role build-info facts against the workload

@@ -134,3 +134,4 @@ line to paste.
 - [0074. The payload schema is written for three kinds, and presence is declared field by field](0074-the-schema-declares-presence-field-by-field.md)
 - [0075. A payload leaves the spool only when the backend has it](0075-a-payload-leaves-the-spool-only-when-the-backend-has-it.md)
 - [0076. The payload travels encoded, and the encoding is not what it is](0076-the-payload-travels-encoded.md)
+- [0077. A restart resumes every open window, not only the usage one](0077-a-restart-resumes-every-open-window.md)

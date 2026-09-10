@@ -268,6 +268,12 @@ func (s *Set) spool(c sink.Counters) {
 	s.Gauge("spool_windows_resumed",
 		"Open usage windows this process resumed from the spool at startup (ADR 0072).",
 		float64(c.Recovered.Windows))
+	s.Gauge("spool_journal_windows_resumed",
+		"Open journal windows this process resumed from the spool at startup (ADR 0077).",
+		float64(c.Recovered.JournalWindows))
+	s.Gauge("spool_journal_records_resumed",
+		"Records those resumed journal windows carried.",
+		float64(c.Recovered.JournalRecords))
 	s.Gauge("spool_records_resumed", "Records those resumed windows carried.",
 		float64(c.Recovered.Records))
 	s.Gauge("spool_recovery_files_skipped",

@@ -51,6 +51,10 @@ type Recovered struct {
 	// Skipped counts files the read could not use. They are still in the spool
 	// and still shippable; nothing was deleted on their account.
 	Skipped int64
+	// The same two counts for the journal windows, kept apart from the usage
+	// ones because they answer about different accumulators (ADR 0077).
+	JournalWindows int64
+	JournalRecords int64
 }
 
 // countSuppressed records one payload the cadence held back.
@@ -71,10 +75,13 @@ func (s *Spool) countWrite(kind string, failed bool) {
 	s.written[kind]++
 }
 
-func (s *Spool) countRecovery(records, windows, skipped int) {
+func (s *Spool) countRecovery(records, windows, skipped, journalRecords, journalWindows int) {
 	s.countMu.Lock()
 	defer s.countMu.Unlock()
-	s.recovered = Recovered{Windows: int64(windows), Records: int64(records), Skipped: int64(skipped)}
+	s.recovered = Recovered{
+		Windows: int64(windows), Records: int64(records), Skipped: int64(skipped),
+		JournalWindows: int64(journalWindows), JournalRecords: int64(journalRecords),
+	}
 }
 
 func (s *Spool) countEviction(reason string) {

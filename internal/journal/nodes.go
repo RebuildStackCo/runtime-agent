@@ -120,6 +120,25 @@ func (e *NodeEvents) Snapshots() []NodeEventRecord {
 	return out
 }
 
+// Resume seeds open windows from records a previous process of this agent
+// wrote to the spool, so a restart continues the window rather than starting it
+// over (ADR 0077). A key already present is left alone: an observation this
+// process made outranks a record written before it.
+func (e *NodeEvents) Resume(records []NodeEventRecord) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var seeded int
+	for _, rec := range records {
+		key := nodeEventKey{node: rec.Node, event: rec.Event, start: rec.WindowStart.UnixNano()}
+		if _, ok := e.open[key]; ok {
+			continue
+		}
+		e.open[key] = rec
+		seeded++
+	}
+	return seeded
+}
+
 // CloseBefore removes and returns every record whose window ended at or before
 // now, with the same bound and the same reasoning as Disruptions.CloseBefore.
 func (e *NodeEvents) CloseBefore(now time.Time) []NodeEventRecord {
