@@ -1,5 +1,7 @@
 package main
 
+import "context"
+
 // The set of payload writers that run on the agent's own cadence, as data.
 //
 // There are two passes over it — the periodic one and the one a shutdown makes
@@ -32,4 +34,25 @@ func runFlushers(flushers []flusher, shutdown bool) {
 		}
 		f.run()
 	}
+}
+
+// finalShipper is the one thing the shutdown pass needs from the shipper. An
+// interface so the order below can be tested without a backend, and so an
+// installation with no backend configured passes nil rather than a typed nil.
+type finalShipper interface {
+	FinalRound(ctx context.Context)
+}
+
+// runShutdown is the last pass, and the order in it is the decision: write what
+// the accumulators still hold, and only then offer the spool to the backend.
+//
+// The other way round — which is what this replaced — writes those payloads
+// after the only thing that could deliver them has already stopped, onto a
+// volume that goes with the pod (ADR 0079).
+func runShutdown(flushers []flusher, ship finalShipper) {
+	runFlushers(flushers, true)
+	if ship == nil {
+		return // no backend configured: the spool is the whole of the protocol
+	}
+	ship.FinalRound(context.Background())
 }

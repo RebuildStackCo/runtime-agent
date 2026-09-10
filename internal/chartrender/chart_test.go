@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/chartrender"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
+	"github.com/RebuildStackCo/runtime-agent/internal/shipper"
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
 
@@ -922,6 +924,26 @@ func TestAGracePeriodTooShortForTheShutdownPassIsRefused(t *testing.T) {
 		if !tc.refused && err != nil {
 			t.Errorf("the chart refused %v: %v", tc.values, err)
 		}
+	}
+}
+
+// The floor has to cover the whole shutdown path, and the path grew: the flush
+// pass, measured at about ten seconds (ADR 0068 §4), is now followed by a
+// bounded shipping round (ADR 0079).
+//
+// Against the constant, not a literal: two numbers that merely agree drift
+// (ADR 0073 §5), and this one drifting lands as a SIGKILL mid-flush.
+func TestTheGracePeriodFloorCoversTheShutdownPath(t *testing.T) {
+	const measuredFlushCeiling = 10 * time.Second
+	required := int((measuredFlushCeiling + shipper.FinalRoundBudget) / time.Second)
+
+	values := map[string]any{
+		"profile":    "inventory",
+		"controller": map[string]any{"terminationGracePeriodSeconds": required - 1},
+	}
+	if _, err := chartrender.Manifests(chartDir, chartrender.Options{Values: values}); err == nil {
+		t.Errorf("the chart accepted %ds, which does not cover a %s flush pass plus a %s shipping round",
+			required-1, measuredFlushCeiling, shipper.FinalRoundBudget)
 	}
 }
 

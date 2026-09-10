@@ -622,6 +622,86 @@ func TestAnInterruptedDeliveryLeavesThePayloadToBeSentAgain(t *testing.T) {
 
 // --- helpers ---
 
+// The property the whole final round is bounded for: a backend that never
+// answers must not be able to hold up a pod's termination. Everything else
+// about this round is best effort; this is not (ADR 0075, ADR 0079).
+func TestAHangingBackendCannotHoldUpShutdown(t *testing.T) {
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		<-release
+	}))
+	defer backend.Close()
+	defer close(release)
+
+	s, dir := newShipper(t, backend.URL)
+	s.finalBudget = 200 * time.Millisecond
+	payload(t, dir, "collection-coverage.json", "collection_coverage")
+
+	start := time.Now()
+	s.FinalRound(t.Context())
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("the final round took %s against a %s budget; a hung backend delays shutdown",
+			elapsed, s.finalBudget)
+	}
+	// Undelivered is undelivered: the file stays, exactly as in any other round.
+	if _, err := os.Stat(filepath.Join(dir, "collection-coverage.json")); err != nil {
+		t.Errorf("an undelivered payload was removed from the spool: %v", err)
+	}
+}
+
+// The round is the ordinary one under a deadline, so what it delivers it
+// deletes and what it does not it leaves.
+func TestTheFinalRoundDeliversWhatItCanAndKeepsTheRest(t *testing.T) {
+	backend := answering(http.StatusOK)
+	defer backend.Close()
+
+	s, dir := newShipper(t, backend.URL)
+	payload(t, dir, "collection-coverage.json", "collection_coverage")
+	payload(t, dir, "usage-1-3600.json", "usage_snapshot")
+
+	s.FinalRound(t.Context())
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the spool still holds %d payloads a 200 acknowledged", len(entries))
+	}
+	if got := s.Coverage().Delivered; got != 2 {
+		t.Errorf("delivered %d, want 2", got)
+	}
+}
+
+// Nothing retries into a rejected credential, and the last round least of all:
+// it would be a fleet's worth of spools arriving at once at a backend that has
+// already said no.
+func TestAHaltedShipperRunsNoFinalRound(t *testing.T) {
+	var requests atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer backend.Close()
+
+	s, dir := newShipper(t, backend.URL)
+	payload(t, dir, "collection-coverage.json", "collection_coverage")
+
+	s.Round(t.Context()) // the 401 that halts it
+	if !s.halted.Load() {
+		t.Fatal("a 401 did not halt the shipper")
+	}
+	before := requests.Load()
+
+	s.FinalRound(t.Context())
+
+	if got := requests.Load(); got != before {
+		t.Errorf("the final round made %d more requests into a rejected credential", got-before)
+	}
+}
+
 func newShipper(t *testing.T, base string) (*Shipper, string) {
 	t.Helper()
 	dir := t.TempDir()

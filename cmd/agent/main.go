@@ -1052,13 +1052,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}()
 	}
 	wg.Wait()
-	// A final flush lands whatever arrived since the last periodic write: an
-	// inventory fact joined, a container restarted, a pod preempted. Without it
-	// a graceful shutdown silently drops up to one coverage interval of the
-	// journals, which is exactly the minute a rolling upgrade or a node drain
-	// tends to be interesting in. The periodic pass is waited for above, so this
-	// is the only writer; the accumulators serialize regardless.
-	runFlushers(flushers, true)
+	// The last pass: write whatever arrived since the periodic one — an
+	// inventory fact joined, a container restarted, a pod preempted — and then
+	// give it one bounded chance to reach the backend. The periodic pass is
+	// waited for above, so this is the only writer; the order between the two
+	// halves is the decision, and it lives in runShutdown (ADR 0079).
+	var final finalShipper
+	if ship != nil {
+		final = ship
+	}
+	runShutdown(flushers, final)
 	return errors.Join(errs...)
 }
 
