@@ -126,6 +126,8 @@
       "unauthorized": 0,
       "too_large": 2,
       "malformed": 1
-    }
+    },
+    "payload_bytes": 1418657280,
+    "transmitted_bytes": 132871680
   }
 }

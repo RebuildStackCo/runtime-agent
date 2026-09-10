@@ -222,6 +222,14 @@ func CollectController(c Controller) *Set {
 		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.Unauthorized), L(LabelReason, "unauthorized"))
 		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.TooLarge), L(LabelReason, "too_large"))
 		s.Counter("shipments_rejected_total", refused, float64(sh.Rejected.Malformed), L(LabelReason, "malformed"))
+		// Two names rather than one name with a stage label: the label set is
+		// closed and every value in it is already promised (security.md §11).
+		s.Counter("shipment_payload_bytes_total",
+			"Payload bytes offered to the backend, before the transport encoding (ADR 0076).",
+			float64(sh.PayloadBytes))
+		s.Counter("shipment_transmitted_bytes_total",
+			"Bytes actually sent to the backend, after the transport encoding (ADR 0076).",
+			float64(sh.TransmittedBytes))
 		// The one number a halted agent can still deliver: it ships nothing, so
 		// the coverage payload carrying the same fact never arrives (ADR 0075).
 		s.Gauge("shipping_halted",
@@ -260,6 +268,12 @@ func (s *Set) spool(c sink.Counters) {
 	s.Gauge("spool_windows_resumed",
 		"Open usage windows this process resumed from the spool at startup (ADR 0072).",
 		float64(c.Recovered.Windows))
+	s.Gauge("spool_journal_windows_resumed",
+		"Open journal windows this process resumed from the spool at startup (ADR 0077).",
+		float64(c.Recovered.JournalWindows))
+	s.Gauge("spool_journal_records_resumed",
+		"Records those resumed journal windows carried.",
+		float64(c.Recovered.JournalRecords))
 	s.Gauge("spool_records_resumed", "Records those resumed windows carried.",
 		float64(c.Recovered.Records))
 	s.Gauge("spool_recovery_files_skipped",

@@ -1,6 +1,8 @@
 package shipper
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -55,7 +57,14 @@ func TestOnlyA2xxRemovesAPayload(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dir, "collection-coverage.json")); os.IsNotExist(err) != c.removed {
 				t.Errorf("status %d: file removed=%v, want removed=%v", c.status, !c.removed, c.removed)
 			}
-			if got := s.Coverage(); got != c.want {
+			got := s.Coverage()
+			// Both sides of the encoding are counted for every attempt that
+			// reached the wire, whatever the answer was (ADR 0076).
+			if got.PayloadBytes == 0 || got.TransmittedBytes == 0 {
+				t.Errorf("status %d: an attempt that reached the backend counted no bytes: %+v", c.status, got)
+			}
+			got.PayloadBytes, got.TransmittedBytes = 0, 0
+			if got != c.want {
 				t.Errorf("status %d: coverage %+v, want %+v", c.status, got, c.want)
 			}
 		})
@@ -63,12 +72,19 @@ func TestOnlyA2xxRemovesAPayload(t *testing.T) {
 }
 
 // The endpoint is one payload per request at the kind's registry name, and the
-// body is the spool file verbatim. There is no envelope and no batch.
+// body is the spool file under a declared, reversible encoding. There is no
+// envelope and no batch.
+//
+// Decoding here rather than comparing raw bytes is the sink invariant stated on
+// the wire: the payload the local sink writes is the payload that travels, and
+// gzip is how it travels rather than part of what it is (ADR 0076).
 func TestOnePayloadPerRequestAtTheKindsRegistryName(t *testing.T) {
-	var gotPath, gotType, gotBody string
+	var gotPath, gotType, gotEncoding string
+	var gotBody []byte
 	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		gotPath, gotType, gotBody = r.URL.Path, r.Header.Get("Content-Type"), string(body)
+		gotBody, _ = io.ReadAll(r.Body)
+		gotPath, gotType = r.URL.Path, r.Header.Get("Content-Type")
+		gotEncoding = r.Header.Get("Content-Encoding")
 		if r.Method != http.MethodPost {
 			t.Errorf("method %s, want POST", r.Method)
 		}
@@ -86,8 +102,19 @@ func TestOnePayloadPerRequestAtTheKindsRegistryName(t *testing.T) {
 	if gotType != "application/json" {
 		t.Errorf("content type %q", gotType)
 	}
-	if gotBody != want {
-		t.Errorf("body was not the spool file verbatim:\ngot  %s\nwant %s", gotBody, want)
+	if gotEncoding != "gzip" {
+		t.Errorf("content encoding %q, want gzip", gotEncoding)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gotBody))
+	if err != nil {
+		t.Fatalf("the body did not decode as the encoding it declared: %v", err)
+	}
+	decoded, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("reading the decoded body: %v", err)
+	}
+	if string(decoded) != want {
+		t.Errorf("the decoded body was not the spool file verbatim:\ngot  %s\nwant %s", decoded, want)
 	}
 }
 

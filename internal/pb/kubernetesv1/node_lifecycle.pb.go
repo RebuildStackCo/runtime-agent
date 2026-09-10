@@ -41,7 +41,15 @@ type NodeLifecycle struct {
 	WindowSeconds int64                  `protobuf:"varint,4,opt,name=window_seconds,json=windowSeconds,proto3" json:"window_seconds,omitempty"`
 	// One record per node and event within the window. A node that joined and
 	// left in the same window has two.
-	Records       []*NodeEvent `protobuf:"bytes,5,rep,name=records,proto3" json:"records,omitempty"`
+	Records []*NodeEvent `protobuf:"bytes,5,rep,name=records,proto3" json:"records,omitempty"`
+	// When the agent captured this payload, and with it whether the window is
+	// done: at or after window_start + window_seconds means nothing more will be
+	// added to it, and earlier means this is a slice of a window still open.
+	//
+	// Absent means the agent did not state it, which is what every version before
+	// this field sent — treat that window as open, because a claim of finality is
+	// the one thing an absent field must never be read as.
+	CapturedAt    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=captured_at,json=capturedAt,proto3,oneof" json:"captured_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -107,6 +115,13 @@ func (x *NodeLifecycle) GetWindowSeconds() int64 {
 func (x *NodeLifecycle) GetRecords() []*NodeEvent {
 	if x != nil {
 		return x.Records
+	}
+	return nil
+}
+
+func (x *NodeLifecycle) GetCapturedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CapturedAt
 	}
 	return nil
 }
@@ -268,13 +283,16 @@ var File_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto protoreflect.Fil
 
 const file_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto_rawDesc = "" +
 	"\n" +
-	"6rebuildstack/ingest/kubernetes/v1/node_lifecycle.proto\x12!rebuildstack.ingest.kubernetes.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a3rebuildstack/ingest/kubernetes/v1/node_device.proto\"\xe9\x01\n" +
+	"6rebuildstack/ingest/kubernetes/v1/node_lifecycle.proto\x12!rebuildstack.ingest.kubernetes.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a3rebuildstack/ingest/kubernetes/v1/node_device.proto\"\xbb\x02\n" +
 	"\rNodeLifecycle\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12=\n" +
 	"\fwindow_start\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vwindowStart\x12%\n" +
 	"\x0ewindow_seconds\x18\x04 \x01(\x03R\rwindowSeconds\x12F\n" +
-	"\arecords\x18\x05 \x03(\v2,.rebuildstack.ingest.kubernetes.v1.NodeEventR\arecords\"\xc1\x04\n" +
+	"\arecords\x18\x05 \x03(\v2,.rebuildstack.ingest.kubernetes.v1.NodeEventR\arecords\x12@\n" +
+	"\vcaptured_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\n" +
+	"capturedAt\x88\x01\x01B\x0e\n" +
+	"\f_captured_at\"\xc1\x04\n" +
 	"\tNodeEvent\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x14\n" +
 	"\x05event\x18\x02 \x01(\tR\x05event\x12*\n" +
@@ -316,14 +334,15 @@ var file_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto_goTypes = []any{
 var file_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto_depIdxs = []int32{
 	2, // 0: rebuildstack.ingest.kubernetes.v1.NodeLifecycle.window_start:type_name -> google.protobuf.Timestamp
 	1, // 1: rebuildstack.ingest.kubernetes.v1.NodeLifecycle.records:type_name -> rebuildstack.ingest.kubernetes.v1.NodeEvent
-	2, // 2: rebuildstack.ingest.kubernetes.v1.NodeEvent.at:type_name -> google.protobuf.Timestamp
-	3, // 3: rebuildstack.ingest.kubernetes.v1.NodeEvent.devices:type_name -> rebuildstack.ingest.kubernetes.v1.NodeDevice
-	2, // 4: rebuildstack.ingest.kubernetes.v1.NodeEvent.window_start:type_name -> google.protobuf.Timestamp
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	2, // 2: rebuildstack.ingest.kubernetes.v1.NodeLifecycle.captured_at:type_name -> google.protobuf.Timestamp
+	2, // 3: rebuildstack.ingest.kubernetes.v1.NodeEvent.at:type_name -> google.protobuf.Timestamp
+	3, // 4: rebuildstack.ingest.kubernetes.v1.NodeEvent.devices:type_name -> rebuildstack.ingest.kubernetes.v1.NodeDevice
+	2, // 5: rebuildstack.ingest.kubernetes.v1.NodeEvent.window_start:type_name -> google.protobuf.Timestamp
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto_init() }
@@ -332,6 +351,7 @@ func file_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto_init() {
 		return
 	}
 	file_rebuildstack_ingest_kubernetes_v1_node_device_proto_init()
+	file_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto_msgTypes[0].OneofWrappers = []any{}
 	file_rebuildstack_ingest_kubernetes_v1_node_lifecycle_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

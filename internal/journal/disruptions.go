@@ -94,6 +94,25 @@ func (d *Disruptions) Snapshots() []DisruptionRecord {
 	return out
 }
 
+// Resume seeds open windows from records a previous process of this agent
+// wrote to the spool, so a restart continues the window rather than starting it
+// over (ADR 0077). A key already present is left alone: an observation this
+// process made outranks a record written before it.
+func (d *Disruptions) Resume(records []DisruptionRecord) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var seeded int
+	for _, rec := range records {
+		key := disruptionKey{namespace: rec.Namespace, pod: rec.Pod, start: rec.WindowStart.UnixNano()}
+		if _, ok := d.open[key]; ok {
+			continue
+		}
+		d.open[key] = rec
+		seeded++
+	}
+	return seeded
+}
+
 // CloseBefore removes and returns every record whose window ended at or before
 // now. Removal bounds memory; the records are returned so the caller writes
 // them one last time, with the same loss bound the usage accumulator accepts

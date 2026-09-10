@@ -79,6 +79,18 @@ The full lifecycle is described in `security.md` §6; the backend obligations:
   environment this system lives in.
 - Enrollment endpoints MUST be reachable over plain HTTPS (server-auth TLS
   only) — by definition they are used before a client certificate exists.
+- **Every request body is gzip-encoded and says so.** The agent sends
+  `Content-Type: application/json` with `Content-Encoding: gzip`, on every
+  payload of every kind, and the backend MUST decode it. This is not negotiated
+  and there is no uncompressed mode: the agent cannot ask what the backend
+  accepts, because nothing the backend sends may change what the agent does
+  ([ADR 0001](adr/0001-one-way-protocol.md)), so the encoding is a property of
+  the protocol version in §6 exactly as the cadences in §4 are
+  ([ADR 0076](adr/0076-the-payload-travels-encoded.md)).
+- **The payload is what is encoded, not what is sent.** Everything else in this
+  document — sizes, natural keys, supersession, the size ceiling in §5 —
+  describes the decoded bytes. A backend MUST apply its own size limits after
+  decoding, and MUST NOT infer a payload's size from the request's.
 
 ## 4. Ingest
 
@@ -609,6 +621,17 @@ report one.
   re-reads the current version and is therefore the same or newer, never older.
   Snapshots have the same aggregate shape as any rollup; they do not relax §9
   (no raw time series).
+- **A journal window says whether it is finished.** `container_restarts`,
+  `pod_disruptions`, `node_lifecycle` and `job_runs` have one payload shape open
+  or closed and no separate closed-window kind, so each carries `captured_at`,
+  the instant the agent wrote it. `captured_at` **at or after**
+  `window_start + window_seconds` means the window is final; earlier means it is
+  a slice of a window still open and a later delivery will replace it
+  ([ADR 0078](adr/0078-a-journal-window-says-whether-it-is-finished.md)). The
+  backend MUST take finality from this field, MUST NOT infer it from its own
+  clock, and MUST read an absent `captured_at` as "still open". It MUST NOT
+  derive an order from it: supersession stays last write wins under the natural
+  key ([ADR 0027](adr/0027-no-payload-ordering-field.md)).
 - **Acknowledgment is a durability promise.** The backend MUST NOT
   acknowledge data it can still lose. The agent trims its local buffers only
   after acknowledgment.

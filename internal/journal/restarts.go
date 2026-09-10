@@ -167,6 +167,32 @@ func (r *Restarts) Snapshots() []RestartRecord {
 	return out
 }
 
+// Resume seeds open windows from records a previous process of this agent
+// wrote to the spool, so a restart continues the window rather than starting it
+// over (ADR 0077). A key already present is left alone: an observation this
+// process made outranks a record written before it.
+//
+// The collector rebaselines on first sight and emits nothing for it, so these
+// records are added to rather than counted twice.
+func (r *Restarts) Resume(records []RestartRecord) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var seeded int
+	for _, rec := range records {
+		key := openKey{Key: rec.Key, start: rec.WindowStart.UnixNano()}
+		if _, ok := r.open[key]; ok {
+			continue
+		}
+		resumed := rec.clone()
+		if resumed.Reasons == nil {
+			resumed.Reasons = map[string]int64{}
+		}
+		r.open[key] = &resumed
+		seeded++
+	}
+	return seeded
+}
+
 // CloseBefore removes and returns every record whose window ended at or before
 // now — nothing can be added to them any more, since observations are stamped
 // with the instant they were seen.

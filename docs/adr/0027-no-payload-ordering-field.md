@@ -3,7 +3,7 @@
 Date: 2026-08-23
 Status: Accepted
 Amends: 0006, 0012 §3, 0017, 0018, 0026
-Amended by: 0075
+Amended by: 0075, 0078
 
 Removes the `sequence` field from every payload that carried it and the five
 counters that produced it. Amends ADR 0006's requirement that the backend order
