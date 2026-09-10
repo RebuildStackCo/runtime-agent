@@ -45,6 +45,15 @@ const MaxPayloadBytes = 4 << 20
 // through. A round with an empty spool is one directory listing.
 const DefaultInterval = 30 * time.Second
 
+// FinalRoundBudget is the whole of what shipping may take on the way out, and
+// the reason it is small: the spool is an emptyDir, so the round is the last
+// chance these bytes have — but a backend that is down, hostile or absent must
+// not be able to hold up a pod's termination (ADR 0075, ADR 0079).
+//
+// The chart's grace-period floor has to cover this plus the flush pass before
+// it, which a test in internal/chartrender asserts against this constant.
+const FinalRoundBudget = 4 * time.Second
+
 const (
 	// requestTimeout bounds one delivery. The same 30 seconds the node→
 	// controller shippers use; nothing here is streaming.
@@ -83,10 +92,11 @@ type Shipper struct {
 	failures int
 	counts   model.Shipping
 
-	// interval and jitter are fields only so a test can compress the first and
-	// fix the second. Production assigns neither.
-	interval time.Duration
-	jitter   func(n int64) int64
+	// interval, finalBudget and jitter are fields only so a test can compress
+	// the first two and fix the third. Production assigns none of them.
+	interval    time.Duration
+	finalBudget time.Duration
+	jitter      func(n int64) int64
 }
 
 // New returns a shipper for base, or nil when base is empty — the unconfigured
@@ -103,8 +113,9 @@ func New(base, dir string, logger *slog.Logger) *Shipper {
 		held:   map[string]os.FileInfo{},
 		// #nosec G404 -- jitter spreads a fleet's retries over a window; it is
 		// not a secret and predicting it buys nothing
-		jitter:   rand.Int64N,
-		interval: DefaultInterval,
+		jitter:      rand.Int64N,
+		interval:    DefaultInterval,
+		finalBudget: FinalRoundBudget,
 	}
 }
 
@@ -130,6 +141,35 @@ func (s *Shipper) Run(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// FinalRound is the one round that happens after the agent has stopped
+// collecting, on the volume that goes with the pod (ADR 0079).
+//
+// ctx is the caller's, not the cancelled one the signal produced — this round
+// runs precisely because everything else has stopped. The budget bounds all of
+// it, requests included: post derives its deadline from this one, and the
+// earlier of the two wins. Undelivered payloads stay in the spool as always;
+// what differs is that no next process may read them.
+func (s *Shipper) FinalRound(ctx context.Context) {
+	if s.halted.Load() {
+		return // nothing retries into a rejected credential, this least of all
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.finalBudget)
+	defer cancel()
+
+	before := s.Coverage()
+	s.Round(ctx)
+	after := s.Coverage()
+
+	// The log is the only reader this can have. The coverage payload was
+	// written by the flush that ran before this, so it cannot carry the result,
+	// and nothing scrapes the metrics endpoint of a process that is exiting.
+	s.logger.Info("final shipping round finished",
+		"delivered", after.Delivered-before.Delivered,
+		"deferred", after.Deferred-before.Deferred,
+		"budget", s.finalBudget,
+		"budget_spent", ctx.Err() != nil)
 }
 
 // Round offers every payload the spool holds, oldest first, one at a time.

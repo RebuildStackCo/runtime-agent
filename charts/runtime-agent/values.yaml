@@ -183,11 +183,12 @@ controller:
       memory: 256Mi
   priorityClassName: ""
   # How long the controller may take to leave. Its shutdown pass writes the
-  # journals that accumulated since the last periodic flush, and the ceiling of
-  # that path is about ten seconds; the default is the Kubernetes default and
-  # covers it with room. Below 15 the chart refuses: SIGKILL would land before
-  # the pass runs, and the minute of journals lost with it is lost silently
-  # (ADR 0068 §4).
+  # journals that accumulated since the last periodic flush — about ten seconds
+  # at the ceiling — and then spends up to four more offering the spool to the
+  # backend, because that volume goes with the pod (ADR 0079). The default is
+  # the Kubernetes default and covers both with room. Below 15 the chart
+  # refuses: SIGKILL would land inside that path, and what is lost with it is
+  # lost silently (ADR 0068 §4).
   terminationGracePeriodSeconds: 30
   nodeSelector: {}
   tolerations: []

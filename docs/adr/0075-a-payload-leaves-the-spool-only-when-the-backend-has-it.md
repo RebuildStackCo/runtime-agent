@@ -3,7 +3,7 @@
 Date: 2026-09-08
 Status: Accepted
 Amends: 0027 §2
-Amended by: 0078
+Amended by: 0078, 0079
 
 Adds the transmit path: one configuration setting, an HTTP POST per payload, and
 the deletion rule that makes the spool a queue rather than a directory. Closes
