@@ -80,6 +80,7 @@ type Controller struct {
 	EBPF             *inventory.ProfileCoverage
 	Probe            *pprofprobe.Coverage
 	Pull             *pprofpull.Coverage
+	Counts           *pprofprobe.CountCoverage
 	Shipping         *model.Shipping
 	ProfilesReceived uint64
 	ProfilesUnjoined uint64
@@ -211,6 +212,13 @@ func CollectController(c Controller) *Set {
 		s.Counter("pprof_pulls_total", pulls, float64(p.Refused), L(LabelOutcome, "refused"))
 		s.Counter("pprof_pulls_total", pulls, float64(p.Unreachable), L(LabelOutcome, "unreachable"))
 		s.Counter("pprof_pulls_total", pulls, float64(p.Invalid), L(LabelOutcome, "invalid"))
+	}
+
+	if p := c.Counts; p != nil {
+		counts := "Goroutine-count readings off the pprof index, by outcome (ADR 0080)."
+		s.Counter("pprof_count_readings_total", counts, float64(p.Sampled), L(LabelOutcome, "sampled"))
+		s.Counter("pprof_count_readings_total", counts, float64(p.Unreachable), L(LabelOutcome, "unreachable"))
+		s.Counter("pprof_count_readings_total", counts, float64(p.Unreadable), L(LabelOutcome, "unreadable"))
 	}
 
 	if sh := c.Shipping; sh != nil {

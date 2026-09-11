@@ -155,3 +155,25 @@ const (
 	JobSucceeded = "succeeded"
 	JobFailed    = "failed"
 )
+
+// GoroutineCount is one process's goroutine count at one instant, read from the
+// `/debug/pprof` index page the endpoint already serves (ADR 0080).
+//
+// It names the pod, unlike the build-scoped facts the pprof funnel otherwise
+// produces. A goroutine count is a property of one process: a series that could
+// not say which pod produced it would read a pod replacement — where the new
+// process starts near zero — as a leak that cured itself.
+type GoroutineCount struct {
+	Namespace   string
+	Pod         string
+	Container   string
+	Workload    WorkloadRef
+	ImageDigest string
+	// ObservedAt is when the agent read the count, and is what places the
+	// sample in a window. The runtime timestamps nothing here — the count is a
+	// variable read — so the reading instant is the only placement there is.
+	ObservedAt time.Time
+	// Goroutines is `runtime.NumGoroutine()` as that process reported it:
+	// exact at the instant, not an estimate and not a rate.
+	Goroutines int64
+}

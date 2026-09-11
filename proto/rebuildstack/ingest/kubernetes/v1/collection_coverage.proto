@@ -71,6 +71,10 @@ message CollectionCoverage {
   // What became of the payloads this one travelled with. Present only when the
   // agent is configured to ship at all.
   ShippingCoverage shipping = 16;
+
+  // What reading goroutine counts off confirmed endpoints did. Present
+  // whenever endpoint discovery is on.
+  GoroutineCountCoverage goroutine_counts = 17;
 }
 
 // What the agent is and how it is set up, so a reader knows what the counts
@@ -464,4 +468,21 @@ message PprofPullCoverage {
   // Profiles that arrived and were not shippable: unparseable, or with nothing
   // left once the symbol allow-list had been applied.
   optional int64 invalid = 4;
+}
+
+// What reading the goroutine count off confirmed endpoints did, cumulative
+// since `since`.
+//
+// Absent means the counter was not stated; zero is a number that was counted.
+message GoroutineCountCoverage {
+  // Readings taken and accumulated into a window.
+  optional int64 sampled = 1;
+
+  // Targets with no addressable replica this round, or whose connection
+  // failed. Says nothing about the endpoint itself.
+  optional int64 unreachable = 2;
+
+  // Answers that arrived and carried no goroutine count: not the pprof index
+  // page, or the index page without the row this reads.
+  optional int64 unreadable = 3;
 }

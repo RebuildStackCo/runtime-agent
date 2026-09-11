@@ -137,3 +137,4 @@ line to paste.
 - [0077. A restart resumes every open window, not only the usage one](0077-a-restart-resumes-every-open-window.md)
 - [0078. A journal window says whether it is finished](0078-a-journal-window-says-whether-it-is-finished.md)
 - [0079. The last pass writes, and then ships what it wrote](0079-the-last-pass-writes-then-ships.md)
+- [0080. The index page already counts the goroutines](0080-the-index-page-already-counts-the-goroutines.md)

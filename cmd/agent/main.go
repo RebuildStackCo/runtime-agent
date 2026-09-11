@@ -180,6 +180,13 @@ const pprofProbeInterval = time.Minute
 // ten-second captures, consecutively, per interval (ADR 0058 §2).
 const pprofPullInterval = 5 * time.Minute
 
+// pprofCountInterval is how often the goroutine count of every confirmed
+// endpoint is read. A minute, matching the flush that writes what it produces:
+// a series sampled more finely than it is written would hold readings the
+// process might never get to spool, and one sampled more coarsely would write
+// windows with gaps in them (ADR 0080 §2).
+const pprofCountInterval = time.Minute
+
 // run is the agent's lifecycle: it starts, works until ctx is canceled, and
 // returns.
 func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface, restConfig *rest.Config, cfg config.Config, configShape config.Shape, startedAt time.Time) error {
@@ -250,6 +257,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// emitting one payload per restart: a crash loop must not put the spool's
 	// file count under its own control (ADR 0020).
 	restartJournal := journal.NewRestarts(collector.UsageWindowLength)
+	// The goroutine series shares the usage window so a count is read beside the
+	// CPU and memory of the same hour (ADR 0080 §4). It exists whether or not
+	// anything feeds it: seeding it from the spool must not depend on whether
+	// the pprof funnel is configured.
+	goroutineJournal := journal.NewGoroutines(collector.UsageWindowLength)
 	podWatcher.OnContainerRestart(func(r model.ContainerRestart) {
 		logger.Info("container restarted",
 			"namespace", r.Namespace,
@@ -411,6 +423,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			disruptions: disruptionJournal,
 			nodes:       nodeJournal,
 			jobs:        jobJournal,
+			goroutines:  goroutineJournal,
 		}, time.Now())
 	}
 
@@ -475,6 +488,23 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				})
 			}, logger)
 	}
+	// The counter, which exists wherever a confirmed endpoint does. It rides on
+	// `pprof.enabled` and not on `pprof.pull`: it repeats the request that
+	// switch already describes — one GET of the index page, rendered from
+	// memory — and starts no profiler (ADR 0080 §5).
+	var counter *pprofprobe.Counter
+	if prober != nil && spool != nil {
+		counter = pprofprobe.NewCounter(func(c pprofprobe.Candidate) (string, string, bool) {
+			ip, pod, ok := podWatcher.PodReplica(c.Namespace,
+				model.WorkloadRef{Kind: c.WorkloadKind, Name: c.WorkloadName},
+				c.Container, c.ImageDigest)
+			if !ok {
+				return "", "", false
+			}
+			return pprofprobe.HostPort(ip, c.Port), pod, true
+		}, goroutineJournal.Observe, logger)
+	}
+
 	var inventoryMu sync.Mutex
 	flushInventory := func() {
 		if goStore == nil || spool == nil {
@@ -679,6 +709,24 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		logger.Info("job runs flushed", "records", len(records))
 	}
 
+	flushGoroutineCounts := func() {
+		if spool == nil {
+			return
+		}
+		// One reading of the clock decides which windows closed and stamps
+		// what it wrote, so the two can never disagree (ADR 0078).
+		now := time.Now()
+		records := append(goroutineJournal.CloseBefore(now), goroutineJournal.Snapshots()...)
+		if len(records) == 0 {
+			return // a cluster with no confirmed pprof endpoint writes nothing
+		}
+		if err := spool.WriteGoroutineCounts(now, records); err != nil {
+			logger.Error("spooling goroutine counts", "error", err)
+			return
+		}
+		logger.Info("goroutine counts flushed", "records", len(records))
+	}
+
 	// What the controller itself learns about arriving profiles: how many nodes
 	// delivered, and how many it could not attribute to a pod. Declared here
 	// because the coverage report reads them and the intake below writes them
@@ -776,6 +824,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			pc.ExcludedByAnnotation = int(pprofExcluded.Load())
 			probeCoverage = &pc
 		}
+		var countCoverage *pprofprobe.CountCoverage
+		if counter != nil {
+			cc := counter.Snapshot()
+			countCoverage = &cc
+		}
 		var pullCoverage *pprofpull.Coverage
 		if puller != nil {
 			pc := puller.Snapshot()
@@ -797,7 +850,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
 			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), nodeWatcher.Drops(), inv, scan,
-			ebpf, probeCoverage, pullCoverage, rejections, shipping); err != nil {
+			ebpf, probeCoverage, pullCoverage, countCoverage, rejections, shipping); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
 		}
 	}
@@ -826,6 +879,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 				return prober.Confirmed(candidates())
 			})
 		}
+		if counter != nil {
+			go counter.Run(ctx, pprofCountInterval, func() []pprofprobe.Candidate {
+				return prober.Confirmed(candidates())
+			})
+		}
 	}
 
 	// Everything that writes a payload on the agent's own cadence, in the order
@@ -844,6 +902,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		{run: flushDisruptions, onShutdown: true},
 		{run: flushJobRuns, onShutdown: true},
 		{run: flushNodeLifecycle, onShutdown: true},
+		{run: flushGoroutineCounts, onShutdown: true},
 	}
 
 	// What liveness reads. Stamped at the top of a pass rather than at the end,
@@ -953,6 +1012,9 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		if puller != nil {
 			sources.pull = puller.Snapshot
+		}
+		if counter != nil {
+			sources.counts = counter.Snapshot
 		}
 		if ship != nil {
 			sources.shipping = ship.Coverage

@@ -36,7 +36,10 @@ type Recovery struct {
 	Disruptions []journal.DisruptionRecord
 	NodeEvents  []journal.NodeEventRecord
 	JobRuns     []journal.JobRunRecord
-	// JournalWindows is how many journal window files the four above came from.
+	// GoroutineCounts resumes on the same terms, and is here rather than beside
+	// Records because it is a window of readings rather than of usage (ADR 0080).
+	GoroutineCounts []journal.GoroutineRecord
+	// JournalWindows is how many journal window files the five above came from.
 	JournalWindows int
 }
 
@@ -77,12 +80,13 @@ func (s *Spool) RecoverOpenWindows(now time.Time) (Recovery, error) {
 		rec.Windows++
 	}
 	s.recoverJournals(entries, now, &rec)
-	journalRecords := len(rec.Restarts) + len(rec.Disruptions) + len(rec.NodeEvents) + len(rec.JobRuns)
+	journalRecords := len(rec.Restarts) + len(rec.Disruptions) + len(rec.NodeEvents) +
+		len(rec.JobRuns) + len(rec.GoroutineCounts)
 	s.countRecovery(len(rec.Records), rec.Windows, len(rec.Skipped), journalRecords, rec.JournalWindows)
 	return rec, nil
 }
 
-// recoverJournals reads the four journal windows still open at now.
+// recoverJournals reads the five journal windows still open at now.
 //
 // A journal window's file is the same name whether the window is open or final,
 // so the only question is whether the window has ended: one that has is already
@@ -109,6 +113,9 @@ func (s *Spool) recoverJournals(entries []os.DirEntry, now time.Time, rec *Recov
 		case strings.HasPrefix(name, jobRunsNamePrefix):
 			found, err = resumeInto(s, name, jobRunsNamePrefix, kindJobRuns, now, &rec.JobRuns,
 				func(r journal.JobRunRecord) (time.Time, int64) { return r.WindowStart, r.WindowSeconds })
+		case strings.HasPrefix(name, goroutineCountsNamePrefix):
+			found, err = resumeInto(s, name, goroutineCountsNamePrefix, kindGoroutineCounts, now, &rec.GoroutineCounts,
+				func(r journal.GoroutineRecord) (time.Time, int64) { return r.WindowStart, r.WindowSeconds })
 		default:
 			continue
 		}

@@ -132,6 +132,18 @@ var registry = []PayloadKind{
 		ADR:        "0006, 0013",
 	},
 	{
+		// `measured` rather than `journal`: the facts are readings the agent
+		// took from an instrument, not history it derived from object status.
+		// The window shape it shares with the journals is about delivery, not
+		// about what kind of claim a sample is (ADR 0080 §4).
+		Kind:       "goroutine_counts",
+		Source:     SourceMeasured,
+		NaturalKey: "(window start, window length)",
+		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
+		ADR:        "0080",
+	},
+	{
 		Kind:       "container_restarts",
 		Source:     SourceJournal,
 		NaturalKey: "(window start, window length)",
