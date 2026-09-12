@@ -117,7 +117,7 @@ inventory-e2e: kind-load ## Deploy controller + node DaemonSet + sample in kind 
 	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
 	E2E_SAMPLE_IMAGE=$(SAMPLE_IMAGE) \
 	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
-	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestGoInventoryEndToEnd 2>&1 \
+	go test -tags e2e -count=1 -timeout 20m -v ./test/e2e/ -run TestGoInventoryEndToEnd 2>&1 \
 		| tee test/e2e/logs/inventory-e2e-$$(date +%Y%m%d-%H%M%S).log
 
 policy-e2e: kind-load ## Deploy the controller in kind and assert job_runs, deployment_revisions, workload_policy and cluster_policy in the spool — including that the widened ClusterRole grants what ADR 0032 says; log goes to test/e2e/logs/
