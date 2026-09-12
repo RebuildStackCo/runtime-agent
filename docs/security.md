@@ -207,7 +207,7 @@ collection stage rather than at the API server, and the counts in
 
 | Access | Direction | Why | Notes |
 |---|---|---|---|
-| Pod pprof endpoints | controller → pods | Confirm which of your collected workloads serve `/debug/pprof` ([ADR 0057](adr/0057-the-controller-confirms-an-endpoint-once.md)) | **One GET of the index page per image and port, and no other path** — never `/debug/pprof/cmdline`, which returns the process's argv. Nothing is swept, no profiler is started, and no address is collected; the bounds are in [§10.3](#103-pprof-endpoint-discovery-and-profile-pulling). On by default, off with one value, inert without a node DaemonSet. Pulling a profile is a **separate switch**, also on, and the one request that runs your process's profiler |
+| Pod pprof endpoints | controller → pods | Confirm which of your collected workloads serve `/debug/pprof`, and read the goroutine count that page carries ([ADR 0057](adr/0057-the-controller-confirms-an-endpoint-once.md), [ADR 0080](adr/0080-the-index-page-already-counts-the-goroutines.md)) | **GETs of the index page and no other path** — never `/debug/pprof/cmdline`, which returns the process's argv. Once per image and port to confirm; then once a minute per confirmed process to read the count, which the page renders from a variable. Nothing is swept, no profiler is started, and no address is collected; the bounds are in [§10.3](#103-pprof-endpoint-discovery-and-profile-pulling). On by default, off with one value, inert without a node DaemonSet. Pulling a profile is a **separate switch**, also on, and the one request that runs your process's profiler |
 | kubelet stats, proxied | controller → API server | Poll `/stats/summary` and `/metrics/cadvisor` on every kubelet for usage counters (ADR 0006) | Goes through the API server proxy (`nodes/proxy`, §4) — the agent opens **no direct connection to kubelets**. A direct-kubelet transport for very large clusters would be a documented change here, not a silent one |
 | Backend egress | controller → one address you configure | Ship the payloads listed in [§8](#8-data-collected-and-data-leaving-the-cluster) | **Off unless you set an address, and there is no default** — without one the controller writes to its local spool and sends nothing, which is what every installation does today. Where it is set it is the only cross-boundary connection in the system: one `POST` per payload, the body the spool file verbatim. **Plain HTTP at this stage** — no TLS, no credential, no identity ([§6](#6-agent-identity-and-credential-lifecycle-planned) is unbuilt) — so it is for a backend you control on a network you trust. Nothing in a reply changes what the agent does: only the status code is read ([ADR 0075](adr/0075-a-payload-leaves-the-spool-only-when-the-backend-has-it.md)). **The body is gzip-encoded**, always and without negotiating — the agent cannot ask what the backend accepts — and what it encodes is the spool file unchanged, so what leaves the cluster is what [§8](#8-data-collected-and-data-leaving-the-cluster) lists and nothing else ([ADR 0076](adr/0076-the-payload-travels-encoded.md)). The NetworkPolicy that ships with the chart is **ingress only, by decision and not pending**: an egress rule would have to permit the API server, DNS, and arbitrary pod addresses for endpoint confirmation, which is everything, and a rule permitting everything is a boundary in name only. What bounds this egress is the code — one package opens outbound connections, to one address you set |
 | Health probes | kubelet → both roles, in-cluster only | Answer whether the agent is working and whether it may be depended on yet ([ADR 0069](adr/0069-liveness-is-the-process-readiness-is-the-caches.md)) | **Port 9090 on the controller pod and on every node pod, in every profile** — separate from the report receiver above. Two paths, `/livez` and `/readyz`; GET and HEAD only, and nothing about a request changes what the agent does (§9). The reply is a status code and one line about the agent itself — whether its own collection pass is still running, whether its caches have filled — and names **no** object in your cluster. Not exposed by any Service. Where a NetworkPolicy ships it carries a second rule admitting this port from **any** source, because the caller is your kubelet arriving from the node's address, which no pod selector can name |
@@ -538,9 +538,10 @@ raise them, and nothing can ask for data sooner.
 | `listening_ports` | Per collected workload container and build: the TCP ports its Go processes accept connections on, each with whether it is bound to loopback. Read from the processes' own sockets, so a port nothing declared is here and a declared port nothing binds is not ([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)). No address, and no connection the workload has open | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
 | `pprof_profile` | One ten-second CPU profile fetched from the workload's own `/debug/pprof` endpoint, allow-list-filtered, under the same key ([ADR 0058](adr/0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)). The mappings — the executable's path on disk and its build ID — the sample labels, and the full source paths are removed with the redacted frames, so what remains is function names your allow-list admits, base file names and line numbers. Beside it travel the counts of what was redacted, never what | no |
+| `goroutine_counts` | Per sampled process and window: how many goroutines it was running at each reading, and the pod, container and build it was read from ([ADR 0080](adr/0080-the-index-page-already-counts-the-goroutines.md)). A count and a timestamp. No stack, no function name and nothing about what those goroutines were doing | no |
 
 Each declares its provenance in a `source` field — `structural` (read from a
-spec), `measured` (polled from the kubelet), `journal` (from object history) or
+spec), `measured` (polled from an instrument), `journal` (from object history) or
 `sampled` (a profiler's estimate)
 ([ADR 0012](adr/0012-payload-registry-and-provenance.md)).
 
@@ -957,6 +958,22 @@ and a loopback-only endpoint is not contacted.
 **Turning it off** is `profiling.pprof.enabled: false`. It is also inert in
 `metrics-only`, where neither fact it depends on is ever read.
 
+**That same page is then read once a minute, for one number.** Its profile table
+carries a live goroutine count, which is what lets a report say a workload has
+been leaking goroutines for six hours
+([ADR 0080](adr/0080-the-index-page-already-counts-the-goroutines.md)). It is the
+only thing `profiling.pprof.enabled` does repeatedly, so it is stated here rather
+than folded into the confirmation above.
+
+It costs your process a variable read — **no profiler, no pause, nothing
+allocated**, measured at 134 µs against a process running a million goroutines,
+against a kubelet that probes this chart's own containers every ten seconds.
+`/debug/pprof/goroutine` is **never** fetched, in any mode: collecting the stacks
+behind that number would allocate hundreds of megabytes inside your process.
+
+What leaves is a count, a timestamp, and which pod, container and build it came
+from — never a stack, never a function name. One replica per workload is read.
+
 **Pulling a profile is the one thing your process can notice.** Everything else
 in this document is a read; a workload cannot tell it is being collected. `GET
 /debug/pprof/profile?seconds=10` can: it runs **your process's own CPU profiler**
@@ -977,8 +994,8 @@ ask — in which our capture is the one that wins; if that is unacceptable, turn
 `profiling.pprof.pull` off and keep everything else.
 
 **Excluding one workload, and nothing else about it.** `rebuildstack.co/profile:
-"false"` on the Namespace, the workload object or the Pod stops both profiling
-paths and every connection to it, the one that confirms an endpoint included
+"false"` on the Namespace, the workload object or the Pod stops every profiling
+path and every connection to it, the one that confirms an endpoint included
 ([ADR 0071](adr/0071-refusing-the-profiler-without-refusing-the-rest.md)).
 Everything else about it keeps being collected — which is what the four older
 controls could not offer.

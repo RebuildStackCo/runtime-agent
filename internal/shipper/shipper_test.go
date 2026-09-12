@@ -565,7 +565,7 @@ func TestTheKindsTheSinkWritesAreTheKindsTheEndpointNames(t *testing.T) {
 	}
 	if err := spool.WriteCollectionCoverage(time.Unix(2, 0).UTC(), time.Unix(1, 0).UTC(),
 		sink.AgentInfo{Version: "test"}, nil, model.Coverage{}, model.PlacementDrops{},
-		model.NodeDrops{}, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		model.NodeDrops{}, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 

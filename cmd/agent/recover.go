@@ -9,12 +9,13 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
 
-// journals is the four accumulators a restart resumes beside the usage poller.
+// journals is the five accumulators a restart resumes beside the usage poller.
 type journals struct {
 	restarts    *journal.Restarts
 	disruptions *journal.Disruptions
 	nodes       *journal.NodeEvents
 	jobs        *journal.JobRuns
+	goroutines  *journal.Goroutines
 }
 
 // seedOpenWindows hands the poller and the journals whatever the spool still
@@ -44,7 +45,8 @@ func seedOpenWindows(logger *slog.Logger, spool *sink.Spool, poller *collector.U
 	seeded := j.restarts.Resume(recovery.Restarts) +
 		j.disruptions.Resume(recovery.Disruptions) +
 		j.nodes.Resume(recovery.NodeEvents) +
-		j.jobs.Resume(recovery.JobRuns)
+		j.jobs.Resume(recovery.JobRuns) +
+		j.goroutines.Resume(recovery.GoroutineCounts)
 	if recovery.JournalWindows > 0 {
 		logger.Info("resumed open journal windows from the spool",
 			"windows", recovery.JournalWindows, "records", seeded)

@@ -93,14 +93,19 @@ profiling:
 
   pprof:
     # Whether the controller confirms which of your collected workloads serve a
-    # `/debug/pprof` endpoint. On, and it is the one collection control shipped
-    # that way (docs/security.md §10.3).
+    # `/debug/pprof` endpoint, and then reads the goroutine count that page
+    # carries. On, and it is the one collection control shipped that way
+    # (docs/security.md §10.3).
     #
-    # What it costs the workload is one GET of the index page, once per image
-    # and port — no profiler is started and no connection is held. Which
-    # workloads are asked comes from your own filters; which ports, from what
-    # their processes were observed to bind. Inert without a node DaemonSet,
-    # which is where both of those facts are read.
+    # What it costs the workload is GETs of the index page — no profiler is
+    # started and no connection is held. One to confirm, once per image and
+    # port; then one a minute per confirmed process for the count, which the
+    # page renders from a variable and which is what makes a goroutine leak
+    # visible as a trend. `/debug/pprof/goroutine` itself is never fetched.
+    #
+    # Which workloads are asked comes from your own filters; which ports, from
+    # what their processes were observed to bind. Inert without a node
+    # DaemonSet, which is where both of those facts are read.
     enabled: true
 
     # Whether a CPU profile is then fetched from the endpoints found. Also on,

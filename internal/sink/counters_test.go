@@ -62,7 +62,7 @@ func TestAWrittenPayloadIsCountedUnderTheKindInItsBytes(t *testing.T) {
 	s, _ := newTestSpool(t)
 	if err := s.WriteCollectionCoverage(time.Now(), time.Now(), AgentInfo{}, nil,
 		model.Coverage{}, model.PlacementDrops{}, model.NodeDrops{},
-		nil, nil, nil, nil, nil, nil, nil); err != nil {
+		nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.Counters().Written["collection_coverage"]; got != 1 {

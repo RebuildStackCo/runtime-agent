@@ -362,3 +362,92 @@ func TestARestartInsideAnOpenWindowKeepsWhatTheWindowAlreadyHeld(t *testing.T) {
 		}
 	}
 }
+
+// goroutineRecords is one window's worth of readings, one series per pod.
+func goroutineRecords(pods ...string) []journal.GoroutineRecord {
+	out := make([]journal.GoroutineRecord, 0, len(pods))
+	for i, pod := range pods {
+		out = append(out, journal.GoroutineRecord{
+			Key:           journal.Key{Namespace: "shop", Pod: pod, Container: "app"},
+			Workload:      model.WorkloadRef{Kind: "Deployment", Name: "web"},
+			ImageDigest:   "sha256:a",
+			WindowStart:   recoverWindow,
+			WindowSeconds: 3600,
+			Samples: []journal.GoroutineSample{
+				{At: recoverWindow, Goroutines: int64(100 + i)},
+				{At: recoverWindow.Add(time.Minute), Goroutines: int64(110 + i)},
+			},
+		})
+	}
+	return out
+}
+
+// The fifth window kind resumes on the same terms as the four before it —
+// which is what ADR 0077 said adding one would cost.
+func TestAnOpenGoroutineWindowIsRecovered(t *testing.T) {
+	s, _ := recoverSpool(t)
+	if err := s.WriteGoroutineCounts(capturedAt, goroutineRecords("web-a", "web-b")); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := s.RecoverOpenWindows(midWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.JournalWindows != 1 || len(rec.GoroutineCounts) != 2 {
+		t.Fatalf("recovered %d journal windows carrying %d records, want 1 and 2",
+			rec.JournalWindows, len(rec.GoroutineCounts))
+	}
+	if len(rec.GoroutineCounts[0].Samples) != 2 || rec.GoroutineCounts[0].ImageDigest != "sha256:a" {
+		t.Errorf("a recovered record lost its contents: %+v", rec.GoroutineCounts[0])
+	}
+}
+
+// The loss this kind is most exposed to, end to end. A series is the whole of
+// what the payload is for, so a restart that wrote back only the readings taken
+// after it would replace an hour of series with a few minutes of it — under the
+// same natural key the contract calls the complete state.
+func TestARestartInsideAnOpenWindowKeepsTheSeriesItAlreadyHeld(t *testing.T) {
+	s, dir := recoverSpool(t)
+	if err := s.WriteGoroutineCounts(capturedAt, goroutineRecords("web-a")); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed := journal.NewGoroutines(time.Hour)
+	rec, err := s.RecoverOpenWindows(midWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded := resumed.Resume(rec.GoroutineCounts); seeded != 1 {
+		t.Fatalf("seeded %d records into the accumulator, want 1", seeded)
+	}
+
+	// One more reading inside the same still-open window, flushed as cmd/agent
+	// flushes it.
+	resumed.Observe(model.GoroutineCount{
+		Namespace: "shop", Pod: "web-a", Container: "app",
+		Workload:    model.WorkloadRef{Kind: "Deployment", Name: "web"},
+		ImageDigest: "sha256:a", ObservedAt: midWindow, Goroutines: 900,
+	})
+	records := append(resumed.CloseBefore(midWindow), resumed.Snapshots()...)
+	if err := s.WriteGoroutineCounts(capturedAt, records); err != nil {
+		t.Fatal(err)
+	}
+
+	name := journalWindowName(goroutineCountsNamePrefix, windowKey{start: recoverWindow, seconds: 3600})
+	raw, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload journalWindow[journal.GoroutineRecord]
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Records) != 1 {
+		t.Fatalf("the window holds %d records, want one", len(payload.Records))
+	}
+	if got := len(payload.Records[0].Samples); got != 3 {
+		t.Errorf("the window written after the restart holds %d samples, want the two it "+
+			"already had plus the new one: %+v", got, payload.Records[0].Samples)
+	}
+}

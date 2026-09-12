@@ -34,21 +34,18 @@ var ceilings = []struct {
 	lines   int
 	section int
 }{
-	// Both moved again for one obligation, and the largest one either document
-	// has taken on: payloads now leave the cluster. What the customer is
-	// promised about an egress that exists is not what was promised about one
-	// that did not, and the backend's implementer needs the status codes the
-	// agent acts on (ADR 0075).
-	// One obligation: a windowed journal payload now states when it was written,
-	// which is a field leaving the cluster that was not leaving before
-	// (ADR 0078).
-	{"security.md", 1094, 360},
-	// Two obligations the contract did not carry. The request body is encoded,
-	// so its implementer must decode it and must stop reading a payload's size
-	// off the request that carried it (ADR 0076). And a journal window now
-	// states whether it is finished, which the backend must read from the
-	// payload instead of deciding from its clock (ADR 0078).
-	{"backend-requirements.md", 775, 604},
+	// Each raise names the obligation that bought it. Payloads now leave the
+	// cluster at all (ADR 0075); a journal window states when it was written
+	// (ADR 0078); and a new kind ships while the connection that confirmed an
+	// endpoint once per image now repeats once a minute per process, which is
+	// not the promise that was made about a single request (ADR 0080).
+	{"security.md", 1111, 360},
+	// Each raise names its obligation here too. The request body is encoded, so
+	// the implementer must decode it and stop reading a payload's size off the
+	// request (ADR 0076); a journal window states whether it is finished
+	// (ADR 0078); and a new kind arrives whose samples are gauges, where the
+	// obvious ingest — adding them up — is the wrong one (ADR 0080).
+	{"backend-requirements.md", 794, 623},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

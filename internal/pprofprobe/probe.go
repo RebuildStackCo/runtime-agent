@@ -119,21 +119,28 @@ type answer struct {
 // request to one address and must not become a request to another.
 func New(address Address, logger *slog.Logger) *Prober {
 	return &Prober{
-		client: &http.Client{
-			Timeout: probeTimeout,
-			Transport: &http.Transport{
-				Proxy:             nil,
-				DisableKeepAlives: true,
-				DialContext:       (&net.Dialer{Timeout: probeTimeout}).DialContext,
-			},
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return errors.New("pprofprobe: redirect refused")
-			},
-		},
+		client:  newClient(probeTimeout),
 		address: address,
 		logger:  logger,
 		now:     time.Now,
 		answers: map[Target]answer{},
+	}
+}
+
+// newClient builds the client this package connects with. One constructor for
+// both readers of the index page: the discipline is the decision, and two
+// clients configured separately are two chances to lose one of its three parts.
+func newClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:             nil,
+			DisableKeepAlives: true,
+			DialContext:       (&net.Dialer{Timeout: timeout}).DialContext,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("pprofprobe: redirect refused")
+		},
 	}
 }
 

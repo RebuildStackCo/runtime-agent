@@ -1,0 +1,62 @@
+{
+  "kind": "goroutine_counts",
+  "source": "measured",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "records": [
+    {
+      "namespace": "search",
+      "pod": "index-0",
+      "container": "app",
+      "workload": {
+        "kind": "StatefulSet",
+        "name": "index"
+      },
+      "image_digest": "sha256:2f0c1b9a7d3e4f5061728394a5b6c7d8e9f0112233445566778899aabbccddee",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "samples": [
+        {
+          "at": "2026-08-06T10:00:00Z",
+          "goroutines": 148
+        },
+        {
+          "at": "2026-08-06T10:01:00Z",
+          "goroutines": 151
+        },
+        {
+          "at": "2026-08-06T10:02:00Z",
+          "goroutines": 149
+        }
+      ]
+    },
+    {
+      "namespace": "shop",
+      "pod": "web-7f8d9-abcde",
+      "container": "app",
+      "workload": {
+        "kind": "Deployment",
+        "name": "web"
+      },
+      "image_digest": "sha256:8c4c9a0b1d2e3f40516273849506a7b8c9d0e1f2031425364758697a8b9c0d1e",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "samples": [
+        {
+          "at": "2026-08-06T10:00:00Z",
+          "goroutines": 2104
+        },
+        {
+          "at": "2026-08-06T10:01:00Z",
+          "goroutines": 3390
+        },
+        {
+          "at": "2026-08-06T10:02:00Z",
+          "goroutines": 4712
+        }
+      ],
+      "samples_dropped": 1
+    }
+  ]
+}

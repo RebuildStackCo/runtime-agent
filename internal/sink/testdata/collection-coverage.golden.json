@@ -117,6 +117,11 @@
     "unreachable": 0,
     "invalid": 1
   },
+  "goroutine_counts": {
+    "sampled": 1180,
+    "unreachable": 21,
+    "unreadable": 4
+  },
   "shipping": {
     "delivered": 1204,
     "deferred": 17,

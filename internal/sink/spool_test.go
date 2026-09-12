@@ -191,10 +191,14 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		// cluster's own data, which no other number reports (ADR 0076).
 		PayloadBytes: 1418657280, TransmittedBytes: 132871680,
 	}
+	// One workload of the four confirmed has no addressable replica this round
+	// and one answers on a port that is no longer the pprof index, so a reader
+	// of the series knows which absences the agent caused (ADR 0080 §6).
+	counts := pprofprobe.CountCoverage{Sampled: 1180, Unreachable: 21, Unreadable: 4}
 	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour), agent,
 		sources, filter, model.PlacementDrops{Values: 3, Terms: 1},
 		model.NodeDrops{Conditions: 4, Devices: 1, Taints: 0, Values: 2},
-		&inv, &scan, &ebpf, &probe, &pull, &rejected, &shipping); err != nil {
+		&inv, &scan, &ebpf, &probe, &pull, &counts, &rejected, &shipping); err != nil {
 		t.Fatal(err)
 	}
 	checkGolden(t, filepath.Join(dir, "collection-coverage.json"), "collection-coverage.golden.json")
@@ -323,6 +327,46 @@ func TestGoldenContainerRestartsPayload(t *testing.T) {
 	}
 	name := fmt.Sprintf("restarts-%d-3600.json", windowStart.Unix())
 	checkGolden(t, filepath.Join(dir, name), "container-restarts.golden.json")
+}
+
+// fixedGoroutineCounts is the pair this kind exists to tell apart: a process
+// whose count holds still, and one whose count climbs every reading. Neither is
+// a finding on its own — the shape of the series is the whole of it.
+func fixedGoroutineCounts() []journal.GoroutineRecord {
+	sample := func(minute int, n int64) journal.GoroutineSample {
+		return journal.GoroutineSample{
+			At:         windowStart.Add(time.Duration(minute) * time.Minute),
+			Goroutines: n,
+		}
+	}
+	return []journal.GoroutineRecord{
+		{
+			Key:           journal.Key{Namespace: "search", Pod: "index-0", Container: "app"},
+			Workload:      model.WorkloadRef{Kind: "StatefulSet", Name: "index"},
+			ImageDigest:   "sha256:2f0c1b9a7d3e4f5061728394a5b6c7d8e9f0112233445566778899aabbccddee",
+			WindowStart:   windowStart,
+			WindowSeconds: 3600,
+			Samples:       []journal.GoroutineSample{sample(0, 148), sample(1, 151), sample(2, 149)},
+		},
+		{
+			Key:            journal.Key{Namespace: "shop", Pod: "web-7f8d9-abcde", Container: "app"},
+			Workload:       model.WorkloadRef{Kind: "Deployment", Name: "web"},
+			ImageDigest:    "sha256:8c4c9a0b1d2e3f40516273849506a7b8c9d0e1f2031425364758697a8b9c0d1e",
+			WindowStart:    windowStart,
+			WindowSeconds:  3600,
+			Samples:        []journal.GoroutineSample{sample(0, 2104), sample(1, 3390), sample(2, 4712)},
+			SamplesDropped: 1,
+		},
+	}
+}
+
+func TestGoldenGoroutineCountsPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteGoroutineCounts(capturedAt, fixedGoroutineCounts()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("goroutine-counts-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "goroutine-counts.golden.json")
 }
 
 // fixedRestartCounters is the pair the counter payload exists to tell apart.
@@ -2018,7 +2062,7 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	err := s.WriteCollectionCoverage(capturedAt, capturedAt, agent,
 		[]model.SourceHealth{{Name: "services", Synced: true}},
 		model.Coverage{PodsObserved: 10, ExcludedNamespaceFilter: 3},
-		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil, nil, nil)
+		model.PlacementDrops{}, model.NodeDrops{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

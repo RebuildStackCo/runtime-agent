@@ -247,7 +247,7 @@ func TestFixedAndEventKindsAreNeverSuppressed(t *testing.T) {
 		t.Helper()
 		if err := s.WriteCollectionCoverage(at, capturedAt, AgentInfo{Version: "test"},
 			nil, model.Coverage{}, model.PlacementDrops{}, model.NodeDrops{},
-			nil, nil, nil, nil, nil, nil, nil); err != nil {
+			nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

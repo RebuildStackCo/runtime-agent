@@ -653,6 +653,17 @@ func (w *PodWatcher) HostNetwork(uid types.UID) bool {
 // in any payload (ADR 0057 §3). Any replica will do — the question the caller
 // asks is about the build, and every replica of a build answers it the same.
 func (w *PodWatcher) PodAddress(namespace string, workload model.WorkloadRef, container, imageDigest string) (string, bool) {
+	addr, _, ok := w.PodReplica(namespace, workload, container, imageDigest)
+	return addr, ok
+}
+
+// PodReplica is PodAddress and the name of the replica it chose.
+//
+// The name is for the one caller whose fact is about a process rather than
+// about a build: a goroutine count belongs to a pod, and a series that could
+// not name it would read a replacement as a leak that cured itself (ADR 0080
+// §3). The address is still a connection parameter and still enters no payload.
+func (w *PodWatcher) PodReplica(namespace string, workload model.WorkloadRef, container, imageDigest string) (string, string, bool) {
 	w.indexMu.RLock()
 	var names []string
 	for _, entry := range w.index {
@@ -682,9 +693,9 @@ func (w *PodWatcher) PodAddress(namespace string, workload model.WorkloadRef, co
 		if err != nil || pod.Status.PodIP == "" {
 			continue
 		}
-		return pod.Status.PodIP, true
+		return pod.Status.PodIP, name, true
 	}
-	return "", false
+	return "", "", false
 }
 
 // runsBuild reports whether the pod's named container is running imageDigest.

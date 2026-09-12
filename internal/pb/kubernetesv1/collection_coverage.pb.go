@@ -74,9 +74,12 @@ type CollectionCoverage struct {
 	PprofPull *PprofPullCoverage `protobuf:"bytes,15,opt,name=pprof_pull,json=pprofPull,proto3" json:"pprof_pull,omitempty"`
 	// What became of the payloads this one travelled with. Present only when the
 	// agent is configured to ship at all.
-	Shipping      *ShippingCoverage `protobuf:"bytes,16,opt,name=shipping,proto3" json:"shipping,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Shipping *ShippingCoverage `protobuf:"bytes,16,opt,name=shipping,proto3" json:"shipping,omitempty"`
+	// What reading goroutine counts off confirmed endpoints did. Present
+	// whenever endpoint discovery is on.
+	GoroutineCounts *GoroutineCountCoverage `protobuf:"bytes,17,opt,name=goroutine_counts,json=goroutineCounts,proto3" json:"goroutine_counts,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CollectionCoverage) Reset() {
@@ -217,6 +220,13 @@ func (x *CollectionCoverage) GetPprofPull() *PprofPullCoverage {
 func (x *CollectionCoverage) GetShipping() *ShippingCoverage {
 	if x != nil {
 		return x.Shipping
+	}
+	return nil
+}
+
+func (x *CollectionCoverage) GetGoroutineCounts() *GoroutineCountCoverage {
+	if x != nil {
+		return x.GoroutineCounts
 	}
 	return nil
 }
@@ -1639,11 +1649,80 @@ func (x *PprofPullCoverage) GetInvalid() int64 {
 	return 0
 }
 
+// What reading the goroutine count off confirmed endpoints did, cumulative
+// since `since`.
+//
+// Absent means the counter was not stated; zero is a number that was counted.
+type GoroutineCountCoverage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Readings taken and accumulated into a window.
+	Sampled *int64 `protobuf:"varint,1,opt,name=sampled,proto3,oneof" json:"sampled,omitempty"`
+	// Targets with no addressable replica this round, or whose connection
+	// failed. Says nothing about the endpoint itself.
+	Unreachable *int64 `protobuf:"varint,2,opt,name=unreachable,proto3,oneof" json:"unreachable,omitempty"`
+	// Answers that arrived and carried no goroutine count: not the pprof index
+	// page, or the index page without the row this reads.
+	Unreadable    *int64 `protobuf:"varint,3,opt,name=unreadable,proto3,oneof" json:"unreadable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoroutineCountCoverage) Reset() {
+	*x = GoroutineCountCoverage{}
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoroutineCountCoverage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoroutineCountCoverage) ProtoMessage() {}
+
+func (x *GoroutineCountCoverage) ProtoReflect() protoreflect.Message {
+	mi := &file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoroutineCountCoverage.ProtoReflect.Descriptor instead.
+func (*GoroutineCountCoverage) Descriptor() ([]byte, []int) {
+	return file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GoroutineCountCoverage) GetSampled() int64 {
+	if x != nil && x.Sampled != nil {
+		return *x.Sampled
+	}
+	return 0
+}
+
+func (x *GoroutineCountCoverage) GetUnreachable() int64 {
+	if x != nil && x.Unreachable != nil {
+		return *x.Unreachable
+	}
+	return 0
+}
+
+func (x *GoroutineCountCoverage) GetUnreadable() int64 {
+	if x != nil && x.Unreadable != nil {
+		return *x.Unreadable
+	}
+	return 0
+}
+
 var File_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto protoreflect.FileDescriptor
 
 const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc = "" +
 	"\n" +
-	";rebuildstack/ingest/kubernetes/v1/collection_coverage.proto\x12!rebuildstack.ingest.kubernetes.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcf\b\n" +
+	";rebuildstack/ingest/kubernetes/v1/collection_coverage.proto\x12!rebuildstack.ingest.kubernetes.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb5\t\n" +
 	"\x12CollectionCoverage\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12;\n" +
@@ -1663,7 +1742,8 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\x11intake_rejections\x18\x0e \x01(\v23.rebuildstack.ingest.kubernetes.v1.IntakeRejectionsR\x10intakeRejections\x12S\n" +
 	"\n" +
 	"pprof_pull\x18\x0f \x01(\v24.rebuildstack.ingest.kubernetes.v1.PprofPullCoverageR\tpprofPull\x12O\n" +
-	"\bshipping\x18\x10 \x01(\v23.rebuildstack.ingest.kubernetes.v1.ShippingCoverageR\bshipping\"\x92\x01\n" +
+	"\bshipping\x18\x10 \x01(\v23.rebuildstack.ingest.kubernetes.v1.ShippingCoverageR\bshipping\x12d\n" +
+	"\x10goroutine_counts\x18\x11 \x01(\v29.rebuildstack.ingest.kubernetes.v1.GoroutineCountCoverageR\x0fgoroutineCounts\"\x92\x01\n" +
 	"\tAgentInfo\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12F\n" +
 	"\x06config\x18\x02 \x01(\v2..rebuildstack.ingest.kubernetes.v1.ConfigShapeR\x06config\x12#\n" +
@@ -1869,7 +1949,17 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\b_refusedB\x0e\n" +
 	"\f_unreachableB\n" +
 	"\n" +
-	"\b_invalidBOZMgithub.com/RebuildStackCo/runtime-agent/internal/pb/kubernetesv1;kubernetesv1b\x06proto3"
+	"\b_invalid\"\xae\x01\n" +
+	"\x16GoroutineCountCoverage\x12\x1d\n" +
+	"\asampled\x18\x01 \x01(\x03H\x00R\asampled\x88\x01\x01\x12%\n" +
+	"\vunreachable\x18\x02 \x01(\x03H\x01R\vunreachable\x88\x01\x01\x12#\n" +
+	"\n" +
+	"unreadable\x18\x03 \x01(\x03H\x02R\n" +
+	"unreadable\x88\x01\x01B\n" +
+	"\n" +
+	"\b_sampledB\x0e\n" +
+	"\f_unreachableB\r\n" +
+	"\v_unreadableBOZMgithub.com/RebuildStackCo/runtime-agent/internal/pb/kubernetesv1;kubernetesv1b\x06proto3"
 
 var (
 	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescOnce sync.Once
@@ -1883,29 +1973,30 @@ func file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescGZI
 	return file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDescData
 }
 
-var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_goTypes = []any{
-	(*CollectionCoverage)(nil),    // 0: rebuildstack.ingest.kubernetes.v1.CollectionCoverage
-	(*AgentInfo)(nil),             // 1: rebuildstack.ingest.kubernetes.v1.AgentInfo
-	(*ConfigShape)(nil),           // 2: rebuildstack.ingest.kubernetes.v1.ConfigShape
-	(*SourceHealth)(nil),          // 3: rebuildstack.ingest.kubernetes.v1.SourceHealth
-	(*FilterCoverage)(nil),        // 4: rebuildstack.ingest.kubernetes.v1.FilterCoverage
-	(*PlacementDrops)(nil),        // 5: rebuildstack.ingest.kubernetes.v1.PlacementDrops
-	(*NodeDrops)(nil),             // 6: rebuildstack.ingest.kubernetes.v1.NodeDrops
-	(*InventoryCounters)(nil),     // 7: rebuildstack.ingest.kubernetes.v1.InventoryCounters
-	(*ScanCoverage)(nil),          // 8: rebuildstack.ingest.kubernetes.v1.ScanCoverage
-	(*ProfileCoverage)(nil),       // 9: rebuildstack.ingest.kubernetes.v1.ProfileCoverage
-	(*PprofCoverage)(nil),         // 10: rebuildstack.ingest.kubernetes.v1.PprofCoverage
-	(*IntakeRejections)(nil),      // 11: rebuildstack.ingest.kubernetes.v1.IntakeRejections
-	(*ShippingCoverage)(nil),      // 12: rebuildstack.ingest.kubernetes.v1.ShippingCoverage
-	(*ShippingRejections)(nil),    // 13: rebuildstack.ingest.kubernetes.v1.ShippingRejections
-	(*PprofPullCoverage)(nil),     // 14: rebuildstack.ingest.kubernetes.v1.PprofPullCoverage
-	nil,                           // 15: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
-	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
+	(*CollectionCoverage)(nil),     // 0: rebuildstack.ingest.kubernetes.v1.CollectionCoverage
+	(*AgentInfo)(nil),              // 1: rebuildstack.ingest.kubernetes.v1.AgentInfo
+	(*ConfigShape)(nil),            // 2: rebuildstack.ingest.kubernetes.v1.ConfigShape
+	(*SourceHealth)(nil),           // 3: rebuildstack.ingest.kubernetes.v1.SourceHealth
+	(*FilterCoverage)(nil),         // 4: rebuildstack.ingest.kubernetes.v1.FilterCoverage
+	(*PlacementDrops)(nil),         // 5: rebuildstack.ingest.kubernetes.v1.PlacementDrops
+	(*NodeDrops)(nil),              // 6: rebuildstack.ingest.kubernetes.v1.NodeDrops
+	(*InventoryCounters)(nil),      // 7: rebuildstack.ingest.kubernetes.v1.InventoryCounters
+	(*ScanCoverage)(nil),           // 8: rebuildstack.ingest.kubernetes.v1.ScanCoverage
+	(*ProfileCoverage)(nil),        // 9: rebuildstack.ingest.kubernetes.v1.ProfileCoverage
+	(*PprofCoverage)(nil),          // 10: rebuildstack.ingest.kubernetes.v1.PprofCoverage
+	(*IntakeRejections)(nil),       // 11: rebuildstack.ingest.kubernetes.v1.IntakeRejections
+	(*ShippingCoverage)(nil),       // 12: rebuildstack.ingest.kubernetes.v1.ShippingCoverage
+	(*ShippingRejections)(nil),     // 13: rebuildstack.ingest.kubernetes.v1.ShippingRejections
+	(*PprofPullCoverage)(nil),      // 14: rebuildstack.ingest.kubernetes.v1.PprofPullCoverage
+	(*GoroutineCountCoverage)(nil), // 15: rebuildstack.ingest.kubernetes.v1.GoroutineCountCoverage
+	nil,                            // 16: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
+	(*timestamppb.Timestamp)(nil),  // 17: google.protobuf.Timestamp
 }
 var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_depIdxs = []int32{
-	16, // 0: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.captured_at:type_name -> google.protobuf.Timestamp
-	16, // 1: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.since:type_name -> google.protobuf.Timestamp
+	17, // 0: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.captured_at:type_name -> google.protobuf.Timestamp
+	17, // 1: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.since:type_name -> google.protobuf.Timestamp
 	1,  // 2: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.agent:type_name -> rebuildstack.ingest.kubernetes.v1.AgentInfo
 	3,  // 3: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.sources:type_name -> rebuildstack.ingest.kubernetes.v1.SourceHealth
 	4,  // 4: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.filter:type_name -> rebuildstack.ingest.kubernetes.v1.FilterCoverage
@@ -1918,16 +2009,17 @@ var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_depIdxs = [
 	11, // 11: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.intake_rejections:type_name -> rebuildstack.ingest.kubernetes.v1.IntakeRejections
 	14, // 12: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.pprof_pull:type_name -> rebuildstack.ingest.kubernetes.v1.PprofPullCoverage
 	12, // 13: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.shipping:type_name -> rebuildstack.ingest.kubernetes.v1.ShippingCoverage
-	2,  // 14: rebuildstack.ingest.kubernetes.v1.AgentInfo.config:type_name -> rebuildstack.ingest.kubernetes.v1.ConfigShape
-	16, // 15: rebuildstack.ingest.kubernetes.v1.ConfigShape.since:type_name -> google.protobuf.Timestamp
-	16, // 16: rebuildstack.ingest.kubernetes.v1.ScanCoverage.oldest_asserted_at:type_name -> google.protobuf.Timestamp
-	15, // 17: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.states:type_name -> rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
-	13, // 18: rebuildstack.ingest.kubernetes.v1.ShippingCoverage.rejected:type_name -> rebuildstack.ingest.kubernetes.v1.ShippingRejections
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	15, // 14: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.goroutine_counts:type_name -> rebuildstack.ingest.kubernetes.v1.GoroutineCountCoverage
+	2,  // 15: rebuildstack.ingest.kubernetes.v1.AgentInfo.config:type_name -> rebuildstack.ingest.kubernetes.v1.ConfigShape
+	17, // 16: rebuildstack.ingest.kubernetes.v1.ConfigShape.since:type_name -> google.protobuf.Timestamp
+	17, // 17: rebuildstack.ingest.kubernetes.v1.ScanCoverage.oldest_asserted_at:type_name -> google.protobuf.Timestamp
+	16, // 18: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.states:type_name -> rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
+	13, // 19: rebuildstack.ingest.kubernetes.v1.ShippingCoverage.rejected:type_name -> rebuildstack.ingest.kubernetes.v1.ShippingRejections
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_init() }
@@ -1948,13 +2040,14 @@ func file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_init() {
 	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[12].OneofWrappers = []any{}
 	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[13].OneofWrappers = []any{}
 	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[14].OneofWrappers = []any{}
+	file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_msgTypes[15].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc), len(file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

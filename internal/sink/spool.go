@@ -219,6 +219,10 @@ type collectionCoveragePayload struct {
 	// to read first: it is a workload whose own profiler holds the single CPU
 	// profile Go allows, not a workload the agent failed on (ADR 0058 §3).
 	PprofPull *pprofpull.Coverage `json:"pprof_pull,omitempty"`
+	// GoroutineCounts is what the index-page readings did, present whenever
+	// endpoint discovery is on. It is what tells a workload with no series from
+	// a workload whose series the agent could not take (ADR 0080 §6).
+	GoroutineCounts *pprofprobe.CountCoverage `json:"goroutine_counts,omitempty"`
 	// Shipping is what became of the payloads this one travelled with, present
 	// only when a backend is configured. It is the one block whose subject is
 	// outside the cluster, and the only one whose absence from an arriving
@@ -436,6 +440,23 @@ type jobRunsPayload struct {
 	Records       []journal.JobRunRecord `json:"records"`
 }
 
+// goroutineCountsPayload is the goroutine series of every sampled process
+// within one window: one file per window holding many records (ADR 0080).
+//
+// The same envelope as the four journal windows beside it, and for the same
+// reason — grouping by window keeps the spool's file count bounded by time
+// rather than by how many endpoints a cluster serves. It supersedes within its
+// window, and CapturedAt read against the window's end says whether the window
+// is final (ADR 0078).
+type goroutineCountsPayload struct {
+	Kind          string                    `json:"kind"`
+	Source        string                    `json:"source"`
+	CapturedAt    time.Time                 `json:"captured_at"`
+	WindowStart   time.Time                 `json:"window_start"`
+	WindowSeconds int64                     `json:"window_seconds"`
+	Records       []journal.GoroutineRecord `json:"records"`
+}
+
 // workloadMetadataPayload is the declared shape of every collected workload
 // container — requests, limits, QoS, ports — and where its replicas run. Like
 // go-inventory it is a single superseding batch under a fixed natural key (the
@@ -572,11 +593,13 @@ const (
 	kindPodDisruptions    = "pod_disruptions"
 	kindNodeLifecycle     = "node_lifecycle"
 	kindJobRuns           = "job_runs"
+	kindGoroutineCounts   = "goroutine_counts"
 
-	restartsNamePrefix      = "restarts-"
-	disruptionsNamePrefix   = "disruptions-"
-	nodeLifecycleNamePrefix = "node-lifecycle-"
-	jobRunsNamePrefix       = "job-runs-"
+	restartsNamePrefix        = "restarts-"
+	disruptionsNamePrefix     = "disruptions-"
+	nodeLifecycleNamePrefix   = "node-lifecycle-"
+	jobRunsNamePrefix         = "job-runs-"
+	goroutineCountsNamePrefix = "goroutine-counts-"
 )
 
 // journalWindowName is the filename of one journal window, and the inverse of
@@ -678,24 +701,25 @@ func (s *Spool) WriteNetworkWindows(records []*rollup.NetworkRecord, obs model.O
 // predecessor. It is written on every flush, including one that found nothing:
 // an empty report and a broken agent are the same bytes without it (ADR 0054).
 func (s *Spool) WriteCollectionCoverage(capturedAt, since time.Time, agent AgentInfo, sources []model.SourceHealth, filter model.Coverage, placement model.PlacementDrops, nodes model.NodeDrops, inv *inventory.Counters, scan *inventory.ScanCoverage, ebpf *inventory.ProfileCoverage, probe *pprofprobe.Coverage, pull *pprofpull.Coverage,
-	intake *model.IntakeRejections, shipping *model.Shipping) error {
+	counts *pprofprobe.CountCoverage, intake *model.IntakeRejections, shipping *model.Shipping) error {
 	payload := collectionCoveragePayload{
-		Kind:       "collection_coverage",
-		Source:     SourceAgent,
-		CapturedAt: capturedAt.UTC(),
-		Since:      since.UTC(),
-		Agent:      agent,
-		Sources:    sources,
-		Filter:     filter,
-		Placement:  placement,
-		Nodes:      nodes,
-		Inventory:  inv,
-		Scan:       scan,
-		EBPF:       ebpf,
-		Pprof:      probe,
-		Intake:     intake,
-		PprofPull:  pull,
-		Shipping:   shipping,
+		Kind:            "collection_coverage",
+		Source:          SourceAgent,
+		CapturedAt:      capturedAt.UTC(),
+		Since:           since.UTC(),
+		Agent:           agent,
+		Sources:         sources,
+		Filter:          filter,
+		Placement:       placement,
+		Nodes:           nodes,
+		Inventory:       inv,
+		Scan:            scan,
+		EBPF:            ebpf,
+		Pprof:           probe,
+		Intake:          intake,
+		PprofPull:       pull,
+		GoroutineCounts: counts,
+		Shipping:        shipping,
 	}
 	return s.write(payload.Kind, "collection-coverage.json", payload)
 }
@@ -844,6 +868,36 @@ func (s *Spool) WriteJobRuns(capturedAt time.Time, records []journal.JobRunRecor
 			Records:       group,
 		}
 		if err := s.write(payload.Kind, journalWindowName(jobRunsNamePrefix, k), payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteGoroutineCounts writes the goroutine series of each window they belong
+// to, one file per window, atomically replacing that window's previous file.
+// records must already be in a deterministic order (the accumulator sorts them)
+// so the payload bytes are stable — the golden contract.
+//
+// A window in which nothing was read writes nothing, like the journals beside
+// it: a cluster with no confirmed pprof endpoint has nothing to say here, and
+// an empty payload would claim it was looked at and found quiet.
+func (s *Spool) WriteGoroutineCounts(capturedAt time.Time, records []journal.GoroutineRecord) error {
+	grouped := make(map[windowKey][]journal.GoroutineRecord)
+	for _, r := range records {
+		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
+		grouped[k] = append(grouped[k], r)
+	}
+	for k, group := range grouped {
+		payload := goroutineCountsPayload{
+			Kind:          kindGoroutineCounts,
+			Source:        SourceMeasured,
+			CapturedAt:    capturedAt,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Records:       group,
+		}
+		if err := s.write(payload.Kind, journalWindowName(goroutineCountsNamePrefix, k), payload); err != nil {
 			return err
 		}
 	}

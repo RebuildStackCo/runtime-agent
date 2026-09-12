@@ -525,6 +525,24 @@ source path is present, so nothing here locates the binary or the request it ran
 under. `capture_start`/`capture_end` bound the capture and the payload
 accumulates per window like `ebpf_profile`.
 
+**A `goroutine_counts` sample is a gauge, and summing is the way to get it
+wrong** ([ADR 0080](adr/0080-the-index-page-already-counts-the-goroutines.md)).
+Each record is one process — pod, container and build — within one window, and
+each sample is that process's goroutine count at the instant named beside it.
+Samples MUST NOT be added to one another, and records of successive windows MUST
+NOT be added either: sixty readings of four thousand goroutines are four
+thousand goroutines, not two hundred and forty thousand. What a report may draw
+from the kind is the shape of the series.
+
+One replica of each workload is read, so a count MUST NOT be multiplied by a
+replica count or presented as a workload total. A record under a pod name not
+seen before is a **different process**: its low count is a new runtime starting,
+never the previous pod's count falling, and the two MUST NOT be joined into one
+series. A non-zero `samples_dropped` means the series is thinner than the
+cadence implies, and a gap in a record that carries one MUST NOT be read as a
+gap in the process. No stack and no function name travels with a count, so the
+kind says that a process is accumulating goroutines and never which code is.
+
 **A profile in which the runtime dominates is a finding, not a defect**
 ([ADR 0063](adr/0063-a-profile-of-the-collector-is-still-a-profile.md)). Both
 profile kinds ship whenever one frame of the workload's own code appears
@@ -621,9 +639,10 @@ report one.
   re-reads the current version and is therefore the same or newer, never older.
   Snapshots have the same aggregate shape as any rollup; they do not relax §9
   (no raw time series).
-- **A journal window says whether it is finished.** `container_restarts`,
-  `pod_disruptions`, `node_lifecycle` and `job_runs` have one payload shape open
-  or closed and no separate closed-window kind, so each carries `captured_at`,
+- **A windowed journal payload says whether it is finished.**
+  `container_restarts`, `pod_disruptions`, `node_lifecycle`, `job_runs` and
+  `goroutine_counts` have one payload shape open or closed and no separate
+  closed-window kind, so each carries `captured_at`,
   the instant the agent wrote it. `captured_at` **at or after**
   `window_start + window_seconds` means the window is final; earlier means it is
   a slice of a window still open and a later delivery will replace it
@@ -673,7 +692,7 @@ between them.
 
 | Cadence | Kinds |
 |---|---|
-| every minute, unconditionally | `collection_coverage`, `usage_snapshot`, `container_restarts`, `pod_disruptions`, `job_runs`, `node_lifecycle`, `process_counters` |
+| every minute, unconditionally | `collection_coverage`, `usage_snapshot`, `container_restarts`, `pod_disruptions`, `job_runs`, `node_lifecycle`, `process_counters`, `goroutine_counts` |
 | on change; floor 1 min, ceiling 15 min | `node_metadata` |
 | on change; floor 5 min, ceiling 15 min | `workload_metadata`, `workload_revisions`, `workload_policy`, `cluster_policy`, `restart_counters`, `go_inventory`, `process_peaks`, `listening_ports` |
 | when the event happens | `usage_window` and `network_window` (their window closed), `oom_kill`, `go_build`, `ebpf_profile`, `pprof_profile` |
