@@ -38,6 +38,20 @@ func spoolReaderImage() string {
 }
 
 const spoolDir = "/var/spool/runtime-agent"
+
+// nodeScanInterval is the scan interval this test installs on the node, and what
+// the counters' own interval is asserted against. One constant because the two
+// have to agree (ADR 0073 §5 — two numbers that merely agree drift).
+const nodeScanInterval = 15 * time.Second
+
+// scanIntervalSlack is how far under the scan interval a reported interval may
+// fall. `observed_nanos` is the wall-clock gap between two readings of one
+// process, and the two readings sit at different points inside their scan
+// passes, so the gap jitters either side of the interval: 14.981s of a 15s
+// interval, measured. The floor is there to catch an interval of zero or
+// nonsense, which every rate derived from these counters would divide by.
+const scanIntervalSlack = time.Second
+
 const spoolPath = spoolDir + "/go-inventory.json"
 
 const nodeMetadataSpoolPath = spoolDir + "/node-metadata.json"
@@ -122,7 +136,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	installChart(ctx, t, clientset, ns, agentImage, installOptions{
 		profile:     "inventory",
 		spoolReader: true,
-		values:      map[string]any{"node": map[string]any{"scanInterval": "15s"}},
+		values:      map[string]any{"node": map[string]any{"scanInterval": nodeScanInterval.String()}},
 	})
 	controllerPod := waitDeploymentPod(ctx, t, clientset, ns, "controller")
 	t.Logf("controller pod: %s", controllerPod)
@@ -174,6 +188,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 			checkSamplePorts(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkEndpointConfirmed(ctx, t, config, clientset, ns, controllerPod)
 			checkProfilePulled(ctx, t, config, clientset, ns, controllerPod)
+			checkGoroutineCountsRead(ctx, t, config, clientset, ns, controllerPod, rec.ImageDigest)
 			checkNodeArchitecture(ctx, t, config, clientset, ns, controllerPod)
 			checkCoverageReported(ctx, t, config, clientset, ns, controllerPod)
 			checkOptOutRemovesTheRecord(ctx, t, config, clientset, ns, controllerPod)
@@ -528,8 +543,9 @@ func checkSampleCounters(ctx context.Context, t *testing.T, config *rest.Config,
 				}
 				// The interval is what makes the rest a rate, so it must be
 				// real and it must be at least one scan interval.
-				if r.ObservedNanos < int64(20*time.Second) {
-					t.Errorf("observed_nanos = %d, want at least one scan interval", r.ObservedNanos)
+				if r.ObservedNanos < int64(nodeScanInterval-scanIntervalSlack) {
+					t.Errorf("observed_nanos = %d, want about the %s scan interval this test installs",
+						r.ObservedNanos, nodeScanInterval)
 				}
 				if r.Processes < 1 {
 					t.Errorf("processes = %d, want the one that had a delta", r.Processes)
@@ -711,6 +727,166 @@ func readPulledProfile(ctx context.Context, t *testing.T, config *rest.Config, c
 		return nil, false
 	}
 	return p, true
+}
+
+// checkGoroutineCountsRead asserts that the sample's goroutine count was read
+// off its own `/debug/pprof` index page, accumulated, and spooled as a *series*
+// rather than a value (ADR 0080).
+//
+// Two samples is the assertion that matters: one reading proves the parser, and
+// only a second proves what the kind exists for, since no single count is a
+// finding. It also shows the reading repeats, which is the part of the promise
+// in security.md §10.3 that one fetch cannot.
+func checkGoroutineCountsRead(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod, digest string) {
+	t.Helper()
+	// The reading is on the minute and so is the flush, so a second sample is two
+	// passes away — and by the time this runs the profile pull above has already
+	// waited out a five-minute round, so the series is normally there on the
+	// first poll. The margin is for a cluster slow to confirm the endpoint.
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		if rec, ok := readSampleGoroutineRecord(ctx, t, config, cs, ns, pod); ok && len(rec.Samples) >= 2 {
+			if rec.Container != "goworkload" {
+				t.Errorf("container = %q, want goworkload", rec.Container)
+			}
+			if rec.Workload.Kind != "Deployment" || rec.Workload.Name != "goworkload" {
+				t.Errorf("workload = %s/%s, want Deployment/goworkload", rec.Workload.Kind, rec.Workload.Name)
+			}
+			// The pod, not the build: a count belongs to one process, and this is
+			// the one payload of the pprof funnel that says which (ADR 0080 §3).
+			if !strings.HasPrefix(rec.Pod, "goworkload-") {
+				t.Errorf("pod = %q, want a replica of the sample Deployment", rec.Pod)
+			}
+			if rec.ImageDigest != digest {
+				t.Errorf("image_digest = %q, want %q", rec.ImageDigest, digest)
+			}
+			for i, sample := range rec.Samples {
+				if sample.Goroutines <= 0 {
+					t.Errorf("sample %d reports %d goroutines; a live Go process runs at least one",
+						i, sample.Goroutines)
+				}
+				if sample.At.IsZero() {
+					t.Errorf("sample %d carries no instant; a count without one is not a series", i)
+				}
+			}
+			if !rec.Samples[0].At.Before(rec.Samples[1].At) {
+				t.Errorf("samples are not in time order: %v then %v", rec.Samples[0].At, rec.Samples[1].At)
+			}
+			t.Logf("goroutine series for %s: %d samples, %d then %d goroutines",
+				rec.Pod, len(rec.Samples), rec.Samples[0].Goroutines, rec.Samples[1].Goroutines)
+			checkGoroutineCoverageReported(ctx, t, config, cs, ns, pod)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("no goroutine_counts window ever held two readings of the sample; " +
+				"the sample serves the index page those come from")
+			return
+		}
+		time.Sleep(15 * time.Second)
+	}
+}
+
+// goroutineRecord mirrors the record shape internal/journal writes, narrowed to
+// what this test asserts.
+type goroutineRecord struct {
+	Namespace string `json:"namespace"`
+	Pod       string `json:"pod"`
+	Container string `json:"container"`
+	Workload  struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	} `json:"workload"`
+	ImageDigest string `json:"image_digest"`
+	Samples     []struct {
+		At         time.Time `json:"at"`
+		Goroutines int64     `json:"goroutines"`
+	} `json:"samples"`
+}
+
+// readSampleGoroutineRecord finds the open goroutine-counts window in the spool
+// and returns the sample workload's record from it. The name is
+// goroutine-counts-<start>-<seconds> (internal/sink): one file per window
+// holding every process, so the workload is found in the records and not in the
+// filename.
+func readSampleGoroutineRecord(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) (goroutineRecord, bool) {
+	t.Helper()
+	listing, ok := execSpoolReader(ctx, t, config, cs, ns, pod, []string{"ls", spoolDir})
+	if !ok {
+		return goroutineRecord{}, false
+	}
+	name := ""
+	for _, line := range strings.Fields(listing) {
+		if strings.HasPrefix(line, "goroutine-counts-") && strings.HasSuffix(line, ".json") {
+			name = line
+			break
+		}
+	}
+	if name == "" {
+		return goroutineRecord{}, false
+	}
+	raw, ok := execSpoolReader(ctx, t, config, cs, ns, pod, []string{"cat", spoolDir + "/" + name})
+	if !ok {
+		return goroutineRecord{}, false
+	}
+	var payload struct {
+		Kind          string            `json:"kind"`
+		Source        string            `json:"source"`
+		CapturedAt    time.Time         `json:"captured_at"`
+		WindowStart   time.Time         `json:"window_start"`
+		WindowSeconds int64             `json:"window_seconds"`
+		Records       []goroutineRecord `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Logf("goroutine window %s not valid JSON yet (will retry): %v", name, err)
+		return goroutineRecord{}, false
+	}
+	if payload.Kind != "goroutine_counts" || payload.Source != "measured" {
+		t.Errorf("kind/source = %q/%q, want goroutine_counts/measured", payload.Kind, payload.Source)
+	}
+	// An open window says so by being stamped before its own end (ADR 0078).
+	if payload.CapturedAt.IsZero() {
+		t.Error("the window carries no capture instant; nothing could tell it from a final one")
+	}
+	if payload.WindowSeconds != 3600 {
+		t.Errorf("window_seconds = %d, want the usage window's 3600", payload.WindowSeconds)
+	}
+	for _, rec := range payload.Records {
+		if rec.Namespace == ns && rec.Container == "goworkload" {
+			return rec, true
+		}
+	}
+	return goroutineRecord{}, false
+}
+
+// checkGoroutineCoverageReported asserts the report says the readings happened.
+// A workload with no series and a broken reader must not look the same
+// (ADR 0080 §6).
+func checkGoroutineCoverageReported(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, coverageSpoolPath)
+	if !ok {
+		t.Error("the coverage payload could not be read")
+		return
+	}
+	var payload struct {
+		GoroutineCounts struct {
+			Sampled     int `json:"sampled"`
+			Unreachable int `json:"unreachable"`
+			Unreadable  int `json:"unreadable"`
+		} `json:"goroutine_counts"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("coverage payload not valid JSON: %v", err)
+	}
+	if payload.GoroutineCounts.Sampled < 2 {
+		t.Errorf("coverage reports %d readings, want the ones that produced the series",
+			payload.GoroutineCounts.Sampled)
+	}
+	if payload.GoroutineCounts.Unreadable > 0 {
+		t.Errorf("coverage reports %d unreadable answers; the sample serves the pprof index",
+			payload.GoroutineCounts.Unreadable)
+	}
+	t.Logf("goroutine count coverage: %+v", payload.GoroutineCounts)
 }
 
 // checkSampleBuild asserts that the build payload for the sample reached the
