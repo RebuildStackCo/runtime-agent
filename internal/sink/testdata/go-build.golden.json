@@ -30,7 +30,12 @@
   },
   "godebug": {
     "containermaxprocs": "0",
-    "updatemaxprocs": "0"
+    "execerrdot": "0",
+    "rsa1024min": "0",
+    "tls10server": "1",
+    "tlsrsakex": "1",
+    "updatemaxprocs": "0",
+    "x509negativeserial": "1"
   },
   "pprof_endpoint": true
 }

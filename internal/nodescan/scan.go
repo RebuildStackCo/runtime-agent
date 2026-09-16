@@ -378,14 +378,35 @@ func buildSettings(info *buildinfo.BuildInfo) map[string]string {
 }
 
 // goDebugAllowList is the exhaustive set of GODEBUG names kept out of the
-// compound `DefaultGODEBUG` build setting. Both decide how the runtime sizes
-// GOMAXPROCS against the cgroup's CPU quota, both hold "0" or "1", and both
-// changed their default in Go 1.25 — so a binary's behaviour here follows from
-// the main module's `go` directive, not from the toolchain that built it
-// (ADR 0050).
+// compound `DefaultGODEBUG` build setting. Two decide how the runtime sizes
+// GOMAXPROCS against the cgroup's CPU quota (ADR 0050); the rest each gate a
+// security property the toolchain tightened (ADR 0081). Every name holds "0"
+// or "1" and was chosen by the toolchain from a fixed vocabulary, which is
+// ADR 0019's test for this list. Which of the two values is the weak one
+// differs by name and is not encoded here: the agent ships the pair, and what
+// the pair means is a judgement made outside the cluster.
 var goDebugAllowList = map[string]struct{}{
+	// How the runtime sizes GOMAXPROCS, and whether it follows a resize.
 	"containermaxprocs": {},
 	"updatemaxprocs":    {},
+
+	// Transport and certificate handling.
+	"tls10server":        {}, // TLS 1.0 accepted by servers
+	"tls3des":            {}, // 3DES cipher suites offered
+	"tlsrsakex":          {}, // RSA key exchange offered, so no forward secrecy
+	"tlssha1":            {}, // SHA-1 handshake signatures accepted
+	"tlsunsafeekm":       {}, // keying material exported without extended master secret
+	"x509negativeserial": {}, // certificates with negative serial numbers parsed
+
+	// Key strength and the source of randomness.
+	"rsa1024min":       {}, // RSA keys under 1024 bits accepted
+	"cryptocustomrand": {}, // crypto/rand.Reader may be replaced by the program
+
+	// Parsers that accept what a stricter one rejects.
+	"httplaxcontentlength": {}, // invalid Content-Length headers accepted
+	"tarinsecurepath":      {}, // tar entries with absolute or ".." paths returned
+	"zipinsecurepath":      {}, // zip entries with absolute or ".." paths returned
+	"execerrdot":           {}, // programs found via a relative PATH entry executed
 }
 
 // maxGoDebugValue bounds a kept value. Every allowed name holds a single digit;

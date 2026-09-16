@@ -415,15 +415,20 @@ absence is the common case and MUST NOT be surfaced as missing data or as a
 coverage gap. The whole `settings` object is omitted when nothing was kept.
 
 **`go_build.godebug` is read together with `go_build.go_version`, never alone**
-([ADR 0050](adr/0050-godebug-defaults-are-a-build-fact.md)). It carries at most
-two names, `containermaxprocs` and `updatemaxprocs`, and only when the build
-deviates from the defaults of the toolchain that produced it. An absent name
-therefore MUST NOT be read as `0`: it means the build takes its toolchain's
-default, and which default that is follows from `go_version` — from Go 1.25 both
-are on, before it neither exists. The object is omitted when the build deviates
-in nothing. A `GODEBUG` variable in `workload_metadata.runtime_env` overrides
-both at startup; it is a fact about a workload, this is a fact about a build, and
-the backend MUST NOT merge them into one value.
+([ADR 0050](adr/0050-godebug-defaults-are-a-build-fact.md),
+[ADR 0081](adr/0081-a-weakened-default-is-a-build-fact.md)). It carries at most
+fourteen names, each `0` or `1`, and only those the build deviates from its
+toolchain in; the object is omitted when it deviates in nothing. An absent name
+MUST NOT be read as `0`: for the eleven whose default changed with a Go release
+it means the build takes its toolchain's own, and which that is follows from
+`go_version`; for `tarinsecurepath`, `zipinsecurepath` and `execerrdot` no
+release supplies a default, so absence means only that no `//go:debug` line set
+them. **Which of the two values is the weakening one differs by name**, and the
+backend MUST NOT assume `1` means weak — `tls10server=1` and `rsa1024min=0` each
+hold a security default at its pre-tightening value. A `GODEBUG` variable in
+`workload_metadata.runtime_env` overrides a compiled default at startup; it is a
+fact about a workload, this is a fact about a build, and the backend MUST NOT
+merge them into one value.
 
 **`collection_coverage` is how the backend knows an empty report is empty rather
 than broken** ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)).

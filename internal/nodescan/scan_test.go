@@ -233,9 +233,9 @@ func realWorldSettings() []debug.BuildSetting {
 		{Key: "vcs.revision", Value: "a5edd4b28e4f6d042bb29b6fe5f8c7970a0f6485"},
 		{Key: "vcs.time", Value: "2026-08-21T20:13:54Z"},
 		{Key: "vcs.modified", Value: "true"},
-		// What a main module still on `go 1.21` gets from a current toolchain:
-		// six names, only two of which decide anything about resources.
-		{Key: "DefaultGODEBUG", Value: "asynctimerchan=1,containermaxprocs=0,gotypesalias=0,httplaxcontentlength=1,tls3des=1,updatemaxprocs=0"},
+		// What a main module still on `go 1.21` gets from a current toolchain,
+		// measured on go1.26.7: 30 names in 502 characters.
+		{Key: "DefaultGODEBUG", Value: goDirective121},
 	}
 }
 
@@ -299,9 +299,53 @@ func TestBuildSettingsOfAnUnstampedBinaryIsNil(t *testing.T) {
 	}
 }
 
+// goDirective121 is the DefaultGODEBUG a main module declaring `go 1.21` gets,
+// copied from a binary built by go1.26.7 rather than composed here: the point of
+// the allow-list is what the toolchain actually emits.
+const goDirective121 = "asynctimerchan=1,containermaxprocs=0,cryptocustomrand=1," +
+	"decoratemappings=0,gotestjsonbuildtext=1,gotypesalias=0,httpcookiemaxnum=0," +
+	"httplaxcontentlength=1,httpmuxgo121=1,httpservecontentkeepheaders=1," +
+	"multipathtcp=0,randseednop=0,rsa1024min=0,tls10server=1,tls3des=1,tlsmlkem=0," +
+	"tlsrsakex=1,tlssecpmlkem=0,tlssha1=1,tlsunsafeekm=1,updatemaxprocs=0," +
+	"urlmaxqueryparams=0,urlstrictcolons=0,winreadlinkvolume=0,winsymlink=0," +
+	"x509keypairleaf=0,x509negativeserial=1,x509rsacrt=0,x509sha256skid=0," +
+	"x509usepolicies=0"
+
 func TestGoDebugDefaultsKeepsOnlyTheAllowList(t *testing.T) {
 	got := goDebugDefaults(&buildinfo.BuildInfo{Settings: realWorldSettings()})
-	want := map[string]string{"containermaxprocs": "0", "updatemaxprocs": "0"}
+	want := map[string]string{
+		"containermaxprocs":    "0",
+		"updatemaxprocs":       "0",
+		"cryptocustomrand":     "1",
+		"httplaxcontentlength": "1",
+		"rsa1024min":           "0",
+		"tls10server":          "1",
+		"tls3des":              "1",
+		"tlsrsakex":            "1",
+		"tlssha1":              "1",
+		"tlsunsafeekm":         "1",
+		"x509negativeserial":   "1",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("goDebugDefaults = %v, want %v", got, want)
+	}
+}
+
+// An old `go` directive weakens a build without anyone choosing it, and a
+// `//go:debug` directive is someone choosing it. The three names below have no
+// version-dependent default, so they reach a binary only the second way — which
+// is why a build carrying them says more than one that merely lags (ADR 0081).
+func TestTheNamesThatOnlyADirectiveCanSet(t *testing.T) {
+	for _, name := range []string{"execerrdot", "tarinsecurepath", "zipinsecurepath"} {
+		if _, allowed := goDebugAllowList[name]; !allowed {
+			t.Errorf("%s is not on the GODEBUG allow-list", name)
+		}
+	}
+	got := goDebugDefaults(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+		// Measured on go1.26.7 from a `go 1.26` module carrying the directives.
+		{Key: "DefaultGODEBUG", Value: "execerrdot=1,tarinsecurepath=1,tlsrsakex=1"},
+	}})
+	want := map[string]string{"execerrdot": "1", "tarinsecurepath": "1", "tlsrsakex": "1"}
 	if !maps.Equal(got, want) {
 		t.Errorf("goDebugDefaults = %v, want %v", got, want)
 	}

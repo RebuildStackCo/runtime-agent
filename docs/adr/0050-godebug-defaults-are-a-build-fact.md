@@ -6,6 +6,8 @@ Status: Accepted
 
 Amends: 0019, 0047
 
+Amended by: 0081
+
 Adds two allow-listed GODEBUG defaults to `go_build`, parsed out of the compound
 `DefaultGODEBUG` build setting. Corrects [ADR 0047](0047-runtime-knobs-are-named-and-kept.md)'s
 Context, which states a runtime behaviour that stopped being universal in Go 1.25.

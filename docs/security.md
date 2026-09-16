@@ -775,13 +775,18 @@ the filter-early rule there, before any record is formed.
 | `vcs.time` | that commit's timestamp (not the build time — Go does not record it) |
 | `vcs.modified` | whether the working tree was dirty |
 
-Two GODEBUG defaults are read out of the toolchain's compound `DefaultGODEBUG`
-setting and shipped as `godebug`
-([ADR 0050](adr/0050-godebug-defaults-are-a-build-fact.md)): `containermaxprocs`
-and `updatemaxprocs`, each `0` or `1`, which say whether the binary's runtime
-sizes `GOMAXPROCS` from the container's CPU quota. The compound value is parsed,
-never shipped whole: the rest of what it carries is TLS, HTTP and type-checker
-switches, and none of it is collected.
+Fourteen GODEBUG defaults are read out of the toolchain's compound
+`DefaultGODEBUG` setting and shipped as `godebug`
+([ADR 0050](adr/0050-godebug-defaults-are-a-build-fact.md),
+[ADR 0081](adr/0081-a-weakened-default-is-a-build-fact.md)), each `0` or `1`, and
+each a name the toolchain chose rather than a value anyone typed.
+`containermaxprocs` and `updatemaxprocs` say whether the runtime sizes
+`GOMAXPROCS` from the container's CPU quota. The other twelve each say whether
+the build holds one security default at its pre-tightening value: `tls10server`,
+`tls3des`, `tlsrsakex`, `tlssha1`, `tlsunsafeekm`, `x509negativeserial`,
+`rsa1024min`, `cryptocustomrand`, `httplaxcontentlength`, `tarinsecurepath`,
+`zipinsecurepath` and `execerrdot`. The compound value is parsed, never shipped
+whole, and the names outside this list are not collected.
 
 Everything outside it is discarded on the node, including **`-ldflags`,
 `-gcflags`, `-asmflags` and `-tags`** — free-form flags that routinely carry
