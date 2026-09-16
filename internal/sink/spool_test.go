@@ -917,11 +917,18 @@ func fixedBuild() inventory.BuildFacts {
 			"vcs.time":     "2026-08-21T20:13:54Z",
 		},
 		// A go1.26 toolchain over a main module still on an older `go`
-		// directive, which is the only combination that puts these two in the
-		// payload at all (ADR 0050 §2).
+		// directive, which is the only combination that puts the resource pair
+		// in the payload at all (ADR 0050 §2). The security names ride the same
+		// way, and `execerrdot` the other way: no `go` directive sets it, so it
+		// is here only because a `//go:debug` line asked for it (ADR 0081).
 		GoDebug: map[string]string{
-			"containermaxprocs": "0",
-			"updatemaxprocs":    "0",
+			"containermaxprocs":  "0",
+			"updatemaxprocs":     "0",
+			"tls10server":        "1",
+			"tlsrsakex":          "1",
+			"x509negativeserial": "1",
+			"rsa1024min":         "0",
+			"execerrdot":         "0",
 		},
 		HasPprof: true,
 	}

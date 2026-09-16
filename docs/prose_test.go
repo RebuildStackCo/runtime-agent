@@ -36,16 +36,20 @@ var ceilings = []struct {
 }{
 	// Each raise names the obligation that bought it. Payloads now leave the
 	// cluster at all (ADR 0075); a journal window states when it was written
-	// (ADR 0078); and a new kind ships while the connection that confirmed an
+	// (ADR 0078); a new kind ships while the connection that confirmed an
 	// endpoint once per image now repeats once a minute per process, which is
-	// not the promise that was made about a single request (ADR 0080).
-	{"security.md", 1111, 360},
+	// not the promise made about a single request (ADR 0080); and twelve more
+	// GODEBUG names are read out of the build, on a second axis from the two
+	// the promise named before (ADR 0081).
+	{"security.md", 1116, 361},
 	// Each raise names its obligation here too. The request body is encoded, so
 	// the implementer must decode it and stop reading a payload's size off the
 	// request (ADR 0076); a journal window states whether it is finished
-	// (ADR 0078); and a new kind arrives whose samples are gauges, where the
-	// obvious ingest — adding them up — is the wrong one (ADR 0080).
-	{"backend-requirements.md", 794, 623},
+	// (ADR 0078); a new kind arrives whose samples are gauges, where the obvious
+	// ingest — adding them up — is the wrong one (ADR 0080); and `godebug` now
+	// carries names where neither value is the safe one by convention, so `1`
+	// may not be read as the weak setting (ADR 0081).
+	{"backend-requirements.md", 799, 628},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {
