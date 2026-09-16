@@ -56,6 +56,13 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
+          # No analysis cache. On 2026-09-16 a restored one reported six
+          # SA5011 findings in files the branch did not touch, twice, on a
+          # tree byte-identical to a passing main; a cold run found none.
+          # Seeing that `t.Fatal` does not return takes knowledge of the
+          # testing package that a partial cache drops. 24s a run buys the
+          # whole class of false red.
+          skip-cache: true
 
   proto:
     name: Payload schema (buf)
