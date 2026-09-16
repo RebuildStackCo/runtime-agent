@@ -539,7 +539,7 @@ func TestADeliveryResetsTheBackoff(t *testing.T) {
 // No default, and an absent backend is the behaviour of every installation that
 // existed before there was a shipper.
 func TestAnAgentWithNoBackendHasNoShipper(t *testing.T) {
-	if s := New("", t.TempDir(), discardLogger()); s != nil {
+	if s := New("", t.TempDir(), "1.4.2", discardLogger()); s != nil {
 		t.Errorf("New returned %v for an empty base URL", s)
 	}
 }
@@ -569,7 +569,7 @@ func TestTheKindsTheSinkWritesAreTheKindsTheEndpointNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := New(backend.URL, dir, discardLogger())
+	s := New(backend.URL, dir, "1.4.2", discardLogger())
 	s.Round(t.Context())
 
 	want := map[string]bool{
@@ -705,7 +705,7 @@ func TestAHaltedShipperRunsNoFinalRound(t *testing.T) {
 func newShipper(t *testing.T, base string) (*Shipper, string) {
 	t.Helper()
 	dir := t.TempDir()
-	s := New(base, dir, discardLogger())
+	s := New(base, dir, "1.4.2", discardLogger())
 	if s == nil {
 		t.Fatalf("New returned nil for base %q", base)
 	}
@@ -772,3 +772,65 @@ func waitFor(t *testing.T, what string, done func() bool) {
 }
 
 func int64Len[T any](m map[string]T) uint64 { return uint64(len(m)) }
+
+func TestUserAgentStatesTheBuild(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{"a stamped version", "1.4.2", "runtime-agent/1.4.2"},
+		{"what an unstamped build carries", "dev", "runtime-agent/dev"},
+		{"a describe of an untagged commit", "v1.4.2-3-gb3691ed-dirty", "runtime-agent/v1.4.2-3-gb3691ed-dirty"},
+		{"semantic build metadata", "1.4.2+build.5", "runtime-agent/1.4.2+build.5"},
+		// A tag this repository does not control may hold anything. None of
+		// these is stated as a version; the product is named and nothing is
+		// claimed about which build it is (ADR 0083 §2).
+		{"a tag with a path separator", "release/1.4", "runtime-agent"},
+		{"a tag with a space", "1.4.2 beta", "runtime-agent"},
+		{"a header injected through a tag", "1.4.2\r\nX-Scope: acme", "runtime-agent"},
+		{"past the bound", strings.Repeat("9", maxVersion+1), "runtime-agent"},
+		{"no version at all", "", "runtime-agent"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := userAgent(c.version); got != c.want {
+				t.Errorf("userAgent(%q) = %q, want %q", c.version, got, c.want)
+			}
+		})
+	}
+}
+
+// The header has to reach the wire, not merely be computed: what a reader of
+// the request sees is the whole point of stating it there (ADR 0083).
+func TestEveryRequestCarriesTheUserAgent(t *testing.T) {
+	var seen []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("User-Agent"))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer backend.Close()
+
+	dir := t.TempDir()
+	spool, err := sink.NewSpool(dir, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.WriteOOMKill(model.OOMKill{
+		Namespace: "shop", Pod: "web-0", Container: "app",
+		FinishedAt: time.Unix(1, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	New(backend.URL, dir, "1.4.2", discardLogger()).Round(t.Context())
+
+	if len(seen) == 0 {
+		t.Fatal("the backend saw no request at all")
+	}
+	for _, ua := range seen {
+		if ua != "runtime-agent/1.4.2" {
+			t.Errorf("User-Agent = %q, want runtime-agent/1.4.2", ua)
+		}
+	}
+}

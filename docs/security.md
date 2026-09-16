@@ -514,6 +514,11 @@ minutes; the rest leave every minute, or when the event they record happens
 belong to the agent version you installed — nothing outside your cluster can
 raise them, and nothing can ask for data sooner.
 
+Every request the agent makes names itself: `User-Agent: runtime-agent/<version>`
+([ADR 0083](adr/0083-the-agent-names-itself-in-the-request.md)). That version is
+the same string the `collection_coverage` payload below carries, so this adds
+nothing to what leaves your cluster.
+
 | Payload | What it carries | Names pods? |
 |---|---|---|
 | `collection_coverage` | What the agent did rather than what it found: how many pods and Jobs it observed, how many each of your four controls excluded, how many placement terms the reduction dropped, what the node scanners walked and skipped, which of the agent's reads worked, how many node reports it refused and for which of three reasons, how many pprof endpoints it confirmed and how many it could not, how many profiles it pulled and how many workloads declined to start one, how many capture windows the node profilers cut and what became of them — including how many of your nodes are not profiling at all and why ([ADR 0060](adr/0060-the-node-says-what-its-profiler-did.md)) — its version, and the shape of your configuration. **Aggregate counts only — no name of anything you excluded appears here or anywhere else** ([ADR 0054](adr/0054-coverage-says-how-much-was-hidden-never-what.md)) | no |

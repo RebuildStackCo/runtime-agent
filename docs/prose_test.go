@@ -36,21 +36,21 @@ var ceilings = []struct {
 }{
 	// Each raise names the obligation that bought it. Payloads now leave the
 	// cluster at all (ADR 0075); a journal window states when it was written
-	// (ADR 0078); a new kind ships while the connection that confirmed an
-	// endpoint once per image now repeats once a minute per process, which is
-	// not the promise made about a single request (ADR 0080); and twelve more
-	// GODEBUG names are read out of the build, on a second axis from the two
-	// the promise named before (ADR 0081).
-	{"security.md", 1116, 361},
+	// (ADR 0078); a connection that confirmed an endpoint once per image now
+	// repeats once a minute per process (ADR 0080); twelve more GODEBUG names
+	// are read out of the build, on a second axis from the two the promise
+	// named before (ADR 0081); and every request now names the agent that made
+	// it (ADR 0083).
+	{"security.md", 1121, 366},
 	// Each raise names its obligation here too. The body is encoded, so a
-	// payload's size is no longer the request's (ADR 0076); a journal window
-	// states whether it is finished (ADR 0078); gauge samples arrive, where
-	// adding them up is the wrong ingest (ADR 0080); `godebug` carries names
-	// where neither value is safe by convention (ADR 0081); the filter counters
-	// count decisions, so adding them recovers no pod count; and a port's
-	// `pprof` is absent when nothing asked, which is not the claim `absent`
-	// makes (ADR 0082).
-	{"backend-requirements.md", 815, 644},
+	// payload's size is no longer the request's (ADR 0076); a window states
+	// whether it is finished (ADR 0078); gauge samples arrive, where adding
+	// them up is the wrong ingest (ADR 0080); `godebug` carries names where
+	// neither value is safe (ADR 0081); the filter counters count decisions
+	// (ADR 0054); a port's `pprof` is absent when nothing asked, not `absent`
+	// (ADR 0082); and a request may name an agent that states no version
+	// (ADR 0083).
+	{"backend-requirements.md", 823, 644},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {
