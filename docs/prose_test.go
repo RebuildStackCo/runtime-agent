@@ -42,14 +42,15 @@ var ceilings = []struct {
 	// GODEBUG names are read out of the build, on a second axis from the two
 	// the promise named before (ADR 0081).
 	{"security.md", 1116, 361},
-	// Each raise names its obligation here too. The request body is encoded, so
-	// the implementer must decode it and stop reading a payload's size off the
-	// request (ADR 0076); a journal window states whether it is finished
-	// (ADR 0078); a new kind arrives whose samples are gauges, where the obvious
-	// ingest — adding them up — is the wrong one (ADR 0080); `godebug` carries
-	// names where neither value is safe by convention (ADR 0081); and the filter
-	// counters count decisions, so adding them no longer recovers a pod count.
-	{"backend-requirements.md", 806, 635},
+	// Each raise names its obligation here too. The body is encoded, so a
+	// payload's size is no longer the request's (ADR 0076); a journal window
+	// states whether it is finished (ADR 0078); gauge samples arrive, where
+	// adding them up is the wrong ingest (ADR 0080); `godebug` carries names
+	// where neither value is safe by convention (ADR 0081); the filter counters
+	// count decisions, so adding them recovers no pod count; and a port's
+	// `pprof` is absent when nothing asked, which is not the claim `absent`
+	// makes (ADR 0082).
+	{"backend-requirements.md", 815, 644},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

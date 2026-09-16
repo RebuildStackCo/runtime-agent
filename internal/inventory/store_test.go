@@ -684,7 +684,7 @@ func TestPortsMergeAcrossReplicasAndNodes(t *testing.T) {
 	if len(ports) != 1 {
 		t.Fatalf("ports = %+v, want one record", ports)
 	}
-	want := []nodescan.ListeningPort{{Port: 6060}, {Port: 8080}, {Port: 9090}}
+	want := []Port{{Port: 6060}, {Port: 8080}, {Port: 9090}}
 	if !reflect.DeepEqual(ports[0].Ports, want) {
 		t.Errorf("ports = %+v, want %+v (6060 is reachable on node-2)", ports[0].Ports, want)
 	}
@@ -710,7 +710,7 @@ func TestAPortDoesNotOutliveTheProcessThatBoundIt(t *testing.T) {
 	if len(ports) != 1 {
 		t.Fatalf("ports = %+v, want one record", ports)
 	}
-	if want := []nodescan.ListeningPort{{Port: 8080}}; !reflect.DeepEqual(ports[0].Ports, want) {
+	if want := []Port{{Port: 8080}}; !reflect.DeepEqual(ports[0].Ports, want) {
 		t.Errorf("ports = %+v, want %+v (6060 was not in the latest report)", ports[0].Ports, want)
 	}
 }

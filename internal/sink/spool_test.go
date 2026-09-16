@@ -835,8 +835,8 @@ func fixedPorts() []inventory.PortRecord {
 				ImageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 			},
 			AssertedAt: capturedAt.Add(-30 * time.Second),
-			Ports: []nodescan.ListeningPort{
-				{Port: 8080},
+			Ports: []inventory.Port{
+				{Port: 8080, Pprof: "confirmed"},
 				{Port: 6060, Loopback: true},
 			},
 		},
@@ -848,7 +848,7 @@ func fixedPorts() []inventory.PortRecord {
 				},
 			},
 			AssertedAt: capturedAt.Add(-time.Hour),
-			Ports:      []nodescan.ListeningPort{{Port: 5432}},
+			Ports:      []inventory.Port{{Port: 5432, Pprof: "absent"}},
 		},
 	}
 }

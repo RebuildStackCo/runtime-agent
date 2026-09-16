@@ -366,6 +366,10 @@ func checkTheOptOutIsCounted(ctx context.Context, t *testing.T, config *rest.Con
 			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 				t.Fatalf("collection_coverage payload not valid JSON: %v", err)
 			}
+			// At least one, never exactly one: the counter is a cluster-wide
+			// aggregate carrying no identity (ADR 0054), so a pod excluded in
+			// some other namespace counts here too — an abandoned run's pod
+			// does, and was measured doing so.
 			if n := payload.Filter.ExcludedPodAnnotation; n >= 1 {
 				t.Logf("coverage explains the departure: excluded_pod_annotation = %d", n)
 				return
@@ -376,6 +380,55 @@ func checkTheOptOutIsCounted(ctx context.Context, t *testing.T, config *rest.Con
 				"the backend cannot tell an opt-out from a deletion")
 		}
 		time.Sleep(5 * time.Second)
+	}
+}
+
+// checkTheConfirmedPortIsNamed asserts the answer reached the port it is about.
+// The sample binds two: 6060 routable and serving the pprof index, 9090 on
+// loopback and never asked. One must say so and the other must stay silent —
+// an empty field is "not asked", never "not pprof" (ADR 0082 §2).
+func checkTheConfirmedPortIsNamed(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	deadline := time.Now().Add(6 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, listeningPortsSpoolPath)
+		if ok {
+			var payload struct {
+				Records []struct {
+					Namespace    string `json:"namespace"`
+					WorkloadName string `json:"workload_name"`
+					Ports        []struct {
+						Port     int    `json:"port"`
+						Loopback bool   `json:"loopback"`
+						Pprof    string `json:"pprof"`
+					} `json:"ports"`
+				} `json:"records"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("listening ports payload not valid JSON: %v", err)
+			}
+			got := map[int]string{}
+			for _, r := range payload.Records {
+				if r.Namespace != ns || r.WorkloadName != "goworkload" {
+					continue
+				}
+				for _, port := range r.Ports {
+					got[port.Port] = port.Pprof
+				}
+			}
+			if got[6060] == "confirmed" {
+				if got[9090] != "" {
+					t.Errorf("port 9090 carries pprof=%q; a loopback port is never asked", got[9090])
+				}
+				t.Logf("listening_ports names the endpoint: %v", got)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Error("listening_ports never marked :6060 confirmed; the coverage counted an endpoint nothing names")
+			return
+		}
+		time.Sleep(10 * time.Second)
 	}
 }
 
@@ -536,6 +589,7 @@ func checkEndpointConfirmed(ctx context.Context, t *testing.T, config *rest.Conf
 			}
 			if payload.Pprof.Confirmed > 0 {
 				t.Logf("endpoint discovery confirmed %d target(s)", payload.Pprof.Confirmed)
+				checkTheConfirmedPortIsNamed(ctx, t, config, cs, ns, pod)
 				return
 			}
 		}

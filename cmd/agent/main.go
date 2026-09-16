@@ -541,8 +541,14 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		// Where those processes accept connections. Structural like the
 		// inventory, and separate from it because it changes without the build
-		// changing (ADR 0056 §3).
-		if err := spool.WriteListeningPorts(time.Now(), goStore.PortSnapshot()); err != nil {
+		// changing (ADR 0056 §3). The prober stamps each port with what its one
+		// request answered, which is the only part of this payload the
+		// controller learned rather than received (ADR 0082).
+		ports := goStore.PortSnapshot()
+		if prober != nil {
+			ports = prober.Stamp(ports)
+		}
+		if err := spool.WriteListeningPorts(time.Now(), ports); err != nil {
 			logger.Error("spooling listening ports", "error", err)
 		}
 		// Build facts are keyed by image digest and immutable for it, so each is
