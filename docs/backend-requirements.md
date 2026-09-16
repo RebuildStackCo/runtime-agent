@@ -87,6 +87,14 @@ The full lifecycle is described in `security.md` §6; the backend obligations:
   ([ADR 0001](adr/0001-one-way-protocol.md)), so the encoding is a property of
   the protocol version in §6 exactly as the cadences in §4 are
   ([ADR 0076](adr/0076-the-payload-travels-encoded.md)).
+- **Every request names the agent that made it.** The agent sends
+  `User-Agent: runtime-agent/<version>`, the same value on every request of a
+  process ([ADR 0083](adr/0083-the-agent-names-itself-in-the-request.md)). The
+  version is at most 64 characters of `A-Za-z0-9.-+_`. A build whose version
+  falls outside that sends `runtime-agent` alone rather than a malformed one, so
+  **a backend MUST NOT require a version**: an agent built before this header
+  existed sends none, and an intermediary may strip one. The same string travels
+  as `collection_coverage.agent.version`, on a different schedule.
 - **The payload is what is encoded, not what is sent.** Everything else in this
   document — sizes, natural keys, supersession, the size ceiling in §5 —
   describes the decoded bytes. A backend MUST apply its own size limits after

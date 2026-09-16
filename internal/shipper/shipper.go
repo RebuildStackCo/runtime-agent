@@ -73,6 +73,9 @@ type Shipper struct {
 	dir    string
 	client *http.Client
 	logger *slog.Logger
+	// agent is what every request says this build is, fixed at construction
+	// because it cannot change while the process runs (ADR 0083).
+	agent string
 
 	// halted latches on an identity failure and never clears: nothing retries
 	// into a rejected credential.
@@ -101,7 +104,7 @@ type Shipper struct {
 
 // New returns a shipper for base, or nil when base is empty — the unconfigured
 // agent, which collects and spools exactly as it always has.
-func New(base, dir string, logger *slog.Logger) *Shipper {
+func New(base, dir, version string, logger *slog.Logger) *Shipper {
 	if base == "" {
 		return nil
 	}
@@ -110,6 +113,7 @@ func New(base, dir string, logger *slog.Logger) *Shipper {
 		dir:    dir,
 		client: &http.Client{Timeout: requestTimeout},
 		logger: logger,
+		agent:  userAgent(version),
 		held:   map[string]os.FileInfo{},
 		// #nosec G404 -- jitter spreads a fleet's retries over a window; it is
 		// not a secret and predicting it buys nothing
@@ -434,6 +438,10 @@ func (s *Shipper) post(ctx context.Context, kind string, body []byte) (int, erro
 	if err != nil {
 		return 0, fmt.Errorf("building request: %w", err)
 	}
+	// What this build is, on every request rather than in a payload: it is a
+	// fact about the sender, and a reader of the request should not have to
+	// open a body to learn it (ADR 0083).
+	req.Header.Set("User-Agent", s.agent)
 	req.Header.Set("Content-Type", "application/json")
 	// Unconditional, never negotiated: the agent cannot ask what the backend
 	// accepts and nothing it answers may change agent behaviour (ADR 0001), so

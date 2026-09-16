@@ -213,7 +213,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// operator named or nowhere at all.
 	var ship *shipper.Shipper
 	if spool != nil {
-		ship = shipper.New(cfg.Backend.BaseURL, cfg.Spool.Dir, logger)
+		ship = shipper.New(cfg.Backend.BaseURL, cfg.Spool.Dir, version, logger)
 	} else if cfg.Backend.BaseURL != "" {
 		// The spool is the queue, so there is nothing to ship from. Said once
 		// here rather than left as a backend that never hears from this agent.
