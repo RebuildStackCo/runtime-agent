@@ -139,3 +139,4 @@ line to paste.
 - [0079. The last pass writes, and then ships what it wrote](0079-the-last-pass-writes-then-ships.md)
 - [0080. The index page already counts the goroutines](0080-the-index-page-already-counts-the-goroutines.md)
 - [0081. A weakened security default is a build fact like any other](0081-a-weakened-default-is-a-build-fact.md)
+- [0082. A confirmed endpoint is named on the port it answered on](0082-a-confirmed-endpoint-is-named-on-its-port.md)

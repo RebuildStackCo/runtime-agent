@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
-	"github.com/RebuildStackCo/runtime-agent/internal/nodescan"
 )
 
 func testProber(t *testing.T, addr Address) *Prober {
@@ -218,14 +217,14 @@ func TestCandidatesAreTheFunnelsOutput(t *testing.T) {
 				Key:         inventory.Key{Namespace: "shop", WorkloadKind: "Deployment", WorkloadName: "web", Container: "app"},
 				ImageDigest: "sha256:linked",
 			},
-			Ports: []nodescan.ListeningPort{{Port: 8080}, {Port: 6060, Loopback: true}},
+			Ports: []inventory.Port{{Port: 8080}, {Port: 6060, Loopback: true}},
 		},
 		{
 			PortKey: inventory.PortKey{
 				Key:         inventory.Key{Namespace: "shop", WorkloadKind: "StatefulSet", WorkloadName: "db", Container: "db"},
 				ImageDigest: "sha256:plain",
 			},
-			Ports: []nodescan.ListeningPort{{Port: 5432}},
+			Ports: []inventory.Port{{Port: 5432}},
 		},
 	}
 	got := Candidates(ports, map[string][]string{"sha256:linked": {"github.com/acme/web"}})
@@ -283,4 +282,57 @@ func hostOf(t *testing.T, url string) string {
 		t.Fatalf("unexpected test server URL %q", url)
 	}
 	return url[len(prefix):]
+}
+
+// The answer is about a build's port, and the join to a record is that pair.
+// Everything else on the record — which workload, which container — plays no
+// part, so two workloads of one image get the same answer from one probe.
+func TestStampWritesTheAnswerOntoTheMatchingPort(t *testing.T) {
+	p := New(func(Candidate) (string, bool) { return "", false }, slog.New(slog.DiscardHandler))
+	p.record(Target{ImageDigest: "sha256:a", Port: 8080}, StateConfirmed)
+	p.record(Target{ImageDigest: "sha256:a", Port: 9090}, StateAbsent)
+	p.record(Target{ImageDigest: "sha256:b", Port: 8080}, StateUnreachable)
+
+	records := []inventory.PortRecord{
+		{
+			PortKey: inventory.PortKey{
+				Key:         inventory.Key{Namespace: "shop", WorkloadName: "web", Container: "app"},
+				ImageDigest: "sha256:a",
+			},
+			// 6060 was never asked about; 8080 and 9090 were.
+			Ports: []inventory.Port{{Port: 8080}, {Port: 9090}, {Port: 6060, Loopback: true}},
+		},
+		{
+			PortKey: inventory.PortKey{
+				Key:         inventory.Key{Namespace: "shop", WorkloadName: "api", Container: "app"},
+				ImageDigest: "sha256:b",
+			},
+			Ports: []inventory.Port{{Port: 8080}},
+		},
+	}
+
+	got := p.Stamp(records)
+	want := [][]string{{"confirmed", "absent", ""}, {"unreachable"}}
+	for i, rec := range got {
+		for j, port := range rec.Ports {
+			if port.Pprof != want[i][j] {
+				t.Errorf("record %d port %d = %q, want %q", i, port.Port, port.Pprof, want[i][j])
+			}
+		}
+	}
+}
+
+// A port the prober never asked about stays empty even when the same port
+// number was answered for another build: the digest is half the key.
+func TestStampDoesNotCarryAnAnswerAcrossBuilds(t *testing.T) {
+	p := New(func(Candidate) (string, bool) { return "", false }, slog.New(slog.DiscardHandler))
+	p.record(Target{ImageDigest: "sha256:a", Port: 8080}, StateConfirmed)
+
+	got := p.Stamp([]inventory.PortRecord{{
+		PortKey: inventory.PortKey{ImageDigest: "sha256:other"},
+		Ports:   []inventory.Port{{Port: 8080}},
+	}})
+	if got[0].Ports[0].Pprof != "" {
+		t.Errorf("pprof = %q for a build nothing was asked about, want empty", got[0].Ports[0].Pprof)
+	}
 }

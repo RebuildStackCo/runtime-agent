@@ -175,6 +175,20 @@ type PortKey struct {
 	ImageDigest string `json:"image_digest,omitempty"`
 }
 
+// Port is one port of one build, as the controller publishes it: what the node
+// observed, plus what the controller established about it afterwards. Distinct
+// from nodescan.ListeningPort, which is what crossed the channel and carries
+// only what a node can know (ADR 0082).
+type Port struct {
+	Port     int  `json:"port"`
+	Loopback bool `json:"loopback,omitempty"`
+	// Pprof is what the prober's one request to this port answered —
+	// "confirmed", "absent" or "unreachable" — and is empty for a port nothing
+	// asked about, which every loopback port is. Empty is "not asked", never
+	// "not pprof" (ADR 0082 §2).
+	Pprof string `json:"pprof,omitempty"`
+}
+
 // PortRecord is what the processes of one workload container, of one build,
 // accept connections on — merged across every replica the agent can see.
 //
@@ -185,7 +199,7 @@ type PortKey struct {
 type PortRecord struct {
 	PortKey
 	// Ports is the union of what the replicas listen on, in port order.
-	Ports []nodescan.ListeningPort `json:"ports"`
+	Ports []Port `json:"ports"`
 	// AssertedAt is the oldest of the contributing nodes' latest reports — the
 	// bound on how current this record is. A node that stopped reporting keeps
 	// contributing what it last stated, so without this the record would be
@@ -915,7 +929,14 @@ func (s *Store) PortSnapshot() []PortRecord {
 		if len(merged) == 0 {
 			continue
 		}
-		out = append(out, PortRecord{PortKey: pk, Ports: merged, AssertedAt: asserted})
+		// Merging stays on the node's own type — it is the node's claim being
+		// reconciled — and the controller's type begins here, where the record
+		// leaves the store.
+		ports := make([]Port, len(merged))
+		for i, m := range merged {
+			ports[i] = Port{Port: m.Port, Loopback: m.Loopback}
+		}
+		out = append(out, PortRecord{PortKey: pk, Ports: ports, AssertedAt: asserted})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Key != out[j].Key {

@@ -614,6 +614,15 @@ addressed from this payload. Records are keyed by image digest as well as
 container and MUST NOT be carried across a rollout; a port absent from the
 latest report is a port no process still binds.
 
+A port MAY carry `pprof`, holding `confirmed`, `absent` or `unreachable` — what
+the agent's one request to that port answered
+([ADR 0082](adr/0082-a-confirmed-endpoint-is-named-on-its-port.md)). **An absent
+`pprof` field means the port was not asked about and MUST NOT be read as
+`absent`**: loopback ports are never asked, nor is any port of a workload the
+profiling opt-out excludes. Only `confirmed` on a port not marked `loopback`
+states that the pprof index answered where another pod could reach it. The value
+is the latest answer and carries no history.
+
 **`workload_policy` Service endpoint counts are per address family and MUST NOT
 be summed across them** ([ADR 0051](adr/0051-topology-routing-is-asked-and-not-granted.md)).
 A dual-stack Service lists each pod once in an IPv4 slice and once in an IPv6

@@ -270,6 +270,29 @@ func (p *Prober) Confirmed(candidates []Candidate) []Candidate {
 	return out
 }
 
+// Stamp writes what the prober established onto each port of each record, and
+// returns the records. The answer is about a build's port — the same
+// {digest, port} pair the prober asked about — so the join is a lookup, not an
+// inference (ADR 0082 §1).
+//
+// A port nothing asked about is left empty rather than marked absent: Candidates
+// drops loopback ports, so "no answer" is the common case and must not read as
+// "not pprof".
+func (p *Prober) Stamp(records []inventory.PortRecord) []inventory.PortRecord {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, rec := range records {
+		for i, port := range rec.Ports {
+			a, ok := p.answers[Target{ImageDigest: rec.ImageDigest, Port: port.Port}]
+			if !ok || a.state == StateUnknown {
+				continue
+			}
+			rec.Ports[i].Pprof = a.state.String()
+		}
+	}
+	return records
+}
+
 // Coverage is what the prober has established, for the collection-coverage
 // payload. Counts only: which workload was asked about is already in the
 // inventory beside it, and which was refused is not a name this reports

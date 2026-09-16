@@ -11,7 +11,8 @@
       "image_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
       "ports": [
         {
-          "port": 8080
+          "port": 8080,
+          "pprof": "confirmed"
         },
         {
           "port": 6060,
@@ -27,7 +28,8 @@
       "container": "db",
       "ports": [
         {
-          "port": 5432
+          "port": 5432,
+          "pprof": "absent"
         }
       ],
       "asserted_at": "2026-08-06T09:12:00Z"
