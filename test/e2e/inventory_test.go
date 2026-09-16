@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -94,6 +95,28 @@ var allowedBuildSettings = map[string]struct{}{
 	"vcs.modified": {},
 }
 
+// warnOnAbandonedNamespaces names the namespaces an earlier run of this suite
+// left behind. A run killed before its cleanup leaves one, and its sample
+// workload keeps running the same image under the same names — which is why
+// every assertion here is scoped by namespace. Said out loud because the pods
+// go on costing the cluster, and because a stray one once read as an agent bug.
+func warnOnAbandonedNamespaces(ctx context.Context, t *testing.T, cs kubernetes.Interface, own string) {
+	t.Helper()
+	list, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return // not worth failing the run over
+	}
+	var stale []string
+	for _, n := range list.Items {
+		if strings.HasPrefix(n.Name, "runtime-agent-inv-e2e-") && n.Name != own {
+			stale = append(stale, n.Name)
+		}
+	}
+	if len(stale) > 0 {
+		t.Logf("abandoned namespaces from earlier runs still in this cluster: %v", stale)
+	}
+}
+
 // TestGoInventoryEndToEnd exercises the whole node→controller inventory path in
 // a real cluster (ADR 0010): a Go workload runs, the node scans it and ships the
 // fact with a projected token, the controller validates it against the cluster
@@ -113,6 +136,7 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	defer cancel()
 
 	ns := fmt.Sprintf("runtime-agent-inv-e2e-%d", os.Getpid())
+	warnOnAbandonedNamespaces(ctx, t, clientset, ns)
 	if _, err := clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: ns},
 	}, metav1.CreateOptions{}); err != nil {
@@ -151,7 +175,8 @@ func TestGoInventoryEndToEnd(t *testing.T) {
 	// reach the spool (ADR 0073).
 	deadline := time.Now().Add(11 * time.Minute)
 	for {
-		if rec, cov, ok := findSampleRecord(ctx, t, config, clientset, ns, controllerPod); ok {
+		if snap := findSampleRecord(ctx, t, config, clientset, ns, controllerPod); snap.Found {
+			rec, cov := snap.Record, snap.Coverage
 			// The payload says how complete it is: the node that scanned this
 			// workload reported, and its facts joined. Without this block an
 			// empty inventory and a fleet that never checked in look identical.
@@ -220,20 +245,85 @@ func checkOptOutRemovesTheRecord(ctx context.Context, t *testing.T, config *rest
 		[]byte(patch), metav1.PatchOptions{}); err != nil {
 		t.Fatalf("annotating %s/%s to opt out: %v", ns, name, err)
 	}
-	t.Logf("opted %s/%s out; waiting for its record to leave the payload", ns, name)
+	annotatedAt := time.Now()
+	t.Logf("opted %s/%s out at %s; waiting for its record to leave the payload",
+		ns, name, annotatedAt.UTC().Format(time.RFC3339))
 
 	// Eviction happens on the controller's flush, so allow several cadences.
 	// Long enough for the change-triggered floor this payload is on (ADR 0073).
 	deadline := time.Now().Add(9 * time.Minute)
+	var last goInventorySnapshot
 	for {
-		if _, _, ok := findSampleRecord(ctx, t, config, cs, ns, controllerPod); !ok {
+		snap := findSampleRecord(ctx, t, config, cs, ns, controllerPod)
+		if !snap.Found {
 			return
 		}
+		// Every rewrite is logged, so the transcript shows whether the payload
+		// is moving at all — the fact that separates the two ways this fails.
+		if snap.CapturedAt.After(last.CapturedAt) {
+			t.Logf("payload rewritten at %s, still carrying the record (facts_joined=%d)",
+				snap.CapturedAt.UTC().Format(time.RFC3339), snap.Coverage.FactsJoined)
+		}
+		last = snap
 		if time.Now().After(deadline) {
-			t.Fatalf("the opted-out workload (%s) was still in the go_inventory payload after 4 minutes", sampleModulePath)
+			// Two probes, because "the record stayed" has two causes with
+			// different severities. workload_metadata is built from the same pod
+			// index the retention pass reads (cmd/agent/main.go), so a workload
+			// still in it means the index never dropped the pod; one absent from
+			// it means the index did, and the break is downstream.
+			_, stillInMetadata := findMetadataRecord(ctx, t, config, cs, ns, controllerPod, "goworkload")
+			forgot, everForgot := controllerForgot(ctx, t, cs, ns, controllerPod)
+			t.Logf("still in workload_metadata: %t; retention pass ever evicted: %t (%s)",
+				stillInMetadata, everForgot, forgot)
+			t.Fatalf("the opted-out workload (%s) was still in the go_inventory payload after %s.\n"+
+				"  annotated at:    %s\n"+
+				"  payload written: %s\n"+
+				"  written after the annotation: %t\n"+
+				"  coverage.facts_joined: %d\n"+
+				"A payload older than the annotation says only that the kind's floor outran this "+
+				"deadline, and the record's fate is unknown. A payload newer than it says the record "+
+				"survived eviction, which is the promise of security.md §11 broken.",
+				sampleModulePath, time.Since(annotatedAt).Truncate(time.Second),
+				annotatedAt.UTC().Format(time.RFC3339),
+				last.CapturedAt.UTC().Format(time.RFC3339),
+				last.CapturedAt.After(annotatedAt), last.Coverage.FactsJoined)
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// controllerForgot reports the last retention pass the controller logged, if it
+// logged one. That line is the only place the forget half of ADR 0018 is visible
+// from outside the payload, and its absence says the pass never evicted
+// anything — which separates a record that was never dropped from one that was
+// dropped and came back.
+func controllerForgot(ctx context.Context, t *testing.T, cs kubernetes.Interface, ns, pod string) (string, bool) {
+	t.Helper()
+	stream, err := cs.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{}).Stream(ctx)
+	if err != nil {
+		t.Logf("getting logs for %s: %v", pod, err)
+		return "", false
+	}
+	defer func() { _ = stream.Close() }()
+	var last string
+	sc := bufio.NewScanner(stream)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		var l struct {
+			Msg     string `json:"msg"`
+			Records int    `json:"records"`
+			Builds  int    `json:"builds"`
+			Peaks   int    `json:"peaks"`
+			Ports   int    `json:"ports"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
+			continue
+		}
+		if l.Msg == "go inventory forgot departed workloads" {
+			last = fmt.Sprintf("records=%d builds=%d peaks=%d ports=%d", l.Records, l.Builds, l.Peaks, l.Ports)
+		}
+	}
+	return last, last != ""
 }
 
 // goInventoryRecord mirrors one record of the go_inventory payload.
@@ -256,33 +346,51 @@ type inventoryCoverage struct {
 	FactsJoined   int64     `json:"facts_joined"`
 }
 
+// goInventorySnapshot is one read of the spool file. CapturedAt is what makes a
+// negative reading meaningful: the kind supersedes in place under one file name,
+// so a reader that does not date the payload cannot tell a record that left from
+// a file that was never rewritten (ADR 0073).
+type goInventorySnapshot struct {
+	CapturedAt time.Time
+	Coverage   inventoryCoverage
+	Record     goInventoryRecord
+	Found      bool
+	Read       bool
+}
+
 // findSampleRecord reads the controller's spool file via the sidecar and returns
-// the record for the sample module and the payload's coverage block, if the
-// payload exists yet.
-func findSampleRecord(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) (goInventoryRecord, inventoryCoverage, bool) {
+// what it held: when it was written, how complete it says it is, and the sample
+// module's record if the payload still carries one.
+func findSampleRecord(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) goInventorySnapshot {
 	t.Helper()
 	raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, spoolPath)
 	if !ok {
-		return goInventoryRecord{}, inventoryCoverage{}, false
+		return goInventorySnapshot{}
 	}
 	var payload struct {
-		Kind     string              `json:"kind"`
-		Coverage inventoryCoverage   `json:"coverage"`
-		Records  []goInventoryRecord `json:"records"`
+		Kind       string              `json:"kind"`
+		CapturedAt time.Time           `json:"captured_at"`
+		Coverage   inventoryCoverage   `json:"coverage"`
+		Records    []goInventoryRecord `json:"records"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Logf("spool file not valid JSON yet (will retry): %v", err)
-		return goInventoryRecord{}, inventoryCoverage{}, false
+		return goInventorySnapshot{}
 	}
 	if payload.Kind != "go_inventory" {
 		t.Errorf("payload kind = %q, want go_inventory", payload.Kind)
 	}
+	snap := goInventorySnapshot{CapturedAt: payload.CapturedAt, Coverage: payload.Coverage, Read: true}
 	for _, r := range payload.Records {
-		if r.ModulePath == sampleModulePath {
-			return r, payload.Coverage, true
+		// Namespace as well as module: the suite reuses one kind cluster, and a
+		// run that died before its cleanup leaves a namespace behind running
+		// this same sample image. Matching on the module alone finds that one.
+		if r.Namespace == ns && r.ModulePath == sampleModulePath {
+			snap.Record, snap.Found = r, true
+			break
 		}
 	}
-	return goInventoryRecord{}, inventoryCoverage{}, false
+	return snap
 }
 
 // checkCoverageReported asserts that the agent says what it did, from a real
@@ -424,6 +532,7 @@ func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs 
 				Kind    string `json:"kind"`
 				Source  string `json:"source"`
 				Records []struct {
+					Namespace      string `json:"namespace"`
 					WorkloadName   string `json:"workload_name"`
 					Container      string `json:"container"`
 					ImageDigest    string `json:"image_digest"`
@@ -443,7 +552,7 @@ func checkSamplePeak(ctx context.Context, t *testing.T, config *rest.Config, cs 
 				t.Fatalf("process peaks payload not valid JSON: %v", err)
 			}
 			for _, r := range payload.Records {
-				if r.WorkloadName != "goworkload" {
+				if r.Namespace != ns || r.WorkloadName != "goworkload" {
 					continue
 				}
 				if payload.Kind != "process_peaks" || payload.Source != "measured" {
@@ -520,6 +629,7 @@ func checkSampleCounters(ctx context.Context, t *testing.T, config *rest.Config,
 				Kind    string `json:"kind"`
 				Source  string `json:"source"`
 				Records []struct {
+					Namespace     string `json:"namespace"`
 					WorkloadName  string `json:"workload_name"`
 					ImageDigest   string `json:"image_digest"`
 					Processes     int    `json:"processes"`
@@ -535,7 +645,7 @@ func checkSampleCounters(ctx context.Context, t *testing.T, config *rest.Config,
 				t.Fatalf("process counters payload not valid JSON: %v", err)
 			}
 			for _, r := range payload.Records {
-				if r.WorkloadName != "goworkload" {
+				if r.Namespace != ns || r.WorkloadName != "goworkload" {
 					continue
 				}
 				if payload.Kind != "process_counters" || payload.Source != "measured" {
@@ -595,6 +705,7 @@ func checkSamplePorts(ctx context.Context, t *testing.T, config *rest.Config, cs
 				Kind    string `json:"kind"`
 				Source  string `json:"source"`
 				Records []struct {
+					Namespace    string `json:"namespace"`
 					WorkloadName string `json:"workload_name"`
 					Container    string `json:"container"`
 					ImageDigest  string `json:"image_digest"`
@@ -608,7 +719,7 @@ func checkSamplePorts(ctx context.Context, t *testing.T, config *rest.Config, cs
 				t.Fatalf("listening ports payload not valid JSON: %v", err)
 			}
 			for _, r := range payload.Records {
-				if r.WorkloadName != "goworkload" {
+				if r.Namespace != ns || r.WorkloadName != "goworkload" {
 					continue
 				}
 				if payload.Kind != "listening_ports" || payload.Source != "structural" {
