@@ -137,6 +137,7 @@ func checkPreemptionReported(ctx context.Context, t *testing.T, config *rest.Con
 
 // metadataRecord mirrors the parts of a workload-metadata record this test reads.
 type metadataRecord struct {
+	Namespace    string `json:"namespace"`
 	WorkloadName string `json:"workload_name"`
 	Pod          struct {
 		Replicas    int            `json:"replicas"`
@@ -160,7 +161,9 @@ func findMetadataRecord(ctx context.Context, t *testing.T, config *rest.Config, 
 		return metadataRecord{}, false
 	}
 	for _, r := range payload.Records {
-		if r.WorkloadName == workload {
+		// Scoped to the caller's namespace: one kind cluster serves every run,
+		// and an abandoned namespace holds workloads of the same names.
+		if r.Namespace == ns && r.WorkloadName == workload {
 			return r, true
 		}
 	}
