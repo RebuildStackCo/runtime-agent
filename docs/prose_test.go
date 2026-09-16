@@ -46,10 +46,10 @@ var ceilings = []struct {
 	// the implementer must decode it and stop reading a payload's size off the
 	// request (ADR 0076); a journal window states whether it is finished
 	// (ADR 0078); a new kind arrives whose samples are gauges, where the obvious
-	// ingest — adding them up — is the wrong one (ADR 0080); and `godebug` now
-	// carries names where neither value is the safe one by convention, so `1`
-	// may not be read as the weak setting (ADR 0081).
-	{"backend-requirements.md", 799, 628},
+	// ingest — adding them up — is the wrong one (ADR 0080); `godebug` carries
+	// names where neither value is safe by convention (ADR 0081); and the filter
+	// counters count decisions, so adding them no longer recovers a pod count.
+	{"backend-requirements.md", 806, 635},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

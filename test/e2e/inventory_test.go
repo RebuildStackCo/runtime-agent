@@ -256,6 +256,7 @@ func checkOptOutRemovesTheRecord(ctx context.Context, t *testing.T, config *rest
 	for {
 		snap := findSampleRecord(ctx, t, config, cs, ns, controllerPod)
 		if !snap.Found {
+			checkTheOptOutIsCounted(ctx, t, config, cs, ns, controllerPod)
 			return
 		}
 		// Every rewrite is logged, so the transcript shows whether the payload
@@ -344,6 +345,38 @@ type inventoryCoverage struct {
 	NodesReported int       `json:"nodes_reported"`
 	FactsReceived int64     `json:"facts_received"`
 	FactsJoined   int64     `json:"facts_joined"`
+}
+
+// checkTheOptOutIsCounted asserts the coverage payload explains the record that
+// just left. ADR 0054 accepts that the disappearance is visible by subtraction
+// and rests on the count saying why: a workload leaving the collected set while
+// every number holds still reads as a workload that was deleted.
+func checkTheOptOutIsCounted(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string) {
+	t.Helper()
+	// The kind ships on every flush, so one cadence is enough to wait.
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		raw, ok := readSpoolFile(ctx, t, config, cs, ns, pod, coverageSpoolPath)
+		if ok {
+			var payload struct {
+				Filter struct {
+					ExcludedPodAnnotation int64 `json:"excluded_pod_annotation"`
+				} `json:"filter"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("collection_coverage payload not valid JSON: %v", err)
+			}
+			if n := payload.Filter.ExcludedPodAnnotation; n >= 1 {
+				t.Logf("coverage explains the departure: excluded_pod_annotation = %d", n)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the record left the payload and filter.excluded_pod_annotation stayed 0; " +
+				"the backend cannot tell an opt-out from a deletion")
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
 
 // goInventorySnapshot is one read of the spool file. CapturedAt is what makes a
