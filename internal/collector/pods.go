@@ -465,7 +465,11 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 			if !ok {
 				return
 			}
-			if d := w.admit(pod, false); d.collect {
+			d := w.admit(pod, false)
+			// Read before the index is touched: what is recorded there is the
+			// decision this one is compared against.
+			was, known := w.decisionFor(pod.UID)
+			if d.collect {
 				info := w.describe(pod)
 				w.indexPod(pod, info, d.profile)
 				w.reportPodIfChanged(pod.UID, info)
@@ -475,6 +479,7 @@ func (w *PodWatcher) Run(ctx context.Context) error {
 			} else {
 				w.dropPod(pod.UID)
 			}
+			w.countTransition(was, known, d)
 		},
 		DeleteFunc: func(obj any) {
 			if unknown, ok := obj.(cache.DeletedFinalStateUnknown); ok {
@@ -839,12 +844,14 @@ func (w *PodWatcher) AdmittedPodsOnNode(node string) []string {
 type admission struct {
 	collect bool
 	profile bool
+	// reason is why collection was refused, empty when it was not.
+	reason ExclusionReason
 }
 
 // admit runs the pod through the filter, consulting the namespace's
 // annotations from the cache (a cache miss reads as no annotations).
-// Exclusions are counted only when count is set — once per pod appearance
-// on Add, never again on the many status updates that follow.
+// Exclusions are counted only when count is set — once per pod appearance on
+// Add; the updates that follow go through countTransition instead.
 //
 // Both controls are decided from the one owner-chain walk: the profiling
 // opt-out reads the same three objects, and asking twice would double the
@@ -870,7 +877,41 @@ func (w *PodWatcher) admit(pod *corev1.Pod, count bool) admission {
 			w.filter.countUnresolvedWorkload(workload.Unresolved)
 		}
 	}
-	return admission{collect: allowed, profile: profilable}
+	return admission{collect: allowed, profile: profilable, reason: reason}
+}
+
+// decisionFor reports the decision currently recorded for a pod. Presence in the
+// index is the record: a pod is there because it was admitted, and the entry
+// carries whether profiling was admitted with it.
+func (w *PodWatcher) decisionFor(uid types.UID) (admission, bool) {
+	w.indexMu.RLock()
+	defer w.indexMu.RUnlock()
+	entry, ok := w.index[uid]
+	if !ok {
+		return admission{}, false
+	}
+	return admission{collect: true, profile: entry.profilable}, true
+}
+
+// countTransition counts an admission decision that differs from the one already
+// recorded for the pod. Annotating a running pod changes the answer without the
+// pod appearing again, and ADR 0054 rests on the counter moving when it does: a
+// workload leaving the collected set while every count holds still reads to the
+// backend as a workload that was deleted. Only the change counts — the status
+// updates a pod emits every few seconds carry the previous answer and count
+// nothing.
+func (w *PodWatcher) countTransition(was admission, known bool, now admission) {
+	switch {
+	case known && !now.collect:
+		w.filter.countExcluded(now.reason)
+	case !known && now.collect:
+		w.filter.countObserved()
+		if !now.profile {
+			w.filter.countExcludedProfiling()
+		}
+	case known && now.collect && was.profile && !now.profile:
+		w.filter.countExcludedProfiling()
+	}
 }
 
 // workloadAnnotations reads the annotations of the controller that ultimately

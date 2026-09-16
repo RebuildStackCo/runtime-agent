@@ -448,6 +448,13 @@ or `failing: true` bounds every finding resting on it — the backend MUST NOT
 present such a finding as complete. The scan block is a fleet aggregate over the
 latest pass of each reporting node and MUST NOT be summed across flushes.
 
+The `filter` counters count **decisions, not pods**. A customer who annotates a
+running pod changes the answer about it, so a pod already counted in
+`pods_observed` then moves an exclusion counter, and removing the annotation
+counts it observed again. The backend MUST NOT read `pods_observed` and the
+exclusion counters as a partition of the pods seen, and MUST NOT recover a pod
+count by adding them.
+
 `filter.excluded_profiling_annotation` counts pods the customer excluded from
 profiling alone ([ADR 0071](adr/0071-refusing-the-profiler-without-refusing-the-rest.md)):
 they are still collected and still ship every other kind, so the backend MUST NOT
