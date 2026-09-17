@@ -1,3 +1,12 @@
+# The Docker entry watches the two base images this repository builds on. They
+# are pinned by digest (ADR 0085), and a pin is a promise to update it
+# deliberately; this is what keeps that promise keepable — a `golang` patch
+# release or a rebuilt `distroless` arrives as a pull request CI builds and
+# scans, rather than as a number nobody looks at again.
+#
+# The gomod entry is not the vulnerability gate and never was: ADR 0038 measured
+# that it sees one transitive module absent from the shipped image and none of
+# the standard library inside it. `make vulncheck` is the gate.
 version: 2
 updates:
   - package-ecosystem: gomod
@@ -19,3 +28,10 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "ci"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"

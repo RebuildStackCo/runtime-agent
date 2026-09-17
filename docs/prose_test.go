@@ -34,15 +34,15 @@ var ceilings = []struct {
 	lines   int
 	section int
 }{
-	// Each raise names the obligation that bought it. Payloads now leave the
-	// cluster at all (ADR 0075); a journal window states when it was written
-	// (ADR 0078); a connection that confirmed an endpoint once per image now
-	// repeats once a minute per process (ADR 0080); twelve more GODEBUG names
-	// are read out of the build, on a second axis from the two the promise
-	// named before (ADR 0081); every request now names the agent that made it
-	// (ADR 0083); and a listener answers inside the cluster what the filters
-	// excluded, by name (ADR 0084).
-	{"security.md", 1124, 366},
+	// Each raise names the obligation that bought it: payloads leave the cluster
+	// at all (0075); a journal window states when it was written (0078); an
+	// endpoint confirmed once per image is now read once a minute per process
+	// (0080); twelve more GODEBUG names come out of the build (0081); every
+	// request names the agent that made it (0083); a listener answers inside the
+	// cluster what the filters excluded, by name (0084); and the image a customer
+	// trusts with a node states what it is made of, and what does not yet back
+	// it (0085).
+	{"security.md", 1135, 366},
 	// Each raise names its obligation here too. The body is encoded, so a
 	// payload's size is no longer the request's (ADR 0076); a window states
 	// whether it is finished (ADR 0078); gauge samples arrive, where adding

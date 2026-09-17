@@ -45,6 +45,45 @@ jobs:
       # the code actually calls, standard library included (ADR 0038).
       - run: make vulncheck
 
+  image:
+    name: Image build and scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The image was built by hand until now, so a Dockerfile that does not
+      # build reached main and was found by whoever next ran the e2e (ADR 0085).
+      - run: docker build -t runtime-agent:ci --build-arg VERSION=ci .
+      - name: Catalogue what the image holds
+        run: |
+          docker save runtime-agent:ci -o image.tar
+          docker run --rm -v "$PWD:/w" anchore/syft:v1.52.0 \
+            docker-archive:/w/image.tar -o json > sbom.json
+      # A scanner that catalogues nothing reports nothing, which reads exactly
+      # like a clean image. Six Debian packages and the binary's own module list
+      # are what is in there; if either goes missing the scan is broken.
+      - name: The catalogue is not empty
+        run: |
+          python3 - <<'PY'
+          import json, collections
+          kinds = collections.Counter(a["type"] for a in json.load(open("sbom.json"))["artifacts"])
+          print(dict(kinds))
+          assert kinds["deb"] >= 6, f"the base layer catalogued {kinds['deb']} packages"
+          assert kinds["go-module"] >= 60, f"the binary catalogued {kinds['go-module']} modules"
+          PY
+      # Everything, including the Go findings that do not gate. Reported so the
+      # decision not to fail on them stays visible rather than silent.
+      - name: What the scanner found
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w anchore/grype:v0.119.0 \
+            sbom:/w/sbom.json -o table --show-suppressed
+      # The gate: the base layer, where a fix exists. Go is govulncheck's, on
+      # reachability (ADR 0038, .grype.yaml).
+      - name: Gate on the base layer
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w anchore/grype:v0.119.0 \
+            sbom:/w/sbom.json --fail-on high --only-fixed
+
   lint:
     name: Lint (golangci-lint)
     runs-on: ubuntu-latest

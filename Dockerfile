@@ -1,7 +1,7 @@
 # Agent image. One binary, two roles (ADR 0009): the same image runs the
 # controller (a Deployment — ADR 0026) and the node scanner (a DaemonSet); the
 # role is the first argument.
-FROM golang:1.26.7 AS build
+FROM golang:1.26.7@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1 AS build
 WORKDIR /src
 
 # Cache module downloads separately from the source.
@@ -11,9 +11,12 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 # CGO off so the binary is fully static and runs on distroless/scratch.
-RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /out/agent ./cmd/agent
+# -trimpath so the binary carries no build-machine path, which is one fewer
+# difference between a build of ours and a rebuild of the same commit.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${VERSION}" -o /out/agent ./cmd/agent
 
-# Static distroless base: no shell, no package manager.
+# Static distroless base: no shell, no package manager, and six OS packages
+# whose versions a scanner can read from /var/lib/dpkg/status.d (ADR 0085).
 #
 # The image runs as uid 65532, and root is the exception one role asks for by
 # name (ADR 0037). The controller needs no privilege at all — it reads the API
@@ -27,7 +30,7 @@ RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /out/agent .
 # The rest of the hardened posture — read-only root filesystem, all capabilities
 # dropped, seccomp RuntimeDefault — is pinned per workload by the chart
 # (charts/runtime-agent), and asserted against its rendered output.
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 COPY --from=build /out/agent /usr/local/bin/agent
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/agent"]

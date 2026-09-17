@@ -1,0 +1,21 @@
+# The build context is what a compromised or careless build could publish, so it
+# holds what the build needs and nothing else.
+#
+# `.git` is deliberately NOT here. It is what stamps vcs.revision, vcs.time and
+# vcs.modified into the binary, and that build info is the provenance this agent
+# reads off customer workloads — an image of ours that could not answer the same
+# question would be the one thing we tell customers to look for (ADR 0085).
+
+# Private notes. Nothing in this file may reach a committed artifact, and a
+# build context is an artifact the moment a cache or an intermediate stage is
+# exported (CLAUDE.md).
+CONTEXT.md
+
+# Build output and run logs: never inputs, sometimes large.
+bin/
+test/e2e/logs/
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/
