@@ -120,6 +120,17 @@ inventory-e2e: kind-load ## Deploy controller + node DaemonSet + sample in kind 
 	go test -tags e2e -count=1 -timeout 20m -v ./test/e2e/ -run TestGoInventoryEndToEnd 2>&1 \
 		| tee test/e2e/logs/inventory-e2e-$$(date +%Y%m%d-%H%M%S).log
 
+collection-e2e: kind-load ## Deploy the controller in kind and assert the loopback listing names what the filters excluded, and that no other pod can read it (ADR 0084); log goes to test/e2e/logs/
+	@mkdir -p test/e2e/logs
+	docker pull $(SPOOL_READER_IMAGE)
+	go tool kind load docker-image $(SPOOL_READER_IMAGE) --name $(E2E_CLUSTER)
+	set -o pipefail; \
+	E2E_KUBE_CONTEXT=kind-$(E2E_CLUSTER) \
+	E2E_AGENT_IMAGE=$(IMAGE):$(IMAGE_TAG) \
+	E2E_SPOOL_READER_IMAGE=$(SPOOL_READER_IMAGE) \
+	go test -tags e2e -count=1 -timeout 15m -v ./test/e2e/ -run TestTheCollectionListingNamesWhatWasExcluded 2>&1 \
+		| tee test/e2e/logs/collection-e2e-$$(date +%Y%m%d-%H%M%S).log
+
 policy-e2e: kind-load ## Deploy the controller in kind and assert job_runs, deployment_revisions, workload_policy and cluster_policy in the spool — including that the widened ClusterRole grants what ADR 0032 says; log goes to test/e2e/logs/
 	@mkdir -p test/e2e/logs
 	docker pull $(SPOOL_READER_IMAGE)

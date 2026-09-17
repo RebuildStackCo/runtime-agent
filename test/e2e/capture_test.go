@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,9 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/RebuildStackCo/runtime-agent/internal/nodeprofile"
 )
@@ -288,23 +285,7 @@ func keys(m map[string]struct{}) []string {
 // the caller retries.
 func execSpoolReader(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface, ns, pod string, cmd []string) (string, bool) {
 	t.Helper()
-	req := cs.CoreV1().RESTClient().Post().
-		Resource("pods").Name(pod).Namespace(ns).SubResource("exec").
-		VersionedParams(&corev1.PodExecOptions{
-			Container: "spool-reader",
-			Command:   cmd,
-			Stdout:    true,
-			Stderr:    true,
-		}, scheme.ParameterCodec)
-	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
-	if err != nil {
-		t.Fatalf("building exec: %v", err)
-	}
-	var stdout, stderr bytes.Buffer
-	if err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &stdout, Stderr: &stderr}); err != nil {
-		return "", false
-	}
-	return stdout.String(), true
+	return execIn(ctx, t, config, cs, ns, pod, "spool-reader", cmd)
 }
 
 // captureValues is the whole of what this test configures, and every line is a
