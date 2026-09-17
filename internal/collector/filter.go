@@ -138,6 +138,20 @@ func (f *Filter) AdmitPod(pod *corev1.Pod, nsAnnotations map[string]string, work
 	return true, ""
 }
 
+// AdmitNamespace reports whether a namespace passes the two controls that
+// apply to it. The pods inside it are asked the same questions one by one and
+// reach the same answer; this is asked so that a namespace holding no pods
+// still says whether the configuration reaches it (ADR 0084).
+func (f *Filter) AdmitNamespace(ns *corev1.Namespace) (bool, ExclusionReason) {
+	if !f.namespaceAllowed(ns.Name) {
+		return false, ExcludedByNamespaceFilter
+	}
+	if ns.Annotations[CollectAnnotation] == "false" {
+		return false, ExcludedByNamespaceAnnotation
+	}
+	return true, ""
+}
+
 // AdmitProfiling reports whether an admitted pod may be profiled. It is asked
 // only of pods AdmitPod admitted, which is what makes this control the narrower
 // one rather than a second one beside it.

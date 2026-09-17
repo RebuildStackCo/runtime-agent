@@ -38,6 +38,14 @@ the hole in the network policy stays one.
 */}}
 {{- define "runtime-agent.healthPort" -}}9090{{- end -}}
 
+{{/*
+Where the controller answers which objects the filters decided about. Loopback
+and not a value: the address is the whole of what keeps those names inside the
+cluster, and the agent refuses any other host anyway (ADR 0084).
+*/}}
+{{- define "runtime-agent.collectionPort" -}}9091{{- end -}}
+{{- define "runtime-agent.collectionAddress" -}}127.0.0.1:{{ include "runtime-agent.collectionPort" . }}{{- end -}}
+
 {{/* The in-cluster base URL of the controller's receiver. */}}
 {{- define "runtime-agent.controllerEndpoint" -}}
 http://{{ include "runtime-agent.controllerName" . }}.{{ .Release.Namespace }}.svc:8080

@@ -349,3 +349,38 @@ func TestTheShapeCarriesNoAddress(t *testing.T) {
 		t.Errorf("the configuration shape carries the backend address: %s", encoded)
 	}
 }
+
+// The listing names objects the filters excluded, so where it binds is the whole
+// of what keeps those names in the cluster. A host that is not loopback is a
+// startup failure rather than a value normalized into something safe: the
+// operator asked for something this agent does not offer, and finding that out
+// at startup is the point (ADR 0084).
+func TestTheCollectionListenerBindsLoopbackOrNothing(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:9091", "[::1]:9091", "localhost:9091"} {
+		cfg, err := Load(write(t, "collection:\n  listenAddress: \""+addr+"\"\n"))
+		if err != nil {
+			t.Errorf("Load(%q): %v", addr, err)
+			continue
+		}
+		if cfg.Collection.ListenAddress != addr {
+			t.Errorf("collection.listenAddress = %q, want %q", cfg.Collection.ListenAddress, addr)
+		}
+	}
+
+	for _, addr := range []string{":9091", "0.0.0.0:9091", "10.0.0.4:9091", "9091"} {
+		if _, err := Load(write(t, "collection:\n  listenAddress: \""+addr+"\"\n")); err == nil {
+			t.Errorf("Load accepted %q; a listener reachable from the cluster names excluded objects to it", addr)
+		} else if !strings.Contains(err.Error(), "collection.listenAddress") {
+			t.Errorf("the refusal of %q does not name the field: %v", addr, err)
+		}
+	}
+
+	// Empty opens nothing, the same shape the health listener has.
+	empty, err := Load(write(t, "spool:\n  dir: /tmp\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Collection.ListenAddress != "" {
+		t.Errorf("an unset collection.listenAddress became %q", empty.Collection.ListenAddress)
+	}
+}

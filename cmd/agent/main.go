@@ -30,6 +30,7 @@ import (
 
 	"github.com/RebuildStackCo/runtime-agent/internal/collector"
 	"github.com/RebuildStackCo/runtime-agent/internal/config"
+	"github.com/RebuildStackCo/runtime-agent/internal/decisions"
 	"github.com/RebuildStackCo/runtime-agent/internal/health"
 	"github.com/RebuildStackCo/runtime-agent/internal/inventory"
 	"github.com/RebuildStackCo/runtime-agent/internal/journal"
@@ -1027,6 +1028,16 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		}
 		tasks["health"] = health.New(addr, live, ready,
 			metrics.Handler(sources.gather, logger), logger).Run
+	}
+
+	// The listener that names what the filters decided about, on a loopback
+	// address of its own. Not a path on the health listener: that port is open
+	// to the whole cluster by a rule that cannot name the kubelet it exists
+	// for, and every path on it answers without naming a cluster object
+	// (ADR 0084).
+	if addr := cfg.Collection.ListenAddress; addr != "" {
+		tasks["collection"] = decisions.New(addr,
+			decisions.Handler(podWatcher.Decisions, podWatcher.Synced, logger), logger).Run
 	}
 
 	// The node-intake receiver is optional (only the ebpf/node profile ships a

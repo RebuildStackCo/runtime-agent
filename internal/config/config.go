@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 
@@ -24,6 +25,7 @@ type Config struct {
 	NodeIntake NodeIntake          `json:"nodeIntake"`
 	Profiling  ControllerProfiling `json:"profiling"`
 	Health     Health              `json:"health"`
+	Collection Collection          `json:"collection"`
 }
 
 // Health is where the controller answers the kubelet's two questions about it
@@ -41,6 +43,21 @@ type Health struct {
 // substitute it for an empty value: a listener nobody asked for is a port
 // opened by omission.
 const DefaultHealthListenAddress = ":9090"
+
+// Collection is the in-cluster listener that answers which objects the filters
+// admitted and which they refused, by name (ADR 0084).
+type Collection struct {
+	// ListenAddress is where that listener binds (net/http form). Empty opens
+	// no listener. The host must be a loopback address: this is the one
+	// surface that names excluded objects, and Validate refuses to open it
+	// anywhere a pod in the cluster could reach.
+	ListenAddress string `json:"listenAddress"`
+}
+
+// DefaultCollectionListenAddress is the address the chart renders. Loopback,
+// so the only way in is a port-forward, whose permission Kubernetes already
+// defines.
+const DefaultCollectionListenAddress = "127.0.0.1:9091"
 
 // NodeConfig is the root of the node role's configuration file. It holds only
 // what the node enforces itself; everything else about profiling is the
@@ -292,7 +309,32 @@ func (c Config) Validate() error {
 	if err := validThirdPartySymbols(c.Profiling.ThirdPartySymbols); err != nil {
 		return err
 	}
+	if err := validCollectionListenAddress(c.Collection.ListenAddress); err != nil {
+		return err
+	}
 	return validBackendBaseURL(c.Backend.BaseURL)
+}
+
+// validCollectionListenAddress accepts an empty value, which opens nothing, and
+// otherwise an address whose host is loopback. A bare port or a wildcard host is
+// refused rather than normalized: what the listener answers is names the rest of
+// this agent spends its decisions keeping inside the cluster, and a value that
+// exposed it to every pod would be a decision made by a typo (ADR 0084).
+func validCollectionListenAddress(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(raw)
+	if err != nil {
+		return fmt.Errorf("collection.listenAddress %q is not host:port: %w", raw, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("collection.listenAddress %q must bind a loopback host; it names objects your filters excluded", raw)
 }
 
 // validBackendBaseURL accepts an empty value, which ships nothing, and

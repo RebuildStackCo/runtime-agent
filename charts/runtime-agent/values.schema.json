@@ -56,6 +56,14 @@
         "baseURL": {"type": "string"}
       }
     },
+    "collection": {
+      "description": "The loopback listener that names which objects the filters admitted and which they refused (ADR 0084). No address here: loopback is the whole of the control, and the agent refuses any other host.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"}
+      }
+    },
     "nodeIntake": {
       "type": "object",
       "additionalProperties": false,

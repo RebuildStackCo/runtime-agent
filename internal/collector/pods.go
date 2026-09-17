@@ -857,10 +857,7 @@ type admission struct {
 // opt-out reads the same three objects, and asking twice would double the
 // lookups for a question the first pass already has the answers to.
 func (w *PodWatcher) admit(pod *corev1.Pod, count bool) admission {
-	var nsAnnotations map[string]string
-	if ns, err := w.nsLister.Get(pod.Namespace); err == nil {
-		nsAnnotations = ns.Annotations
-	}
+	nsAnnotations := w.namespaceAnnotations(pod.Namespace)
 	workload := w.workloadAnnotations(pod)
 	allowed, reason := w.filter.AdmitPod(pod, nsAnnotations, workload)
 	profilable := allowed && w.filter.AdmitProfiling(pod, nsAnnotations, workload)
