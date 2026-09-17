@@ -4,6 +4,8 @@ Date: 2026-08-27
 
 Status: Accepted
 
+Amended by: 0085
+
 Adds `govulncheck` as a CI gate, moves the Go toolchain floor to 1.26.7, and
 bumps one transitive module past an advisory. No change to what is collected, to
 any payload, to the chart, or to any RBAC rule.

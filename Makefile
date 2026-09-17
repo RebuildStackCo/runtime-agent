@@ -12,6 +12,10 @@ SAMPLE_IMAGE ?= rebuildstack-e2e-goworkload:latest
 # A shell-bearing image loaded into kind as a sidecar so the inventory e2e can
 # read the controller's spool (the agent image is distroless — no shell).
 SPOOL_READER_IMAGE ?= busybox:1.37
+# The scanners, pinned like everything else this repository builds with
+# (ADR 0085). CI runs these exact versions.
+SYFT_IMAGE ?= anchore/syft:v1.52.0
+GRYPE_IMAGE ?= anchore/grype:v0.119.0
 
 .PHONY: build test lint chart-lint proto proto-lint vulncheck tidy clean cluster-up cluster-down e2e smoke image sample-image kind-load node-e2e inventory-e2e restart-e2e restarts-e2e lifecycle-e2e policy-e2e watch-e2e profile-gate-e2e profile-capture-e2e identity-e2e
 
@@ -92,6 +96,13 @@ smoke: build ## Run the agent for SMOKE_SECONDS against the kind cluster (see cl
 
 image: ## Build the agent container image (controller + node roles, one binary)
 	docker build -t $(IMAGE):$(IMAGE_TAG) --build-arg VERSION=$(VERSION) .
+
+image-scan: image ## Catalogue the agent image and scan it, the way CI does (ADR 0085)
+	@mkdir -p bin
+	docker save $(IMAGE):$(IMAGE_TAG) -o bin/image.tar
+	docker run --rm -v "$(PWD)/bin:/w" $(SYFT_IMAGE) docker-archive:/w/image.tar -o json > bin/sbom.json
+	docker run --rm -v "$(PWD):/w" -w /w $(GRYPE_IMAGE) sbom:/w/bin/sbom.json -o table --show-suppressed
+	docker run --rm -v "$(PWD):/w" -w /w $(GRYPE_IMAGE) sbom:/w/bin/sbom.json --fail-on high --only-fixed
 
 sample-image: ## Build the e2e "known Go process" workload image
 	docker build -t $(SAMPLE_IMAGE) test/e2e/sample

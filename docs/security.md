@@ -381,6 +381,17 @@ question to weigh — not whether the controls below are present. They are prese
 and none of them narrows the paragraphs above: they bound what this agent's own
 code does by accident, not what code in that container could do on purpose.
 
+**What backs that trust, and what does not yet.** The image holds one
+executable — the agent — with no shell, no package manager and no shared library;
+six Debian packages from the base, whose versions a scanner reads out of the
+image; and the binary's own module list, readable with `go version -m`. Both
+bases are pinned by digest, the binary carries the commit it was built from, and
+CI builds this image on every change and fails on a fixable high-severity finding
+in that base layer ([ADR 0085](adr/0085-the-image-is-built-and-scanned-by-ci.md)).
+Not there yet: no signature, no provenance attestation, and this chart names its
+image by tag. So you can read what the image is made of; you cannot yet verify
+that the image you pulled is the one we built.
+
 Compensating controls, set by the chart and asserted against its rendered output
 by `internal/chartrender`: `privileged: false`,
 `allowPrivilegeEscalation: false`, a read-only root filesystem,

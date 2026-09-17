@@ -1,0 +1,13 @@
+# What this scanner is for, and what it is not.
+#
+# Go code is gated on reachability by `make vulncheck` (ADR 0038): govulncheck
+# fails only on vulnerabilities this code actually calls, and it covers the
+# standard library, which no image scanner sees. Matching the binary's embedded
+# module list against advisories answers a weaker question and would fail the
+# build on modules nothing calls — the case ADR 0038 decided must not fail it.
+#
+# So Go findings are reported and do not gate; the base layer, which
+# govulncheck cannot see at all, is what this gates (ADR 0085).
+ignore:
+  - package:
+      type: go-module
