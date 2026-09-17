@@ -91,10 +91,7 @@ func (w *PodWatcher) resolveJobWorkload(job *batchv1.Job) model.WorkloadRef {
 // security.md documented before ADR 0028 wrote the annotation into the pod
 // template, and ignoring it would ship facts about a workload they refused.
 func (w *PodWatcher) admitJob(job *batchv1.Job, count bool) bool {
-	var nsAnnotations map[string]string
-	if ns, err := w.nsLister.Get(job.Namespace); err == nil {
-		nsAnnotations = ns.Annotations
-	}
+	nsAnnotations := w.namespaceAnnotations(job.Namespace)
 	workload := w.jobWorkloadAnnotations(job)
 	allowed, reason := w.filter.AdmitJob(job, nsAnnotations, workload)
 	if count {

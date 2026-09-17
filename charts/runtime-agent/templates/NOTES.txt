@@ -9,6 +9,17 @@ profile (ADR 0069). Readiness means the caches are synced, so the rollout below
 returns when the agent is actually collecting rather than when it has started:
 
   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "runtime-agent.controllerName" . }}
+{{- if .Values.collection.enabled }}
+
+To see which objects your filters admitted and which they refused — by name,
+with the reason — port-forward the controller's loopback listener (ADR 0084):
+
+  kubectl -n {{ .Release.Namespace }} port-forward deployment/{{ include "runtime-agent.controllerName" . }} {{ include "runtime-agent.collectionPort" . }}:{{ include "runtime-agent.collectionPort" . }} &
+  curl -s localhost:{{ include "runtime-agent.collectionPort" . }}/collection | jq 'select(.collected | not)'
+
+Nothing it answers is ever transmitted. It binds loopback and nothing else, so
+a port-forward is the only way in.
+{{- end }}
 {{- if include "runtime-agent.nodeEnabled" . }}
 
 CHECK ONE THING: the NetworkPolicy needs a CNI that enforces it.

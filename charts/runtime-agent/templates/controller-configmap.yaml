@@ -46,6 +46,11 @@ data:
       # The port the probes ask on. Rendered in every profile: the two questions
       # a kubelet asks are not a feature of one (ADR 0069).
       listenAddress: ":{{ include "runtime-agent.healthPort" . }}"
+    {{- if .Values.collection.enabled }}
+    collection:
+      # Loopback, so a port-forward is the only way in.
+      listenAddress: {{ include "runtime-agent.collectionAddress" . | quote }}
+    {{- end }}
     nodeIntake:
       {{- if include "runtime-agent.nodeEnabled" . }}
       enabled: true

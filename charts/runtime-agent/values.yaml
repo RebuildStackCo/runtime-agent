@@ -72,6 +72,14 @@ spool:
 backend:
   baseURL: ""
 
+# The in-cluster listener that answers, by name, which objects your filters
+# admitted and which they refused. It binds loopback and nothing else — no
+# Service, no container port, no hole in the network policy — so the only way
+# to read it is `kubectl port-forward`, whose permission your RBAC already
+# defines. What it answers never leaves the cluster (docs/security.md §11).
+collection:
+  enabled: true
+
 nodeIntake:
   # The audience the node's projected token requests and the controller
   # requires. One value: the chart writes it into both the DaemonSet's token
