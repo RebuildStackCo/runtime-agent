@@ -2,11 +2,15 @@ package nodeauth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -319,3 +323,51 @@ func TestAFailedRefreshIsRateLimitedToo(t *testing.T) {
 type keySourceFunc func(context.Context) (*KeySet, error)
 
 func (f keySourceFunc) Fetch(ctx context.Context) (*KeySet, error) { return f(ctx) }
+
+// An EC key now goes through the parser that replaced the deprecated coordinate
+// fields, and that parser checks the point is on the curve (ADR 0086). The old
+// construction accepted any pair of integers and left the rejection to signature
+// verification; this rejects the key itself, which is where a JWKS entry that
+// cannot be a key should stop.
+func TestAnECKeyIsParsedAndAnOffCurvePointIsRefused(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinate := func(i *big.Int) string {
+		padded := make([]byte, 32)
+		i.FillBytes(padded)
+		return base64.RawURLEncoding.EncodeToString(padded)
+	}
+	//nolint:staticcheck // reading the coordinates is how a JWK is written; what ADR 0086 replaced is constructing a key from them
+	x, y := coordinate(key.X), coordinate(key.Y)
+
+	set, err := ParseJWKS([]byte(fmt.Sprintf(
+		`{"keys":[{"kty":"EC","kid":"ec-1","crv":"P-256","x":%q,"y":%q}]}`, x, y)))
+	if err != nil {
+		t.Fatalf("a valid EC key was rejected: %v", err)
+	}
+	got, err := set.Key("ec-1")
+	if err != nil {
+		t.Fatalf("EC key missing from the set: %v", err)
+	}
+	if parsed, ok := got.(*ecdsa.PublicKey); !ok || !parsed.Equal(&key.PublicKey) {
+		t.Errorf("parsed key = %#v, want the generated public key", got)
+	}
+
+	// The same x with a y that is not its pair: on the curve's field, off the
+	// curve itself.
+	offCurve := coordinate(new(big.Int).Add(key.Y, big.NewInt(1))) //nolint:staticcheck // see above
+	if _, err := ParseJWKS([]byte(fmt.Sprintf(
+		`{"keys":[{"kty":"EC","kid":"ec-bad","crv":"P-256","x":%q,"y":%q}]}`, x, offCurve))); err == nil {
+		t.Error("an off-curve point was accepted as a key")
+	}
+
+	// A coordinate shorter than the field is padded, not refused: a JWK may
+	// carry a leading zero byte trimmed.
+	short := base64.RawURLEncoding.EncodeToString([]byte{1})
+	if _, err := ParseJWKS([]byte(fmt.Sprintf(
+		`{"keys":[{"kty":"EC","kid":"ec-short","crv":"P-256","x":%q,"y":%q}]}`, short, short))); err == nil {
+		t.Error("a short pair that is not on the curve was accepted")
+	}
+}

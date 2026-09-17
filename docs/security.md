@@ -550,7 +550,7 @@ nothing to what leaves your cluster.
 | `node_metadata` | Per node: name, size, instance and capacity type, zone, region, age, kernel version, CPU architecture, kubelet version, OS image, container runtime. Size means CPU and memory, ephemeral storage, the kubelet's pod ceiling, and allow-listed accelerators — by **hardware vendor prefix**, so an extended resource your operators named is counted, not carried. Beside them the node's state: the five standard conditions with their reason and last transition, and its taints, which are the mirror of the tolerations already collected from pods ([ADR 0064](adr/0064-the-node-is-described-and-its-comings-recorded.md)). A condition's `message` is **never read** — it is free text into which the kubelet and node-problem-detector write paths and command output. The **name** is your cluster's, and on EKS and on GKE's legacy naming it encodes the node's private address — `ip-10-42-13-201.eu-west-1.compute.internal`. The agent reads no address field; the name it does read may be one (ADR 0039) | no |
 | `go_inventory` | Per (namespace, workload, container): Go version, main module, image digest, PGO flag, plus a fleet-coverage block naming each reporting node and when it last reported | no |
 | `process_peaks` | Per collected workload container and build: the largest `VmHWM` among its Go processes, how many processes that was taken over, and the range of permitted CPU counts. A **floor** under the container's peak, never the figure the OOM killer compares against — the cgroup also holds page cache and every other process in it ([ADR 0052](adr/0052-the-peak-the-kernel-remembers.md)). Beside it, the largest sample taken of each process's footprint: resident memory split into the program's own pages and file-backed ones, the memory it shares with its replicas and the memory nothing else maps, its OS threads, and how many file descriptors it held against the ceiling in force ([ADR 0061](adr/0061-what-the-process-holds-beside-its-peak.md)). **What each descriptor points at is never read** — they are counted, not followed | no |
-| `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings, two allow-listed GODEBUG defaults, and whether `net/http/pprof` is linked into the build. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
+| `go_build` | Per image digest, written once: Go version, main module, each dependency module's **path and version**, allow-listed build settings, the allow-listed GODEBUG defaults, and whether `net/http/pprof` is linked into the build. This is a bill of materials for the build — see [§10.4](#104-the-build-inventory-is-a-bill-of-materials) | no |
 | `process_counters` | Per collected workload container and build: what its processes did since each node's previous scan pass — time on CPU and time waiting for one, that CPU time split between your code and the kernel acting for it, page faults that reached storage, context switches, and bytes that moved to and from block storage. Each record carries the process-time the numbers cover, because a difference without its interval is not a rate ([ADR 0062](adr/0062-the-counters-and-the-window-they-cover.md)). Sums only — the agent never ships the division | no |
 | `listening_ports` | Per collected workload container and build: the TCP ports its Go processes accept connections on, each with whether it is bound to loopback, and — for a port the agent asked — whether the Go pprof index answered there ([ADR 0082](adr/0082-a-confirmed-endpoint-is-named-on-its-port.md)). Read from the processes' own sockets, so a port nothing declared is here and a declared port nothing binds is not ([ADR 0056](adr/0056-a-pprof-endpoint-is-proved-not-probed.md)). No address, and no connection the workload has open | no |
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
@@ -792,18 +792,18 @@ the filter-early rule there, before any record is formed.
 | `vcs.time` | that commit's timestamp (not the build time — Go does not record it) |
 | `vcs.modified` | whether the working tree was dirty |
 
-Fourteen GODEBUG defaults are read out of the toolchain's compound
-`DefaultGODEBUG` setting and shipped as `godebug`
+Fifteen GODEBUG defaults are read out of the toolchain's compound
+`DefaultGODEBUG` and shipped as `godebug`, each `0` or `1`
 ([ADR 0050](adr/0050-godebug-defaults-are-a-build-fact.md),
-[ADR 0081](adr/0081-a-weakened-default-is-a-build-fact.md)), each `0` or `1`, and
-each a name the toolchain chose rather than a value anyone typed.
+[ADR 0081](adr/0081-a-weakened-default-is-a-build-fact.md),
+[ADR 0086](adr/0086-a-toolchain-move-reviews-what-it-reports.md)).
 `containermaxprocs` and `updatemaxprocs` say whether the runtime sizes
-`GOMAXPROCS` from the container's CPU quota. The other twelve each say whether
-the build holds one security default at its pre-tightening value: `tls10server`,
+`GOMAXPROCS` from the container's CPU quota. The other thirteen say whether the
+build holds one security default at its pre-tightening value: `tls10server`,
 `tls3des`, `tlsrsakex`, `tlssha1`, `tlsunsafeekm`, `x509negativeserial`,
 `rsa1024min`, `cryptocustomrand`, `httplaxcontentlength`, `tarinsecurepath`,
-`zipinsecurepath` and `execerrdot`. The compound value is parsed, never shipped
-whole, and the names outside this list are not collected.
+`zipinsecurepath`, `execerrdot` and `fips140ems`. The compound is parsed, never
+shipped whole; names outside this list are not collected.
 
 Everything outside it is discarded on the node, including **`-ldflags`,
 `-gcflags`, `-asmflags` and `-tags`** — free-form flags that routinely carry
