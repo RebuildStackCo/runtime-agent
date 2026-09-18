@@ -229,6 +229,7 @@ func TestAnUnconfiguredControllerOmitsWhatItDoesNotHave(t *testing.T) {
 		// An agent with no backend has not failed to ship: it was told to ship
 		// nowhere, and a delivered count of zero would claim otherwise.
 		"shipments_total", "shipments_rejected_total", "shipping_halted",
+		"shipping_halted_since_seconds",
 	} {
 		if present[Prefix+absent] {
 			t.Errorf("%s%s is exposed by an installation that has no such component", Prefix, absent)

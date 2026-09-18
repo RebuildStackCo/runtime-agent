@@ -134,8 +134,12 @@ func TestGoldenCollectionCoveragePayload(t *testing.T) {
 		},
 		UsageSignals: []string{"cpu", "memory", "network", "throttling"},
 	}
+	// The failing cache is dated: a reader who finds no EndpointSlice-derived
+	// finding needs to know the cache stopped being fed at 09:47, not merely
+	// that it is unfed now (ADR 0087).
+	failingSince := capturedAt.Add(-25 * time.Minute)
 	sources := []model.SourceHealth{
-		{Name: "endpoint_slices", Synced: false, Failing: true},
+		{Name: "endpoint_slices", Synced: false, Failing: true, FailingSince: &failingSince},
 		{Name: "services", Synced: true},
 	}
 	filter := model.Coverage{
@@ -2100,5 +2104,45 @@ func TestCoverageNamesNothingItExcluded(t *testing.T) {
 	}
 	if payload.Filter.ExcludedNamespaceFilter != 3 {
 		t.Errorf("excluded count = %d, want 3", payload.Filter.ExcludedNamespaceFilter)
+	}
+}
+
+// A halt is the one state whose payload cannot arrive: the agent stops shipping
+// the moment it latches, so this file is written and never sent. Dating it is
+// what makes the spool worth opening — "stopped" is a fact the file's own
+// timestamp already implies, and "stopped at 04:31 on the 12th" is not
+// (ADR 0087).
+func TestAHaltedShipperDatesTheHaltInThePayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	haltedAt := capturedAt.Add(-9 * time.Hour)
+	shipping := model.Shipping{
+		Delivered: 1204, Halted: true, HaltedSince: &haltedAt,
+		Rejected: model.ShippingRejections{Unauthorized: 1},
+	}
+	if err := s.WriteCollectionCoverage(capturedAt, capturedAt.Add(-6*time.Hour),
+		AgentInfo{Version: "1.4.2"}, nil, model.Coverage{}, model.PlacementDrops{},
+		model.NodeDrops{}, nil, nil, nil, nil, nil, nil, nil, &shipping); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Shipping struct {
+			Halted      bool       `json:"halted"`
+			HaltedSince *time.Time `json:"halted_since"`
+		} `json:"shipping"`
+	}
+	// #nosec G304 -- dir is this test's own TempDir
+	body, err := os.ReadFile(filepath.Join(dir, "collection-coverage.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decoding the payload: %v", err)
+	}
+	if !payload.Shipping.Halted {
+		t.Error("a halted shipper wrote a payload that does not say so")
+	}
+	if payload.Shipping.HaltedSince == nil || !payload.Shipping.HaltedSince.Equal(haltedAt) {
+		t.Errorf("halted_since is %v, want %s", payload.Shipping.HaltedSince, haltedAt)
 	}
 }

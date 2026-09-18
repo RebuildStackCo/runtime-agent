@@ -28,7 +28,8 @@
     {
       "name": "endpoint_slices",
       "synced": false,
-      "failing": true
+      "failing": true,
+      "failing_since": "2026-08-06T09:47:00Z"
     },
     {
       "name": "services",

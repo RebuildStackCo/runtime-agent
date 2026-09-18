@@ -144,3 +144,4 @@ line to paste.
 - [0084. What was excluded is named, inside the cluster and only there](0084-what-was-excluded-is-named-inside-the-cluster.md)
 - [0085. The image is built and scanned where the code is, and pinned to what it was built from](0085-the-image-is-built-and-scanned-by-ci.md)
 - [0086. A toolchain move is a review of what the toolchain reports](0086-a-toolchain-move-reviews-what-it-reports.md)
+- [0087. A state says when it began](0087-a-state-says-when-it-began.md)

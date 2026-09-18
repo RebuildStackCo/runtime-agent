@@ -21,6 +21,10 @@ import (
 	"github.com/RebuildStackCo/runtime-agent/internal/sink"
 )
 
+// haltClock is what the shipper's clock reads in these tests, so the instant a
+// halt carries is a fixed number rather than whenever the suite ran.
+var haltClock = time.Date(2026, 9, 18, 10, 12, 0, 0, time.UTC)
+
 // The rule this package exists for: a spool file is deleted only after a 2xx.
 // Every other answer leaves the payload where it is, which is the difference
 // between an outage and data loss nobody detects (ADR 0075).
@@ -64,6 +68,17 @@ func TestOnlyA2xxRemovesAPayload(t *testing.T) {
 				t.Errorf("status %d: an attempt that reached the backend counted no bytes: %+v", c.status, got)
 			}
 			got.PayloadBytes, got.TransmittedBytes = 0, 0
+			// The halt is the one answer that carries an instant, and it is
+			// asserted rather than zeroed away: a halt nobody can date is the
+			// defect this field exists to close (ADR 0087).
+			if c.want.Halted {
+				if got.HaltedSince == nil || !got.HaltedSince.Equal(haltClock) {
+					t.Errorf("status %d: halted since %v, want %v", c.status, got.HaltedSince, haltClock)
+				}
+			} else if got.HaltedSince != nil {
+				t.Errorf("status %d: not halted, yet dated %v", c.status, got.HaltedSince)
+			}
+			got.HaltedSince = nil
 			if got != c.want {
 				t.Errorf("status %d: coverage %+v, want %+v", c.status, got, c.want)
 			}
@@ -690,7 +705,7 @@ func TestAHaltedShipperRunsNoFinalRound(t *testing.T) {
 	payload(t, dir, "collection-coverage.json", "collection_coverage")
 
 	s.Round(t.Context()) // the 401 that halts it
-	if !s.halted.Load() {
+	if !s.halted() {
 		t.Fatal("a 401 did not halt the shipper")
 	}
 	before := requests.Load()
@@ -709,6 +724,7 @@ func newShipper(t *testing.T, base string) (*Shipper, string) {
 	if s == nil {
 		t.Fatalf("New returned nil for base %q", base)
 	}
+	s.now = func() time.Time { return haltClock }
 	return s, dir
 }
 

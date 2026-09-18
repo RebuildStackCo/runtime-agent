@@ -243,6 +243,14 @@ func CollectController(c Controller) *Set {
 		s.Gauge("shipping_halted",
 			"Whether shipping has stopped on an identity failure the agent will not retry into.",
 			b2f(sh.Halted))
+		// And when, which is the half that matters here: nothing clears a halt
+		// but a restart, so the question a scrape answers is how long this
+		// agent has been silent (ADR 0087).
+		if sh.HaltedSince != nil {
+			s.Gauge("shipping_halted_since_seconds",
+				"When shipping stopped, in seconds since the epoch. Absent while shipping runs.",
+				float64(sh.HaltedSince.Unix()))
+		}
 	}
 	return s
 }
