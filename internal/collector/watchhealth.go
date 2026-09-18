@@ -129,14 +129,30 @@ func (h *watchHealth) failingFor(now time.Time) (time.Duration, string) {
 	return h.last.Sub(h.first), h.lastErr
 }
 
-// failedWithin reports whether this cache failed at any point in the last d.
-func (h *watchHealth) failedWithin(now time.Time, d time.Duration) bool {
+// failingSince is when the run of failures that leaves this cache unfed began,
+// and nil when it is not failing by that test.
+//
+// The instant is the run's first failure rather than its latest: what stopped
+// being true is that the cache was fed, and that stopped when the run started.
+// The latest failure is only when the agent last looked (ADR 0087).
+func (h *watchHealth) failingSince(now time.Time, d time.Duration) *time.Time {
 	if h == nil {
-		return false
+		return nil
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return !h.last.IsZero() && now.Sub(h.last) <= d
+	if h.last.IsZero() || now.Sub(h.last) > d {
+		return nil
+	}
+	first := h.first
+	return &first
+}
+
+// failedWithin reports whether this cache failed at any point in the last d.
+// Answered from failingSince so that the boolean and the instant beside it in
+// the payload cannot disagree.
+func (h *watchHealth) failedWithin(now time.Time, d time.Duration) bool {
+	return h.failingSince(now, d) != nil
 }
 
 // watchdog blocks until ctx is canceled, or until one of the gating caches has

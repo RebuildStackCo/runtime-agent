@@ -458,9 +458,15 @@ type SourceHealth struct {
 	// not stated; false is a claim that the cache never filled.
 	Synced *bool `protobuf:"varint,2,opt,name=synced,proto3,oneof" json:"synced,omitempty"`
 	// Whether the watch has been failing recently enough to treat the cache as no
-	// longer fed. Absent means it was not stated; false is a claim that the cache
-	// is still being fed.
-	Failing       *bool `protobuf:"varint,3,opt,name=failing,proto3,oneof" json:"failing,omitempty"`
+	// longer fed. Superseded by `failing_since`, which states the same fact and
+	// says when it began; kept for the compatibility window of section 6.
+	//
+	// Deprecated: Marked as deprecated in rebuildstack/ingest/kubernetes/v1/collection_coverage.proto.
+	Failing *bool `protobuf:"varint,3,opt,name=failing,proto3,oneof" json:"failing,omitempty"`
+	// When the run of failures that left this cache unfed began. Absent is the
+	// claim that the cache is still being fed, so a source that recovers drops
+	// the field rather than restating it.
+	FailingSince  *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=failing_since,json=failingSince,proto3" json:"failing_since,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -509,11 +515,19 @@ func (x *SourceHealth) GetSynced() bool {
 	return false
 }
 
+// Deprecated: Marked as deprecated in rebuildstack/ingest/kubernetes/v1/collection_coverage.proto.
 func (x *SourceHealth) GetFailing() bool {
 	if x != nil && x.Failing != nil {
 		return *x.Failing
 	}
 	return false
+}
+
+func (x *SourceHealth) GetFailingSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FailingSince
+	}
+	return nil
 }
 
 // How many pods and Jobs the filter looked at and excluded, counted once per
@@ -1404,9 +1418,10 @@ type ShippingCoverage struct {
 	// Spool files the agent could not read, or whose kind is not one it ships.
 	// They were left where they were.
 	Unreadable *uint64 `protobuf:"varint,3,opt,name=unreadable,proto3,oneof" json:"unreadable,omitempty"`
-	// Whether shipping has stopped on an identity failure. A halted agent sends
-	// nothing at all, so this field arriving true describes a halt that came
-	// after this payload was written, never the one in force now.
+	// Whether shipping has stopped on an identity failure. Superseded by
+	// `halted_since`; kept for the compatibility window of section 6.
+	//
+	// Deprecated: Marked as deprecated in rebuildstack/ingest/kubernetes/v1/collection_coverage.proto.
 	Halted *bool `protobuf:"varint,4,opt,name=halted,proto3,oneof" json:"halted,omitempty"`
 	// What the backend refused permanently, by reason.
 	Rejected *ShippingRejections `protobuf:"bytes,5,opt,name=rejected,proto3" json:"rejected,omitempty"`
@@ -1415,8 +1430,12 @@ type ShippingCoverage struct {
 	// every attempt, so a retried payload is counted each time it cost a request.
 	PayloadBytes     *uint64 `protobuf:"varint,6,opt,name=payload_bytes,json=payloadBytes,proto3,oneof" json:"payload_bytes,omitempty"`
 	TransmittedBytes *uint64 `protobuf:"varint,7,opt,name=transmitted_bytes,json=transmittedBytes,proto3,oneof" json:"transmitted_bytes,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// When shipping stopped on an identity failure. A halted agent sends nothing
+	// at all, so this arriving describes a halt that came after this payload was
+	// written; the halt in force now is on the metrics endpoint alone.
+	HaltedSince   *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=halted_since,json=haltedSince,proto3" json:"halted_since,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ShippingCoverage) Reset() {
@@ -1470,6 +1489,7 @@ func (x *ShippingCoverage) GetUnreadable() uint64 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in rebuildstack/ingest/kubernetes/v1/collection_coverage.proto.
 func (x *ShippingCoverage) GetHalted() bool {
 	if x != nil && x.Halted != nil {
 		return *x.Halted
@@ -1496,6 +1516,13 @@ func (x *ShippingCoverage) GetTransmittedBytes() uint64 {
 		return *x.TransmittedBytes
 	}
 	return 0
+}
+
+func (x *ShippingCoverage) GetHaltedSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.HaltedSince
+	}
+	return nil
 }
 
 // What the backend refused to accept from the agent, by reason. A payload
@@ -1768,11 +1795,12 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\x13_pprof_pull_enabledB\x1a\n" +
 	"\x18_symbol_prefixes_allowedB\x16\n" +
 	"\x14_node_intake_enabledB\x15\n" +
-	"\x13_backend_configured\"u\n" +
+	"\x13_backend_configured\"\xba\x01\n" +
 	"\fSourceHealth\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
-	"\x06synced\x18\x02 \x01(\bH\x00R\x06synced\x88\x01\x01\x12\x1d\n" +
-	"\afailing\x18\x03 \x01(\bH\x01R\afailing\x88\x01\x01B\t\n" +
+	"\x06synced\x18\x02 \x01(\bH\x00R\x06synced\x88\x01\x01\x12!\n" +
+	"\afailing\x18\x03 \x01(\bB\x02\x18\x01H\x01R\afailing\x88\x01\x01\x12?\n" +
+	"\rfailing_since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\ffailingSinceB\t\n" +
 	"\a_syncedB\n" +
 	"\n" +
 	"\b_failing\"\xd6\t\n" +
@@ -1911,17 +1939,18 @@ const file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_rawDesc =
 	"\n" +
 	"_too_largeB\f\n" +
 	"\n" +
-	"_malformed\"\xa4\x03\n" +
+	"_malformed\"\xe7\x03\n" +
 	"\x10ShippingCoverage\x12!\n" +
 	"\tdelivered\x18\x01 \x01(\x04H\x00R\tdelivered\x88\x01\x01\x12\x1f\n" +
 	"\bdeferred\x18\x02 \x01(\x04H\x01R\bdeferred\x88\x01\x01\x12#\n" +
 	"\n" +
 	"unreadable\x18\x03 \x01(\x04H\x02R\n" +
-	"unreadable\x88\x01\x01\x12\x1b\n" +
-	"\x06halted\x18\x04 \x01(\bH\x03R\x06halted\x88\x01\x01\x12Q\n" +
+	"unreadable\x88\x01\x01\x12\x1f\n" +
+	"\x06halted\x18\x04 \x01(\bB\x02\x18\x01H\x03R\x06halted\x88\x01\x01\x12Q\n" +
 	"\brejected\x18\x05 \x01(\v25.rebuildstack.ingest.kubernetes.v1.ShippingRejectionsR\brejected\x12(\n" +
 	"\rpayload_bytes\x18\x06 \x01(\x04H\x04R\fpayloadBytes\x88\x01\x01\x120\n" +
-	"\x11transmitted_bytes\x18\a \x01(\x04H\x05R\x10transmittedBytes\x88\x01\x01B\f\n" +
+	"\x11transmitted_bytes\x18\a \x01(\x04H\x05R\x10transmittedBytes\x88\x01\x01\x12=\n" +
+	"\fhalted_since\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\vhaltedSinceB\f\n" +
 	"\n" +
 	"_deliveredB\v\n" +
 	"\t_deferredB\r\n" +
@@ -2012,14 +2041,16 @@ var file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_depIdxs = [
 	15, // 14: rebuildstack.ingest.kubernetes.v1.CollectionCoverage.goroutine_counts:type_name -> rebuildstack.ingest.kubernetes.v1.GoroutineCountCoverage
 	2,  // 15: rebuildstack.ingest.kubernetes.v1.AgentInfo.config:type_name -> rebuildstack.ingest.kubernetes.v1.ConfigShape
 	17, // 16: rebuildstack.ingest.kubernetes.v1.ConfigShape.since:type_name -> google.protobuf.Timestamp
-	17, // 17: rebuildstack.ingest.kubernetes.v1.ScanCoverage.oldest_asserted_at:type_name -> google.protobuf.Timestamp
-	16, // 18: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.states:type_name -> rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
-	13, // 19: rebuildstack.ingest.kubernetes.v1.ShippingCoverage.rejected:type_name -> rebuildstack.ingest.kubernetes.v1.ShippingRejections
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	17, // 17: rebuildstack.ingest.kubernetes.v1.SourceHealth.failing_since:type_name -> google.protobuf.Timestamp
+	17, // 18: rebuildstack.ingest.kubernetes.v1.ScanCoverage.oldest_asserted_at:type_name -> google.protobuf.Timestamp
+	16, // 19: rebuildstack.ingest.kubernetes.v1.ProfileCoverage.states:type_name -> rebuildstack.ingest.kubernetes.v1.ProfileCoverage.StatesEntry
+	13, // 20: rebuildstack.ingest.kubernetes.v1.ShippingCoverage.rejected:type_name -> rebuildstack.ingest.kubernetes.v1.ShippingRejections
+	17, // 21: rebuildstack.ingest.kubernetes.v1.ShippingCoverage.halted_since:type_name -> google.protobuf.Timestamp
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_rebuildstack_ingest_kubernetes_v1_collection_coverage_proto_init() }

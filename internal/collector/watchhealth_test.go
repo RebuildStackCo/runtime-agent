@@ -352,3 +352,50 @@ func waitFor(t *testing.T, within time.Duration, what string, cond func() bool) 
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+// The instant a source carries is where its run of failures began, not where it
+// last failed. A reader asking when the cache stopped being fed is asking about
+// the start; the latest failure only says when the agent last looked (ADR 0087).
+func TestAFailingSourceIsDatedFromTheStartOfTheRun(t *testing.T) {
+	t0 := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	h := newWatchHealth(2 * time.Minute)
+	h.record(t0, errors.New("forbidden"))
+	h.record(t0.Add(time.Minute), errors.New("forbidden"))
+	h.record(t0.Add(2*time.Minute), errors.New("forbidden"))
+
+	since := h.failingSince(t0.Add(3*time.Minute), 10*time.Minute)
+	if since == nil {
+		t.Fatal("a cache failing three times running is not reported as failing")
+	}
+	if !since.Equal(t0) {
+		t.Errorf("failing since %s, want the first failure at %s", since, t0)
+	}
+}
+
+// A run that ended leaves nothing behind: the field is absent, and the claim
+// the payload makes is that the cache is fed again. What the outage was is the
+// window's to answer, not this field's.
+func TestASourceThatRecoveredCarriesNoInstant(t *testing.T) {
+	t0 := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	h := newWatchHealth(2 * time.Minute)
+	h.record(t0, errors.New("connection reset"))
+
+	if since := h.failingSince(t0.Add(time.Hour), 10*time.Minute); since != nil {
+		t.Errorf("a cache fed again for an hour is dated %s", since)
+	}
+}
+
+// The boolean and the instant are one answer read twice, so no payload can
+// carry a source that is failing with no start, or a start with no failure.
+func TestTheBooleanAndTheInstantAgree(t *testing.T) {
+	t0 := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	h := newWatchHealth(2 * time.Minute)
+	h.record(t0, errors.New("forbidden"))
+
+	for _, at := range []time.Time{t0, t0.Add(time.Minute), t0.Add(time.Hour)} {
+		since, failing := h.failingSince(at, 10*time.Minute), h.failedWithin(at, 10*time.Minute)
+		if (since != nil) != failing {
+			t.Errorf("at %s: failing=%v, instant=%v", at, failing, since)
+		}
+	}
+}

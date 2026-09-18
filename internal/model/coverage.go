@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // Coverage is an aggregate snapshot of what the filter admitted and
 // excluded, counted once per pod appearance. It is the seed of the coverage
 // report (docs/security.md §11): full information about what is collected,
@@ -46,11 +48,18 @@ type SourceHealth struct {
 	// Name is the resource class, not a customer object: "services",
 	// "endpoint_slices", and so on.
 	Name string `json:"name"`
-	// Synced is whether the cache ever filled.
+	// Synced is whether the cache ever filled. It is a latch rather than a
+	// state that ends, and the instant it would carry is the payload's own
+	// `since` — so it stays a boolean where the two below do not (ADR 0087).
 	Synced bool `json:"synced"`
 	// Failing is whether its watch has been erroring recently enough to treat
-	// the cache as no longer fed (ADR 0035).
+	// the cache as no longer fed (ADR 0035). Derived from FailingSince so the
+	// two cannot disagree, and kept only for the compatibility window.
 	Failing bool `json:"failing,omitempty"`
+	// FailingSince is when the run of failures that left the cache unfed began.
+	// Nil is the claim that it is still being fed: a source that recovers drops
+	// the field, and what it was doing before that is the window's to say.
+	FailingSince *time.Time `json:"failing_since,omitempty"`
 }
 
 // NodeDrops is what the node reductions refused to carry, cumulative since the
@@ -129,11 +138,15 @@ type Shipping struct {
 	Unreadable uint64 `json:"unreadable"`
 	// Halted is whether shipping has stopped on an identity failure. Nothing
 	// retries into a rejected credential, so the agent stops rather than turning
-	// a fleet's spools into a retry storm against it.
+	// a fleet's spools into a retry storm against it. Derived from HaltedSince,
+	// and kept only for the compatibility window.
 	//
 	// A halted agent ships nothing, this payload included, so its readers are
 	// whoever holds the spool or scrapes the metrics endpoint.
 	Halted bool `json:"halted"`
+	// HaltedSince is when that halt began. A halt has no end — it is cleared by
+	// a restart, which moves `since` and starts the counters over.
+	HaltedSince *time.Time `json:"halted_since,omitempty"`
 	// Rejected is what the backend refused permanently, by reason.
 	Rejected ShippingRejections `json:"rejected"`
 	// PayloadBytes and TransmittedBytes are the same deliveries measured on

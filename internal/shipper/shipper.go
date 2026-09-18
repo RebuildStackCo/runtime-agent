@@ -77,9 +77,13 @@ type Shipper struct {
 	// because it cannot change while the process runs (ADR 0083).
 	agent string
 
-	// halted latches on an identity failure and never clears: nothing retries
-	// into a rejected credential.
-	halted atomic.Bool
+	// haltedAt latches on an identity failure and never clears: nothing retries
+	// into a rejected credential. Zero is not halted; any other value is the
+	// instant it stopped, which is the whole of what a reader can act on when
+	// the agent has been silent for days (ADR 0087).
+	haltedAt atomic.Int64
+	// now is the clock, replaced in tests.
+	now func() time.Time
 
 	// mu guards everything below. The round runs on one goroutine; the lock is
 	// for the coverage flush and the metrics handler reading across it.
@@ -118,10 +122,14 @@ func New(base, dir, version string, logger *slog.Logger) *Shipper {
 		// #nosec G404 -- jitter spreads a fleet's retries over a window; it is
 		// not a secret and predicting it buys nothing
 		jitter:      rand.Int64N,
+		now:         time.Now,
 		interval:    DefaultInterval,
 		finalBudget: FinalRoundBudget,
 	}
 }
+
+// halted reports whether shipping has stopped on an identity failure.
+func (s *Shipper) halted() bool { return s.haltedAt.Load() != 0 }
 
 // Run ships until ctx is canceled.
 //
@@ -140,7 +148,7 @@ func (s *Shipper) Run(ctx context.Context) error {
 		case <-timer.C:
 		}
 		s.Round(ctx)
-		if s.halted.Load() {
+		if s.halted() {
 			<-ctx.Done()
 			return nil
 		}
@@ -156,7 +164,7 @@ func (s *Shipper) Run(ctx context.Context) error {
 // earlier of the two wins. Undelivered payloads stay in the spool as always;
 // what differs is that no next process may read them.
 func (s *Shipper) FinalRound(ctx context.Context) {
-	if s.halted.Load() {
+	if s.halted() {
 		return // nothing retries into a rejected credential, this least of all
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.finalBudget)
@@ -183,7 +191,7 @@ func (s *Shipper) FinalRound(ctx context.Context) {
 // at the first payload the backend could not take, because the next one would
 // meet the same backend.
 func (s *Shipper) Round(ctx context.Context) {
-	if s.halted.Load() {
+	if s.halted() {
 		return // nothing retries into a rejected credential
 	}
 	for _, f := range s.pending() {
@@ -203,7 +211,10 @@ func (s *Shipper) Coverage() model.Shipping {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c := s.counts
-	c.Halted = s.halted.Load()
+	if at := s.haltedAt.Load(); at != 0 {
+		halted := time.Unix(0, at).UTC()
+		c.Halted, c.HaltedSince = true, &halted
+	}
 	return c
 }
 
@@ -304,7 +315,7 @@ func (s *Shipper) deliver(ctx context.Context, f spooled) bool {
 		s.logger.Error("the backend refused this agent's identity; shipping stops until this agent is restarted",
 			"file", f.name, "kind", kind, "status", status)
 		s.count(func(c *model.Shipping) { c.Rejected.Unauthorized++ })
-		s.halted.Store(true)
+		s.haltedAt.Store(s.now().UnixNano())
 		return false
 
 	// Permanent for these bytes: held, never offered again, and left in the

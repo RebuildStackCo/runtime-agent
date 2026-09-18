@@ -272,8 +272,9 @@ and 20000 files, dropping the oldest first; and the `emptyDir` declares a 1 GiB
 - **The agent reads it once, at startup**, so a restart resumes its open windows
   rather than starting them over ([ADR 0072](adr/0072-a-restart-resumes-the-window-the-spool-holds.md),
   [ADR 0077](adr/0077-a-restart-resumes-every-open-window.md)). It is a pure read
-  of five kinds and no others — `usage_snapshot`, `container_restarts`,
-  `pod_disruptions`, `node_lifecycle`, `job_runs` — and it deletes nothing.
+  of six kinds and no others — `usage_snapshot`, `container_restarts`,
+  `pod_disruptions`, `node_lifecycle`, `job_runs`, `goroutine_counts` — and it
+  deletes nothing.
 - **Configuration is never cached on it.** Filters are read from the ConfigMap at
   every start and never reread while running; a stale filter set cannot resurrect
   from disk, and a filter change takes a restart.
@@ -1092,7 +1093,9 @@ cluster at `/metrics` ([§5](#5-network-access)) — so filtering behavior is
 verifiable by you and from what we receive, not only from what you configured.
 Both report which of the agent's own reads worked, measured from its caches
 rather than read back from the rules, so a grant defeated by a webhook reads as
-failing. No `SelfSubjectRulesReview` self-audit is performed: that is a `create`
+failing — and says since when, so an outage you have already fixed is not
+reported as one you still have (ADR 0087). No `SelfSubjectRulesReview`
+self-audit is performed: that is a `create`
 call (ADR 0054 §3). A 403 degrades with a log line, never a crash-loop.
 
 **And named, to you, inside your cluster.** The counts are what *we* receive. You can read the same decisions resolved to objects at `/collection` on the controller's loopback address ([§5](#5-network-access)): one line per namespace, pod and Job, whether it is collected, whether it may be profiled, which of your five controls refused it, and whether its workload was one the agent cannot read. It is computed on request from the same caches and the same filter code the agent collects with, so it cannot disagree with what it does. Nothing of it is transmitted, and nothing of it is remembered.

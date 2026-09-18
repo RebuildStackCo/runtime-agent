@@ -309,10 +309,12 @@ func (w *PodWatcher) SourceHealths() []model.SourceHealth {
 	}
 	out := make([]model.SourceHealth, 0, len(w.policySources))
 	for _, source := range w.policySources {
+		since := source.health.failingSince(now, window)
 		out = append(out, model.SourceHealth{
-			Name:    source.name,
-			Synced:  source.synced != nil && source.synced(),
-			Failing: source.health != nil && source.health.failedWithin(now, window),
+			Name:         source.name,
+			Synced:       source.synced != nil && source.synced(),
+			Failing:      since != nil,
+			FailingSince: since,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

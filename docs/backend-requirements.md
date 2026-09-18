@@ -453,7 +453,13 @@ a hash of it; `agent.config.since` is when that configuration took effect, and i
 is what separates "the data changed" from "the filters changed". `sources[]`
 reports what the agent's reads actually did, so a source that is `synced: false`
 or `failing: true` bounds every finding resting on it — the backend MUST NOT
-present such a finding as complete. The scan block is a fleet aggregate over the
+present such a finding as complete. `failing_since` is when the run of failures
+that left a cache unfed began, and `failing` is the same fact as a boolean,
+derived from it, deprecated and retained for the window of section 6. An absent
+instant means **not failing now**, never "never failed": a source that failed
+and recovered between two flushes states nothing at all, so the backend MUST NOT
+read a clean payload as evidence that these reads were healthy throughout the
+period since `since` ([ADR 0087](adr/0087-a-state-says-when-it-began.md)). The scan block is a fleet aggregate over the
 latest pass of each reporting node and MUST NOT be summed across flushes.
 
 The `filter` counters count **decisions, not pods**. A customer who annotates a

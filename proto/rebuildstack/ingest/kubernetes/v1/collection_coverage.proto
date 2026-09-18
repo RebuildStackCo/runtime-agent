@@ -151,9 +151,14 @@ message SourceHealth {
   optional bool synced = 2;
 
   // Whether the watch has been failing recently enough to treat the cache as no
-  // longer fed. Absent means it was not stated; false is a claim that the cache
-  // is still being fed.
-  optional bool failing = 3;
+  // longer fed. Superseded by `failing_since`, which states the same fact and
+  // says when it began; kept for the compatibility window of section 6.
+  optional bool failing = 3 [deprecated = true];
+
+  // When the run of failures that left this cache unfed began. Absent is the
+  // claim that the cache is still being fed, so a source that recovers drops
+  // the field rather than restating it.
+  google.protobuf.Timestamp failing_since = 4;
 }
 
 // How many pods and Jobs the filter looked at and excluded, counted once per
@@ -414,10 +419,9 @@ message ShippingCoverage {
   // They were left where they were.
   optional uint64 unreadable = 3;
 
-  // Whether shipping has stopped on an identity failure. A halted agent sends
-  // nothing at all, so this field arriving true describes a halt that came
-  // after this payload was written, never the one in force now.
-  optional bool halted = 4;
+  // Whether shipping has stopped on an identity failure. Superseded by
+  // `halted_since`; kept for the compatibility window of section 6.
+  optional bool halted = 4 [deprecated = true];
 
   // What the backend refused permanently, by reason.
   ShippingRejections rejected = 5;
@@ -427,6 +431,11 @@ message ShippingCoverage {
   // every attempt, so a retried payload is counted each time it cost a request.
   optional uint64 payload_bytes = 6;
   optional uint64 transmitted_bytes = 7;
+
+  // When shipping stopped on an identity failure. A halted agent sends nothing
+  // at all, so this arriving describes a halt that came after this payload was
+  // written; the halt in force now is on the metrics endpoint alone.
+  google.protobuf.Timestamp halted_since = 8;
 }
 
 // What the backend refused to accept from the agent, by reason. A payload
