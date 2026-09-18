@@ -1,6 +1,6 @@
 module github.com/RebuildStackCo/runtime-agent
 
-go 1.26.7
+go 1.27.1
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1

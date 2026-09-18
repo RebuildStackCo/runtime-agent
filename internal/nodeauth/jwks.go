@@ -110,21 +110,45 @@ func (k jwk) publicKey() (crypto.PublicKey, error) {
 		if err != nil {
 			return nil, err
 		}
-		x, err := decodeBigInt(k.X)
+		// Assembled as an uncompressed point and parsed, rather than assigned
+		// coordinate by coordinate: the field is deprecated since Go 1.26, and
+		// what replaces it also rejects a point that is not on the curve
+		// (ADR 0086).
+		point, err := uncompressedPoint(curve, k.X, k.Y)
 		if err != nil {
-			return nil, fmt.Errorf("x coordinate: %w", err)
+			return nil, err
 		}
-		y, err := decodeBigInt(k.Y)
+		key, err := ecdsa.ParseUncompressedPublicKey(curve, point)
 		if err != nil {
-			return nil, fmt.Errorf("y coordinate: %w", err)
+			return nil, fmt.Errorf("public key: %w", err)
 		}
-		// An off-curve point cannot verify any signature (ECDSA verification
-		// rejects it), so no explicit on-curve check is needed here — that
-		// check matters for ECDH key agreement, which this package never does.
-		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+		return key, nil
 	default:
 		return nil, nil
 	}
+}
+
+// uncompressedPoint builds the SEC 1 uncompressed encoding of a JWK's two
+// coordinates: the 0x04 marker and both coordinates left-padded to the curve's
+// field size, which is the length the parser requires.
+func uncompressedPoint(curve elliptic.Curve, xB64, yB64 string) ([]byte, error) {
+	size := (curve.Params().BitSize + 7) / 8
+	point := make([]byte, 1+2*size)
+	point[0] = 4
+	for i, part := range []struct {
+		name  string
+		value string
+	}{{"x coordinate", xB64}, {"y coordinate", yB64}} {
+		raw, err := base64.RawURLEncoding.DecodeString(part.value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", part.name, err)
+		}
+		if len(raw) == 0 || len(raw) > size {
+			return nil, fmt.Errorf("%s is %d bytes, want 1 to %d", part.name, len(raw), size)
+		}
+		copy(point[1+i*size+size-len(raw):], raw)
+	}
+	return point, nil
 }
 
 func curveFor(crv string) (elliptic.Curve, error) {

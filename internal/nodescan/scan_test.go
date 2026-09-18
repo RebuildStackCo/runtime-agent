@@ -351,6 +351,61 @@ func TestTheNamesThatOnlyADirectiveCanSet(t *testing.T) {
 	}
 }
 
+// `fips140ems=0` is the same kind of choice and arrived with Go 1.27: no
+// version-dependent default, so a build carries it only because someone wrote
+// the line, and what the line turns off is the enforcement of extended master
+// secret in FIPS 140-3 mode (ADR 0086 §1).
+func TestTheFIPSNameOnlyADirectiveCanSet(t *testing.T) {
+	got := goDebugDefaults(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+		// Measured on go1.27.1 from a `go 1.27` module carrying both directives.
+		{Key: "DefaultGODEBUG", Value: "execerrdot=1,fips140ems=0"},
+	}})
+	want := map[string]string{"execerrdot": "1", "fips140ems": "0"}
+	if !maps.Equal(got, want) {
+		t.Errorf("goDebugDefaults = %v, want %v", got, want)
+	}
+}
+
+// Go 1.27 removed four names this list carries, so a binary built by it says
+// nothing about them — and a binary built by any earlier toolchain still does.
+// The list is about the binaries in a customer's cluster, which were built by
+// every toolchain rather than by ours, so a removal upstream is not a removal
+// here (ADR 0086 §2).
+func TestNamesRemovedUpstreamStayOnTheList(t *testing.T) {
+	removedInGo127 := []string{"tls10server", "tls3des", "tlsrsakex", "tlsunsafeekm"}
+	for _, name := range removedInGo127 {
+		if _, allowed := goDebugAllowList[name]; !allowed {
+			t.Errorf("%s left the allow-list; binaries built before Go 1.27 still carry it", name)
+		}
+	}
+
+	// The whole default set of a `go 1.21` module built by go1.27.1, measured.
+	// None of the four is in it, and every name that is parses to an allowed one.
+	const goDirective121On127 = "containermaxprocs=0,cryptocustomrand=1,decoratemappings=0," +
+		"gotestjsonbuildtext=1,httpcookiemaxnum=0,httplaxcontentlength=1,httpmuxgo121=1," +
+		"httpservecontentkeepheaders=1,multipathtcp=0,randseednop=0,rsa1024min=0,tlsmlkem=0," +
+		"tlssecpmlkem=0,tlssha1=1,tracebacklabels=0,updatemaxprocs=0,urlmaxqueryparams=0," +
+		"urlstrictcolons=0,winreadlinkvolume=0,winsymlink=0,x509negativeserial=1,x509rsacrt=0," +
+		"x509sha256skid=0,x509sslcertoverrideplatform=0,x509usepolicies=0"
+
+	got := goDebugDefaults(&buildinfo.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "DefaultGODEBUG", Value: goDirective121On127},
+	}})
+	for _, name := range removedInGo127 {
+		if _, present := got[name]; present {
+			t.Errorf("%s appeared in a go1.27.1 build; the toolchain removed it", name)
+		}
+	}
+	for name := range got {
+		if _, allowed := goDebugAllowList[name]; !allowed {
+			t.Errorf("%s is kept from a go1.27.1 build and is not on the allow-list", name)
+		}
+	}
+	if len(got) == 0 {
+		t.Error("a go 1.21 module built by go1.27.1 kept no allow-listed name at all")
+	}
+}
+
 // The compound value carries names from crypto, net/http and go/types that say
 // nothing about resources. It is parsed, so the whole string never reaches a
 // record — the case the allow-list would otherwise have to cover key by key.

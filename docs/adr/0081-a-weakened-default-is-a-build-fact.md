@@ -4,6 +4,8 @@ Date: 2026-09-16
 
 Status: Accepted
 
+Amended by: 0086
+
 Amends: 0050 §1
 
 Adds twelve allow-listed GODEBUG names to `go_build`, on a second axis from the

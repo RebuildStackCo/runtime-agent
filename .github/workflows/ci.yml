@@ -94,7 +94,9 @@ jobs:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11.4
+          # v2.13.2 rather than v2.11.4: a linter built with Go 1.26 refuses a
+          # module targeting 1.27 outright, config unread (ADR 0086).
+          version: v2.13.2
           # No analysis cache. On 2026-09-16 a restored one reported six
           # SA5011 findings in files the branch did not touch, twice, on a
           # tree byte-identical to a passing main; a cold run found none.
