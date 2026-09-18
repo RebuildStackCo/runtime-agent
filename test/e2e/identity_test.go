@@ -73,6 +73,7 @@ func TestANodeCannotSpeakForAnotherNode(t *testing.T) {
 	ownNode := podNode(ctx, t, clientset, ns, probePod)
 
 	endpoint := fmt.Sprintf("http://runtime-agent-controller.%s.svc:8080", ns)
+	waitReceiverAnswering(ctx, t, config, clientset, ns, probePod, endpoint+"/v1/node-scope")
 	const foreign = "definitely-not-this-node"
 
 	// First the positive control. Without it, a refusal below could mean the
@@ -176,6 +177,7 @@ func TestATokenThatWasNotProjectedIntoAPodIsRefused(t *testing.T) {
 	}
 
 	endpoint := fmt.Sprintf("http://runtime-agent-controller.%s.svc:8080/v1/node-scope", ns)
+	waitReceiverAnswering(ctx, t, config, clientset, ns, probePod, endpoint)
 	status := probeReceiver(ctx, t, config, clientset, ns, probePod, endpoint,
 		tr.Status.Token, fmt.Sprintf(`{"node":%q}`, ownNode))
 	if status != 401 {
@@ -218,6 +220,21 @@ func probeReceiver(ctx context.Context, t *testing.T, config *rest.Config, cs ku
 	ns, pod, url, token, body string,
 ) int {
 	t.Helper()
+	status, out := tryProbeReceiver(ctx, t, config, cs, ns, pod, url, token, body)
+	if status == 0 {
+		t.Fatalf("no HTTP status in the probe output for %s:\n%s", url, out)
+	}
+	return status
+}
+
+// tryProbeReceiver is probeReceiver without the verdict: it returns the status
+// and the raw output, and a zero status means the request never reached an HTTP
+// conversation at all. Callers that are waiting for the receiver to come up need
+// that case as an answer rather than as a failure.
+func tryProbeReceiver(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface,
+	ns, pod, url, token, body string,
+) (int, string) {
+	t.Helper()
 
 	auth := `"Authorization: Bearer $(cat /var/run/secrets/rebuildstack.co/controller-token/token)"`
 	if token != "" {
@@ -242,18 +259,44 @@ func probeReceiver(ctx context.Context, t *testing.T, config *rest.Config, cs ku
 	}
 	var stdout, stderr bytes.Buffer
 	if err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &stdout, Stderr: &stderr}); err != nil {
-		t.Fatalf("probing %s: %v\nstdout: %s\nstderr: %s", url, err, stdout.String(), stderr.String())
+		return 0, fmt.Sprintf("exec failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 	out := stdout.String() + stderr.String()
 	m := statusLine.FindStringSubmatch(out)
 	if m == nil {
-		t.Fatalf("no HTTP status in the probe output for %s:\n%s", url, out)
+		return 0, out
 	}
 	var status int
 	if _, err := fmt.Sscanf(m[1], "%d", &status); err != nil {
 		t.Fatalf("parsing status %q: %v", m[1], err)
 	}
-	return status
+	return status, out
+}
+
+// waitReceiverAnswering blocks until the receiver answers this caller with an
+// HTTP status — any status, since an unauthenticated probe is meant to be
+// refused. It rules out the case both tests open by naming: a connection
+// refused satisfies "not 200" without proving a thing.
+//
+// A Running pod never met that bar. The probe goes through the Service, which
+// carries no endpoint until the pod is *Ready*, and ready means the caches have
+// synced (ADR 0069); requests inside that window are refused at connect.
+func waitReceiverAnswering(ctx context.Context, t *testing.T, config *rest.Config, cs kubernetes.Interface,
+	ns, pod, url string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Minute)
+	var last string
+	for time.Now().Before(deadline) {
+		status, out := tryProbeReceiver(ctx, t, config, cs, ns, pod, url, "no-such-token", `{}`)
+		if status != 0 {
+			t.Logf("the receiver answers: %s returned %d to an unauthenticated probe", url, status)
+			return
+		}
+		last = out
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("the receiver at %s never answered; last probe output:\n%s", url, last)
 }
 
 // podNode reports which node a pod was scheduled on — the value its projected
