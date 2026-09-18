@@ -145,3 +145,4 @@ line to paste.
 - [0085. The image is built and scanned where the code is, and pinned to what it was built from](0085-the-image-is-built-and-scanned-by-ci.md)
 - [0086. A toolchain move is a review of what the toolchain reports](0086-a-toolchain-move-reviews-what-it-reports.md)
 - [0087. A state says when it began](0087-a-state-says-when-it-began.md)
+- [0088. A window says how long a state held](0088-a-window-says-how-long-a-state-held.md)

@@ -35,23 +35,23 @@ var ceilings = []struct {
 	section int
 }{
 	// Each raise names the obligation that bought it: payloads leave the cluster
-	// at all (0075); a journal window states when it was written (0078); a
-	// confirmed endpoint is read once a minute per process (0080); twelve more
-	// GODEBUG names come out of the build (0081); a request names the agent that
-	// made it (0083); a listener names inside the cluster what the filters
-	// excluded (0084); the image states what it is made of and what does not yet
-	// back it (0085); a failing read says since when (0087), whose diff also
-	// corrects the startup-read list from five kinds to the six it reads.
-	{"security.md", 1138, 366},
-	// Each raise names its obligation here too. The body is encoded, so a
-	// payload's size is no longer the request's (0076); a window states whether
-	// it is finished (0078); gauge samples arrive, where adding them up is the
-	// wrong ingest (0080); `godebug` carries names where neither value is safe
-	// (0081); the filter counters count decisions (0054); a port's `pprof` is
-	// absent when nothing asked, not `absent` (0082); a request may name an
-	// agent that states no version (0083); and an absent instant is told apart
-	// from an absent state (0087) — the raise that also moved the section.
-	{"backend-requirements.md", 829, 651},
+	// (0075); a window states when it was written (0078); an endpoint is read
+	// once a minute (0080); GODEBUG names come out of the build (0081); a
+	// request names its agent (0083); a listener names what the filters excluded
+	// (0084); the image states what it is made of (0085); a failing read says
+	// since when (0087); and a window says how long a state held (0088), whose
+	// row is the section's raise and whose diff moves the startup-read list to
+	// the seven kinds it reads.
+	{"security.md", 1139, 367},
+	// Each raise names its obligation here too. A payload's size is no longer
+	// its request's (0076); a window states whether it is finished (0078); gauge
+	// samples arrive, where adding them up is the wrong ingest (0080); `godebug`
+	// carries names where neither value is safe (0081); the filter counters
+	// count decisions (0054); a port's `pprof` is absent when nothing asked
+	// (0082); a request may name an agent with no version (0083); an absent
+	// instant is told apart from an absent state (0087); and a duration arrives
+	// with the observation bounding it (0088). The last two moved the section.
+	{"backend-requirements.md", 851, 673},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

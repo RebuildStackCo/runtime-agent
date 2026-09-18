@@ -451,3 +451,62 @@ func TestARestartInsideAnOpenWindowKeepsTheSeriesItAlreadyHeld(t *testing.T) {
 			"already had plus the new one: %+v", got, payload.Records[0].Samples)
 	}
 }
+
+// agentStateRecords is one subject's open window, as the accumulator holds it
+// when a process stops mid-hour.
+func agentStateRecords(openSince time.Time) []journal.StateRecord {
+	return []journal.StateRecord{{
+		State: journal.StateFailing, Subject: "endpoint_slices",
+		WindowStart: recoverWindow, WindowSeconds: 3600,
+		OccupiedNanos: (5 * time.Minute).Nanoseconds(),
+		ObservedNanos: (12 * time.Minute).Nanoseconds(),
+		Entries:       1,
+		AccruedTo:     recoverWindow.Add(12 * time.Minute),
+		OpenSince:     &openSince,
+	}}
+}
+
+// The loss this kind is exposed to: occupancy is an advance, not a reading, so
+// a restart that resumed by re-measuring from the episode's start would count
+// the pre-restart span twice, and one that resumed from nothing would lose it.
+// Neither shows up as an error — only as a number (ADR 0088 §3).
+func TestARestartInsideAnOpenStateWindowNeitherLosesNorRepeatsIt(t *testing.T) {
+	s, _ := recoverSpool(t)
+	openSince := recoverWindow.Add(7 * time.Minute)
+	if err := s.WriteAgentStates(capturedAt, agentStateRecords(openSince)); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := s.RecoverOpenWindows(midWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.JournalWindows != 1 || len(rec.AgentStates) != 1 {
+		t.Fatalf("recovered %d journal windows carrying %d records, want 1 and 1",
+			rec.JournalWindows, len(rec.AgentStates))
+	}
+
+	resumed := journal.NewStates(time.Hour)
+	if seeded := resumed.Resume(rec.AgentStates); seeded != 1 {
+		t.Fatalf("seeded %d records, want 1", seeded)
+	}
+	// Two passes of the new process, as cmd/agent runs them: the first accrues
+	// nothing, because the span before it belongs to the process that stopped.
+	for _, at := range []time.Time{midWindow, midWindow.Add(time.Minute)} {
+		resumed.Observe(at, []journal.AgentState{
+			{State: journal.StateFailing, Subject: "endpoint_slices", Since: &openSince},
+		})
+	}
+
+	got := resumed.Snapshots()
+	if len(got) != 1 {
+		t.Fatalf("holding %d records, want 1: %+v", len(got), got)
+	}
+	if want := (6 * time.Minute).Nanoseconds(); got[0].OccupiedNanos != want {
+		t.Errorf("occupied %d, want %d — five accrued before the restart and one after",
+			got[0].OccupiedNanos, want)
+	}
+	if got[0].Entries != 1 {
+		t.Errorf("entries %d, want 1: the resumed episode is the one already counted", got[0].Entries)
+	}
+}

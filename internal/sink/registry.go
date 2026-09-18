@@ -96,6 +96,18 @@ var registry = []PayloadKind{
 		ADR:        "0054",
 	},
 	{
+		// The other half of the kind above: coverage says which of the agent's
+		// own states hold now, this says how much of each window they held and
+		// how many episodes that was. Written every pass, including one with
+		// every state clear — a clear window is the observation (ADR 0088).
+		Kind:       "agent_states",
+		Source:     SourceAgent,
+		NaturalKey: "(window start, window length)",
+		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
+		ADR:        "0088",
+	},
+	{
 		Kind:       "usage_snapshot",
 		Source:     SourceMeasured,
 		NaturalKey: "(window start, window length)",

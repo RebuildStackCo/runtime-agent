@@ -478,6 +478,28 @@ agent failed on.
 No field of this payload names an object the customer excluded, and the backend
 MUST NOT ask for one.
 
+**`agent_states` is the same two states as time, and MUST NOT be added to them**
+([ADR 0088](adr/0088-a-window-says-how-long-a-state-held.md)). One record per
+(window, state, subject), superseding by (window start, window length): the
+backend MUST upsert and MUST NOT append. `collection_coverage` says which states
+hold now; this says how much of each hour they held and how many episodes that
+was. The relationship is `container_restarts` to `restart_counters`, and the
+same rule applies — one is a reading, the other a window.
+
+- `occupied_nanos` and `entries` are independent and neither derives the other:
+  one long episode and several short ones can share a duration. Summing
+  `entries` across windows counts episodes, because an episode continuing from
+  the previous window contributes occupancy here and no entry.
+- **`observed_nanos` bounds both, and the backend MUST NOT read occupancy
+  without it.** Zero occupancy over a full window is a healthy hour; zero over
+  zero observation is an hour nobody watched. A restart's gap is in neither
+  number, which is what makes the second one the honest denominator.
+- A restart that crosses a window boundary may add one entry to a continuing
+  episode. It is detectable: `collection_coverage.since` moves at the same time.
+- `subject` is a resource class the agent watches or the agent's own
+  `shipping`. No object in the customer's cluster appears here at any window
+  length, and the backend MUST NOT ask for one.
+
 **`network_window` says how much moved, never where it went**
 ([ADR 0053](adr/0053-network-counters-are-the-pods.md)). The counters are read at
 the pod's own interfaces, so the payload carries no destination, no peer and no
