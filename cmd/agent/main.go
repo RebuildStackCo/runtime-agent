@@ -298,6 +298,11 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// supply for a workload that ran for part of a window (ADR 0029).
 	jobJournal := journal.NewJobRuns(collector.UsageWindowLength)
 	nodeJournal := journal.NewNodeEvents(collector.UsageWindowLength)
+	// The agent's own states over time. Its subject is this agent rather than
+	// the cluster, and it is a window for the reason the others are: a state
+	// that ended leaves no field behind in a payload that supersedes, so the
+	// only place it can be reported is a window (ADR 0088).
+	stateJournal := journal.NewStates(collector.UsageWindowLength)
 	podWatcher.OnJobFinished(func(r model.JobRun) {
 		logger.Info("job run finished",
 			"namespace", r.Namespace,
@@ -425,6 +430,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			nodes:       nodeJournal,
 			jobs:        jobJournal,
 			goroutines:  goroutineJournal,
+			states:      stateJournal,
 		}, time.Now())
 	}
 
@@ -855,10 +861,24 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			sc := ship.Coverage()
 			shipping = &sc
 		}
-		if err := spool.WriteCollectionCoverage(time.Now(), startedAt, agentInfo,
-			podWatcher.SourceHealths(), c, podWatcher.PlacementDrops(), nodeWatcher.Drops(), inv, scan,
+		// One reading of the clock stamps the snapshot and bounds the window's
+		// accrual, so the two cannot describe different instants (ADR 0078 §2).
+		now := time.Now()
+		sources := podWatcher.SourceHealths()
+		if err := spool.WriteCollectionCoverage(now, startedAt, agentInfo,
+			sources, c, podWatcher.PlacementDrops(), nodeWatcher.Drops(), inv, scan,
 			ebpf, probeCoverage, pullCoverage, countCoverage, rejections, shipping); err != nil {
 			logger.Error("spooling collection coverage", "error", err)
+		}
+		// The same two states the snapshot just carried, folded into the window
+		// that will outlive them: what holds now is above, how long it held and
+		// how many episodes it was is here (ADR 0088).
+		stateJournal.Observe(now, agentStates(sources, shipping))
+		records := append(stateJournal.CloseBefore(now), stateJournal.Snapshots()...)
+		if len(records) > 0 {
+			if err := spool.WriteAgentStates(now, records); err != nil {
+				logger.Error("spooling agent states", "error", err)
+			}
 		}
 	}
 

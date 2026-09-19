@@ -425,6 +425,22 @@ type nodeLifecyclePayload struct {
 	Records       []journal.NodeEventRecord `json:"records"`
 }
 
+// agentStatesPayload is how much of one window each of the agent's own states
+// occupied, and how many episodes made it up (ADR 0088).
+//
+// Its subject is this agent rather than the cluster, which is why it carries
+// observation beside occupancy: an hour the agent did not run is an hour it
+// cannot answer for, and a zero that means "fine" must not read like one that
+// means "nobody was watching".
+type agentStatesPayload struct {
+	Kind          string                `json:"kind"`
+	Source        string                `json:"source"`
+	CapturedAt    time.Time             `json:"captured_at"`
+	WindowStart   time.Time             `json:"window_start"`
+	WindowSeconds int64                 `json:"window_seconds"`
+	Records       []journal.StateRecord `json:"records"`
+}
+
 // jobRunsPayload is every finished Job run of one window: one file per window
 // holding many records, like the restart and disruption journals (ADR 0029).
 //
@@ -594,12 +610,14 @@ const (
 	kindNodeLifecycle     = "node_lifecycle"
 	kindJobRuns           = "job_runs"
 	kindGoroutineCounts   = "goroutine_counts"
+	kindAgentStates       = "agent_states"
 
 	restartsNamePrefix        = "restarts-"
 	disruptionsNamePrefix     = "disruptions-"
 	nodeLifecycleNamePrefix   = "node-lifecycle-"
 	jobRunsNamePrefix         = "job-runs-"
 	goroutineCountsNamePrefix = "goroutine-counts-"
+	agentStatesNamePrefix     = "agent-states-"
 )
 
 // journalWindowName is the filename of one journal window, and the inverse of
@@ -778,6 +796,34 @@ func (s *Spool) WritePodDisruptions(capturedAt time.Time, records []journal.Disr
 			Records:       group,
 		}
 		if err := s.write(payload.Kind, journalWindowName(disruptionsNamePrefix, k), payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteAgentStates writes the agent's own state windows, one file per window.
+//
+// Unlike the journals beside it, a window with nothing to report is still
+// written: its records carry the observation that says the agent was running
+// and the states were clear, which is the whole difference between a quiet hour
+// and an absent one.
+func (s *Spool) WriteAgentStates(capturedAt time.Time, records []journal.StateRecord) error {
+	grouped := make(map[windowKey][]journal.StateRecord)
+	for _, r := range records {
+		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
+		grouped[k] = append(grouped[k], r)
+	}
+	for k, group := range grouped {
+		payload := agentStatesPayload{
+			Kind:          kindAgentStates,
+			Source:        SourceAgent,
+			CapturedAt:    capturedAt,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Records:       group,
+		}
+		if err := s.write(payload.Kind, journalWindowName(agentStatesNamePrefix, k), payload); err != nil {
 			return err
 		}
 	}

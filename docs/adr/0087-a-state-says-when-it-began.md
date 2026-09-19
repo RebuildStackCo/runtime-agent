@@ -4,6 +4,8 @@ Date: 2026-09-18
 
 Status: Accepted
 
+Amended by: 0088
+
 Amends: 0054, 0067
 
 `sources[].failing` and `shipping.halted` gain a start instant beside them, and

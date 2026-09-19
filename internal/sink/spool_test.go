@@ -2146,3 +2146,49 @@ func TestAHaltedShipperDatesTheHaltInThePayload(t *testing.T) {
 		t.Errorf("halted_since is %v, want %s", payload.Shipping.HaltedSince, haltedAt)
 	}
 }
+
+// fixedAgentStates is the hour the payload exists to make legible: one cache
+// that was unfed for nineteen minutes across two episodes and is fed again, one
+// that was clear throughout, and a shipper still halted when the hour ended.
+//
+// The clear cache is the reason the payload is written at all — without its
+// record, "no finding from services" and "services was never watched" are the
+// same absence (ADR 0088 §2).
+func fixedAgentStates() []journal.StateRecord {
+	accruedTo := windowStart.Add(time.Hour)
+	haltedSince := windowStart.Add(41 * time.Minute)
+	return []journal.StateRecord{
+		{
+			State: journal.StateFailing, Subject: "endpoint_slices",
+			WindowStart: windowStart, WindowSeconds: 3600,
+			OccupiedNanos: (19 * time.Minute).Nanoseconds(),
+			ObservedNanos: time.Hour.Nanoseconds(),
+			Entries:       2,
+			AccruedTo:     accruedTo,
+		},
+		{
+			State: journal.StateFailing, Subject: "services",
+			WindowStart: windowStart, WindowSeconds: 3600,
+			ObservedNanos: time.Hour.Nanoseconds(),
+			AccruedTo:     accruedTo,
+		},
+		{
+			State: journal.StateHalted, Subject: journal.SubjectShip,
+			WindowStart: windowStart, WindowSeconds: 3600,
+			OccupiedNanos: (19 * time.Minute).Nanoseconds(),
+			ObservedNanos: time.Hour.Nanoseconds(),
+			Entries:       1,
+			AccruedTo:     accruedTo,
+			OpenSince:     &haltedSince,
+		},
+	}
+}
+
+func TestGoldenAgentStatesPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteAgentStates(capturedAt, fixedAgentStates()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("agent-states-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "agent-states.golden.json")
+}

@@ -1,0 +1,40 @@
+{
+  "kind": "agent_states",
+  "source": "agent",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "records": [
+    {
+      "state": "failing",
+      "subject": "endpoint_slices",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "occupied_nanos": 1140000000000,
+      "observed_nanos": 3600000000000,
+      "entries": 2,
+      "accrued_to": "2026-08-06T11:00:00Z"
+    },
+    {
+      "state": "failing",
+      "subject": "services",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "occupied_nanos": 0,
+      "observed_nanos": 3600000000000,
+      "entries": 0,
+      "accrued_to": "2026-08-06T11:00:00Z"
+    },
+    {
+      "state": "halted",
+      "subject": "shipping",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "occupied_nanos": 1140000000000,
+      "observed_nanos": 3600000000000,
+      "entries": 1,
+      "accrued_to": "2026-08-06T11:00:00Z",
+      "open_since": "2026-08-06T10:41:00Z"
+    }
+  ]
+}
