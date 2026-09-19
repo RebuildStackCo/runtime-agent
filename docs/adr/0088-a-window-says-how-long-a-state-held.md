@@ -4,6 +4,8 @@ Date: 2026-09-18
 
 Status: Accepted
 
+Amended by: 0089
+
 Amends: 0054, 0087
 
 Adds the payload kind `agent_states` and a sixth journal accumulator, resumed at

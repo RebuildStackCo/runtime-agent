@@ -108,6 +108,18 @@ var registry = []PayloadKind{
 		ADR:        "0088",
 	},
 	{
+		// And the counters as change rather than as totals. The names its
+		// records carry are the paths those numbers have in the payload that
+		// reports them cumulatively, so this kind says when and never restates
+		// what (ADR 0089).
+		Kind:       "agent_counters",
+		Source:     SourceAgent,
+		NaturalKey: "(window start, window length)",
+		Delivery:   DeliverySupersedes,
+		Cadence:    everyPass,
+		ADR:        "0089",
+	},
+	{
 		Kind:       "usage_snapshot",
 		Source:     SourceMeasured,
 		NaturalKey: "(window start, window length)",

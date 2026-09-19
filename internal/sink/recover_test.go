@@ -510,3 +510,46 @@ func TestARestartInsideAnOpenStateWindowNeitherLosesNorRepeatsIt(t *testing.T) {
 		t.Errorf("entries %d, want 1: the resumed episode is the one already counted", got[0].Entries)
 	}
 }
+
+// The counter window's own resume: a delta already accrued must be neither
+// dropped nor added twice, and the pass after a restart accrues nothing because
+// the new process counts from its own base (ADR 0089 §4).
+func TestARestartInsideAnOpenCounterWindowKeepsWhatItHeld(t *testing.T) {
+	s, _ := recoverSpool(t)
+	saved := []journal.CounterRecord{{
+		Counter:     "filter.excluded_namespace_annotation",
+		WindowStart: recoverWindow, WindowSeconds: 3600,
+		Delta: 12, ObservedNanos: (12 * time.Minute).Nanoseconds(),
+		AccruedTo: recoverWindow.Add(12 * time.Minute),
+	}}
+	if err := s.WriteAgentCounters(capturedAt, saved); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := s.RecoverOpenWindows(midWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.JournalWindows != 1 || len(rec.AgentCounters) != 1 {
+		t.Fatalf("recovered %d journal windows carrying %d records, want 1 and 1",
+			rec.JournalWindows, len(rec.AgentCounters))
+	}
+
+	resumed := journal.NewCounters(time.Hour)
+	if seeded := resumed.Resume(rec.AgentCounters); seeded != 1 {
+		t.Fatalf("seeded %d records, want 1", seeded)
+	}
+	base := midWindow
+	for i, reading := range []int64{0, 3} {
+		resumed.Observe(midWindow.Add(time.Duration(i)*time.Minute), base,
+			map[string]int64{"filter.excluded_namespace_annotation": reading})
+	}
+
+	got := resumed.Snapshots()
+	if len(got) != 1 {
+		t.Fatalf("holding %d records, want 1: %+v", len(got), got)
+	}
+	if got[0].Delta != 15 {
+		t.Errorf("delta %d, want 15 — twelve before the restart and three after", got[0].Delta)
+	}
+}

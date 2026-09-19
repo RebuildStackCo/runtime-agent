@@ -146,3 +146,4 @@ line to paste.
 - [0086. A toolchain move is a review of what the toolchain reports](0086-a-toolchain-move-reviews-what-it-reports.md)
 - [0087. A state says when it began](0087-a-state-says-when-it-began.md)
 - [0088. A window says how long a state held](0088-a-window-says-how-long-a-state-held.md)
+- [0089. A window says what changed](0089-a-window-says-what-changed.md)

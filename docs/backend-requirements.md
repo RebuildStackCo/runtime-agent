@@ -500,6 +500,27 @@ same rule applies — one is a reading, the other a window.
   `shipping`. No object in the customer's cluster appears here at any window
   length, and the backend MUST NOT ask for one.
 
+**`agent_counters` is the same counters as change, and MUST NOT be added to
+them** ([ADR 0089](adr/0089-a-window-says-what-changed.md)). One record per
+(window, counter), superseding by (window start, window length) like the kind
+above. `counter` is the dotted path that number has in the payload reporting it
+cumulatively — `filter.excluded_pod_annotation`, `pprof_pull.refused` — so the
+name is the join and nothing here restates what the number means.
+
+- `delta` is the rise within the window. A rise within one pass of a boundary
+  may land in the later window, so the backend MUST NOT align a delta to a
+  sub-window instant.
+- **`observed_nanos` bounds it, and a window the agent was absent for part of
+  has a smaller delta for reasons about the agent.** What rose while the agent
+  was down is counted by nobody: its counters restart at zero, so no reading
+  spans the outage, and the backend MUST NOT treat a gap as quiet.
+- A counter present in one window and absent from the next was not being
+  counted, which is not the same as counting zero. The two are distinguished by
+  the record existing at all.
+- Deltas count decisions, not objects — the rule `collection_coverage`'s filter
+  counters already carry — so the backend MUST NOT recover an object count by
+  summing them.
+
 **`network_window` says how much moved, never where it went**
 ([ADR 0053](adr/0053-network-counters-are-the-pods.md)). The counters are read at
 the pod's own interfaces, so the payload carries no destination, no peer and no

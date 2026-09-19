@@ -303,6 +303,9 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 	// that ended leaves no field behind in a payload that supersedes, so the
 	// only place it can be reported is a window (ADR 0088).
 	stateJournal := journal.NewStates(collector.UsageWindowLength)
+	// And its counters as change rather than as totals, on the same windows and
+	// for the same reason: a total says how much and never when (ADR 0089).
+	counterJournal := journal.NewCounters(collector.UsageWindowLength)
 	podWatcher.OnJobFinished(func(r model.JobRun) {
 		logger.Info("job run finished",
 			"namespace", r.Namespace,
@@ -431,6 +434,7 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 			jobs:        jobJournal,
 			goroutines:  goroutineJournal,
 			states:      stateJournal,
+			counters:    counterJournal,
 		}, time.Now())
 	}
 
@@ -878,6 +882,17 @@ func run(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interfac
 		if len(records) > 0 {
 			if err := spool.WriteAgentStates(now, records); err != nil {
 				logger.Error("spooling agent states", "error", err)
+			}
+		}
+		// The same readings the snapshot just carried, as the change since the
+		// previous pass. `startedAt` is the base they were counted from, and a
+		// base that moved is a restart the subtraction must not cross.
+		counterJournal.Observe(now, startedAt,
+			agentCounters(c, usagePoller.Observation(), pullCoverage, rejections))
+		counts := append(counterJournal.CloseBefore(now), counterJournal.Snapshots()...)
+		if len(counts) > 0 {
+			if err := spool.WriteAgentCounters(now, counts); err != nil {
+				logger.Error("spooling agent counters", "error", err)
 			}
 		}
 	}

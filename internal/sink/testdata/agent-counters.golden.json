@@ -1,0 +1,49 @@
+{
+  "kind": "agent_counters",
+  "source": "agent",
+  "captured_at": "2026-08-06T10:12:00Z",
+  "window_start": "2026-08-06T10:00:00Z",
+  "window_seconds": 3600,
+  "records": [
+    {
+      "counter": "filter.excluded_namespace_annotation",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "delta": 12,
+      "observed_nanos": 3600000000000,
+      "accrued_to": "2026-08-06T11:00:00Z"
+    },
+    {
+      "counter": "filter.excluded_pod_annotation",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "delta": 0,
+      "observed_nanos": 3600000000000,
+      "accrued_to": "2026-08-06T11:00:00Z"
+    },
+    {
+      "counter": "filter.pods_observed",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "delta": 3,
+      "observed_nanos": 3600000000000,
+      "accrued_to": "2026-08-06T11:00:00Z"
+    },
+    {
+      "counter": "pprof_pull.refused",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "delta": 1,
+      "observed_nanos": 3600000000000,
+      "accrued_to": "2026-08-06T11:00:00Z"
+    },
+    {
+      "counter": "pprof_pull.shipped",
+      "window_start": "2026-08-06T10:00:00Z",
+      "window_seconds": 3600,
+      "delta": 4,
+      "observed_nanos": 3600000000000,
+      "accrued_to": "2026-08-06T11:00:00Z"
+    }
+  ]
+}
