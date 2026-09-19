@@ -42,7 +42,10 @@ type Recovery struct {
 	// AgentStates resumes so that a restart within an hour continues that hour's
 	// occupancy instead of measuring its own past a second time (ADR 0088 §3).
 	AgentStates []journal.StateRecord
-	// JournalWindows is how many journal window files the six above came from.
+	// AgentCounters resumes for the same reason: a delta already accrued into an
+	// open window must not be counted again or dropped (ADR 0089 §3).
+	AgentCounters []journal.CounterRecord
+	// JournalWindows is how many journal window files the seven above came from.
 	JournalWindows int
 }
 
@@ -84,12 +87,13 @@ func (s *Spool) RecoverOpenWindows(now time.Time) (Recovery, error) {
 	}
 	s.recoverJournals(entries, now, &rec)
 	journalRecords := len(rec.Restarts) + len(rec.Disruptions) + len(rec.NodeEvents) +
-		len(rec.JobRuns) + len(rec.GoroutineCounts) + len(rec.AgentStates)
+		len(rec.JobRuns) + len(rec.GoroutineCounts) + len(rec.AgentStates) +
+		len(rec.AgentCounters)
 	s.countRecovery(len(rec.Records), rec.Windows, len(rec.Skipped), journalRecords, rec.JournalWindows)
 	return rec, nil
 }
 
-// recoverJournals reads the six journal windows still open at now.
+// recoverJournals reads the seven journal windows still open at now.
 //
 // A journal window's file is the same name whether the window is open or final,
 // so the only question is whether the window has ended: one that has is already
@@ -122,6 +126,9 @@ func (s *Spool) recoverJournals(entries []os.DirEntry, now time.Time, rec *Recov
 		case strings.HasPrefix(name, agentStatesNamePrefix):
 			found, err = resumeInto(s, name, agentStatesNamePrefix, kindAgentStates, now, &rec.AgentStates,
 				func(r journal.StateRecord) (time.Time, int64) { return r.WindowStart, r.WindowSeconds })
+		case strings.HasPrefix(name, agentCountersNamePrefix):
+			found, err = resumeInto(s, name, agentCountersNamePrefix, kindAgentCounters, now, &rec.AgentCounters,
+				func(r journal.CounterRecord) (time.Time, int64) { return r.WindowStart, r.WindowSeconds })
 		default:
 			continue
 		}

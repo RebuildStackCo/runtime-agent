@@ -36,22 +36,22 @@ var ceilings = []struct {
 }{
 	// Each raise names the obligation that bought it: payloads leave the cluster
 	// (0075); a window states when it was written (0078); an endpoint is read
-	// once a minute (0080); GODEBUG names come out of the build (0081); a
-	// request names its agent (0083); a listener names what the filters excluded
-	// (0084); the image states what it is made of (0085); a failing read says
-	// since when (0087); and a window says how long a state held (0088), whose
-	// row is the section's raise and whose diff moves the startup-read list to
-	// the seven kinds it reads.
-	{"security.md", 1139, 367},
+	// once a minute (0080); GODEBUG names leave the build (0081); a request
+	// names its agent (0083); a listener names what the filters excluded (0084);
+	// the image states what it is made of (0085); a failing read says since when
+	// (0087); and two windows say how long a state held and what changed (0088,
+	// 0089) — their rows raise the section, and their diffs move the
+	// startup-read list to the eight kinds it reads.
+	{"security.md", 1140, 369},
 	// Each raise names its obligation here too. A payload's size is no longer
 	// its request's (0076); a window states whether it is finished (0078); gauge
-	// samples arrive, where adding them up is the wrong ingest (0080); `godebug`
-	// carries names where neither value is safe (0081); the filter counters
-	// count decisions (0054); a port's `pprof` is absent when nothing asked
-	// (0082); a request may name an agent with no version (0083); an absent
-	// instant is told apart from an absent state (0087); and a duration arrives
-	// with the observation bounding it (0088). The last two moved the section.
-	{"backend-requirements.md", 851, 673},
+	// samples are not summed (0080); `godebug` carries names where neither value
+	// is safe (0081); the filter counters count decisions (0054); a port's
+	// `pprof` is absent when nothing asked (0082); an agent may state no version
+	// (0083); an absent instant differs from an absent state (0087); a duration
+	// arrives with the observation bounding it (0088); and a delta says which
+	// hour it belongs to (0089). The last three moved the section too.
+	{"backend-requirements.md", 872, 694},
 }
 
 func TestNoCommentRunIsLongerThanAPointerToAnADR(t *testing.T) {

@@ -441,6 +441,20 @@ type agentStatesPayload struct {
 	Records       []journal.StateRecord `json:"records"`
 }
 
+// agentCountersPayload is how much each of the agent's own counters rose within
+// one window (ADR 0089).
+//
+// The counter names are the paths those numbers have where they are reported
+// cumulatively, so this payload says when and never restates what.
+type agentCountersPayload struct {
+	Kind          string                  `json:"kind"`
+	Source        string                  `json:"source"`
+	CapturedAt    time.Time               `json:"captured_at"`
+	WindowStart   time.Time               `json:"window_start"`
+	WindowSeconds int64                   `json:"window_seconds"`
+	Records       []journal.CounterRecord `json:"records"`
+}
+
 // jobRunsPayload is every finished Job run of one window: one file per window
 // holding many records, like the restart and disruption journals (ADR 0029).
 //
@@ -611,6 +625,7 @@ const (
 	kindJobRuns           = "job_runs"
 	kindGoroutineCounts   = "goroutine_counts"
 	kindAgentStates       = "agent_states"
+	kindAgentCounters     = "agent_counters"
 
 	restartsNamePrefix        = "restarts-"
 	disruptionsNamePrefix     = "disruptions-"
@@ -618,6 +633,7 @@ const (
 	jobRunsNamePrefix         = "job-runs-"
 	goroutineCountsNamePrefix = "goroutine-counts-"
 	agentStatesNamePrefix     = "agent-states-"
+	agentCountersNamePrefix   = "agent-counters-"
 )
 
 // journalWindowName is the filename of one journal window, and the inverse of
@@ -824,6 +840,30 @@ func (s *Spool) WriteAgentStates(capturedAt time.Time, records []journal.StateRe
 			Records:       group,
 		}
 		if err := s.write(payload.Kind, journalWindowName(agentStatesNamePrefix, k), payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteAgentCounters writes the agent's own counter windows, one file per
+// window, on the same terms as WriteAgentStates beside it.
+func (s *Spool) WriteAgentCounters(capturedAt time.Time, records []journal.CounterRecord) error {
+	grouped := make(map[windowKey][]journal.CounterRecord)
+	for _, r := range records {
+		k := windowKey{start: r.WindowStart, seconds: r.WindowSeconds}
+		grouped[k] = append(grouped[k], r)
+	}
+	for k, group := range grouped {
+		payload := agentCountersPayload{
+			Kind:          kindAgentCounters,
+			Source:        SourceAgent,
+			CapturedAt:    capturedAt,
+			WindowStart:   k.start,
+			WindowSeconds: k.seconds,
+			Records:       group,
+		}
+		if err := s.write(payload.Kind, journalWindowName(agentCountersNamePrefix, k), payload); err != nil {
 			return err
 		}
 	}

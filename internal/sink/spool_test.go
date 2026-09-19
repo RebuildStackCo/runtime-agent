@@ -2192,3 +2192,33 @@ func TestGoldenAgentStatesPayload(t *testing.T) {
 	name := fmt.Sprintf("agent-states-%d-3600.json", windowStart.Unix())
 	checkGolden(t, filepath.Join(dir, name), "agent-states.golden.json")
 }
+
+// fixedAgentCounters is an hour in which a namespace was annotated and the
+// puller met a workload running its own profiler, beside counters that did not
+// move at all — which are in the payload for the same reason the clear state
+// records are (ADR 0089 §5).
+func fixedAgentCounters() []journal.CounterRecord {
+	rec := func(name string, delta int64) journal.CounterRecord {
+		return journal.CounterRecord{
+			Counter: name, WindowStart: windowStart, WindowSeconds: 3600,
+			Delta: delta, ObservedNanos: time.Hour.Nanoseconds(),
+			AccruedTo: windowStart.Add(time.Hour),
+		}
+	}
+	return []journal.CounterRecord{
+		rec("filter.excluded_namespace_annotation", 12),
+		rec("filter.excluded_pod_annotation", 0),
+		rec("filter.pods_observed", 3),
+		rec("pprof_pull.refused", 1),
+		rec("pprof_pull.shipped", 4),
+	}
+}
+
+func TestGoldenAgentCountersPayload(t *testing.T) {
+	s, dir := newTestSpool(t)
+	if err := s.WriteAgentCounters(capturedAt, fixedAgentCounters()); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("agent-counters-%d-3600.json", windowStart.Unix())
+	checkGolden(t, filepath.Join(dir, name), "agent-counters.golden.json")
+}

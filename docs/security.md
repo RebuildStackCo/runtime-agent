@@ -272,9 +272,9 @@ and 20000 files, dropping the oldest first; and the `emptyDir` declares a 1 GiB
 - **The agent reads it once, at startup**, so a restart resumes its open windows
   rather than starting them over ([ADR 0072](adr/0072-a-restart-resumes-the-window-the-spool-holds.md),
   [ADR 0077](adr/0077-a-restart-resumes-every-open-window.md)). It is a pure read
-  of seven kinds and no others — `usage_snapshot`, `container_restarts`,
+  of eight kinds and no others — `usage_snapshot`, `container_restarts`,
   `pod_disruptions`, `node_lifecycle`, `job_runs`, `goroutine_counts`,
-  `agent_states` — and it deletes nothing.
+  `agent_states`, `agent_counters` — and it deletes nothing.
 - **Configuration is never cached on it.** Filters are read from the ConfigMap at
   every start and never reread while running; a stale filter set cannot resurrect
   from disk, and a filter change takes a restart.
@@ -557,6 +557,7 @@ nothing to what leaves your cluster.
 | `ebpf_profile` | One capture: allow-list-filtered symbolized pprof bytes, keyed by workload, image digest and capture window | no |
 | `pprof_profile` | One ten-second CPU profile fetched from the workload's own `/debug/pprof` endpoint, allow-list-filtered, under the same key ([ADR 0058](adr/0058-the-pull-starts-a-profiler-and-the-binary-says-whose-code-it-is.md)). The mappings — the executable's path on disk and its build ID — the sample labels, and the full source paths are removed with the redacted frames, so what remains is function names your allow-list admits, base file names and line numbers. Beside it travel the counts of what was redacted, never what | no |
 | `agent_states` | Per window, for each of the agent's own states: how much of the hour it held, how many episodes that was, and how much of the hour the agent was running to watch at all ([ADR 0088](adr/0088-a-window-says-how-long-a-state-held.md)). Its subjects are this agent and the resource classes it watches — `services`, `endpoint_slices` — never an object in your cluster. Nothing here is about your workloads: it is how the agent answers for its own outages | no |
+| `agent_counters` | Per window, for each of the agent's own counters: how much it rose within the hour, and how much of the hour the agent was running to count ([ADR 0089](adr/0089-a-window-says-what-changed.md)). The same decisions the coverage report totals, placed in time — how many exclusions your annotations caused this hour, not since the agent started. Counts only, and no object is named | no |
 | `goroutine_counts` | Per sampled process and window: how many goroutines it was running at each reading, and the pod, container and build it was read from ([ADR 0080](adr/0080-the-index-page-already-counts-the-goroutines.md)). A count and a timestamp. No stack, no function name and nothing about what those goroutines were doing | no |
 
 Each declares its provenance in a `source` field — `structural` (read from a
